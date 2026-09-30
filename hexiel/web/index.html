@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>hexiel</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <aside id="sidebar">
+    <div id="brand">⚡ hexiel <small>web</small></div>
+    <h3>Sessions</h3>
+    <div class="side-section" id="sessions-list"></div>
+    <h3>Skills</h3>
+    <div class="side-section" id="skills-list"></div>
+    <h3>Toolchain</h3>
+    <div class="side-section" id="toolchain-list"></div>
+    <h3>Memory</h3>
+    <div class="side-section"><div id="mem-summary" class="dim" style="white-space:pre-wrap;max-height:180px;overflow-y:auto"></div></div>
+  </aside>
+
+  <div id="main">
+    <div id="topbar">
+      <select id="model-select"></select>
+      <button id="compact-btn" title="Summarize history now (replaces tokens)">Compact</button>
+      <button id="clear-btn" title="Start a fresh conversation">Clear</button>
+      <div class="spacer"></div>
+      <div id="todo-badge" class="dim"></div>
+      <div id="ctx-label"></div>
+    </div>
+
+    <div id="chat"></div>
+
+    <div id="composer">
+      <div class="inner">
+        <textarea id="input" placeholder="Ask hexiel to build, fix, research… (Enter to send, Shift+Enter for newline)"></textarea>
+        <button id="send">Send</button>
+      </div>
+      <div id="hint">hexiel asks before running any shell command or file write. Tools: bash · read/write/edit · grep · glob · test · container · web · image · memory · todo · gitlab · skill</div>
+    </div>
+  </div>
+
+  <div id="modal-back">
+    <div id="approve-box">
+      <h4>Approve tool call</h4>
+      <div class="dim" id="approve-tool" style="font-weight:600"></div>
+      <pre id="approve-args"></pre>
+      <div class="row">
+        <button class="yes" id="approve-yes">Approve (y)</button>
+        <button class="always" id="approve-always">Always for this session</button>
+        <button class="no" id="approve-no">Deny (n)</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="dim" id="todo-panel" style="display:none"></div>
+  <script src="/static/md.js"></script>
+  <script src="/static/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,358 @@
+"""Session state: the agentic loop, token accounting, and auto-compaction."""
+
+import json
+import threading
+import time
+import uuid
+from collections.abc import Callable
+from pathlib import Path
+
+from . import llm
+from .config import ModelConfig, Settings, home_data_dir
+from .tools import ToolResult, CACHEABLE_TOOLS
+
+COMPACT_PROMPT = """\
+Your conversation is being auto-compacted to stay within the context window.
+Summarize EVERYTHING above — all exchanges, all tool results — into a detailed,
+information-dense markdown summary that lets you continue as if uninterrupted.
+Use exactly these sections:
+
+## Primary Task
+What the user asked for, in their words, plus any refinements they made along the way.
+
+## Recent Work
+Every file read/written/edited (with paths), commands run, and tool results of note.
+
+## Key Decisions & User Feedback
+Choices made and why; explicit user preferences and corrections to preserve exactly.
+
+## Errors & Fixes
+Problems encountered and how each was resolved.
+
+## Current State
+The precise state when the conversation was cut: what is done, what is in flight,
+current branch/diff/build status.
+
+## Next Steps
+What remains, so work can resume straight away.
+
+Be exhaustive on specifics (paths, flags, names, numbers) — this is not a chat summary,
+it is the replacement for everything that gets dropped.
+"""
+
+ON_COMPACTION_NOTE = (
+    "This session was auto-compacted: everything above this point is a summary of the "
+    "earlier conversation. Its specifics (paths, decisions, promises) are authoritative. "
+    "Continue the work described in Next Steps unless the user says otherwise."
+)
+
+
+class Session:
+    def __init__(self, model_config: ModelConfig, settings: Settings, cwd: str,
+                 tools: list, system_prompt: str, on_event: Callable = None,
+                 on_approve: Callable = None):
+        self.model_config = model_config
+        self.settings = settings
+        self.cwd = cwd
+        self.tools = tools
+        self.system_prompt = system_prompt
+        self.on_event = on_event or (lambda *_a, **_k: None)
+        self.on_approve = on_approve or (lambda *_: "yes")
+        self.id = uuid.uuid4().hex[:12]
+        self.created = time.time()
+        self.messages: list[dict] = []
+        self.last_usage: dict = {}
+        self.total_completion_tokens = 0
+        self.auto_approve = settings.auto_approve
+        self.compacting = False
+        self._stop = threading.Event()
+        self._tool_ctx = None  # bind with bind_tool_ctx() before run_turn
+
+    # ---------------------------------------------------------------- run turn
+
+    def stop(self) -> None:
+        self._stop.set()
+
+    def run_turn(self, user_text: str) -> None:
+        self._stop.clear()
+        try:
+            self._turn_body(user_text)
+        except Exception as exc:  # noqa: BLE001 - record incident, keep the UI alive
+            import traceback
+            from . import heal as heal_mod
+            trail = traceback.format_exc()
+            heal_mod.record_incident(self.cwd, kind="turn-crash",
+                                     detail=f"{type(exc).__name__}: {exc}",
+                                     traceback_text=trail,
+                                     context={"user_text": user_text[:500]})
+            self.on_event("incident", "turn", trail[-400:])
+            raise
+
+    def _turn_body(self, user_text: str) -> None:
+        self.messages.append({"role": "user", "content": user_text})
+        self.save()
+        provider = llm.make_provider(self.model_config, self.settings)
+        tool_defs = [
+            {"name": t.name, "description": t.description, "parameters": t.parameters}
+            for t in self.tools
+        ]
+        try:
+            while True:
+                if self._stop.is_set():
+                    self.on_event("turn_end", aborted=True)
+                    return
+                if self.compaction_needed() and not self.compacting:
+                    self.compact(provider)
+                assistant = self._stream_assistant(provider, tool_defs)
+                self.messages.append(assistant)
+                self.save()
+                calls = assistant.get("tool_calls") or []
+                if not calls:
+                    if not assistant.get("content", "").strip() and not calls:
+                        if getattr(self, "_provider_error", None):
+                            error, self._provider_error = self._provider_error, None
+                            self.messages.pop()  # drop the empty assistant
+                            self.on_event("turn_end", {"error": error})
+                            return
+                    self.on_event("turn_end")
+                    return
+                for call in calls:
+                    if self._stop.is_set():
+                        self._append_tool_results(calls[calls.index(call):])
+                        self.on_event("turn_end", aborted=True)
+                        return
+                    self._execute_tool(call)
+        finally:
+            self.save()
+
+    def _stream_assistant(self, provider, tool_defs) -> dict:
+        """Stream one assistant response; returns the finalized message dict."""
+        final = None
+        try:
+            stream = provider.stream(self.messages, self.system_prompt, tool_defs,
+                                     model=self.model_config.model,
+                                     max_output_tokens=self.model_config.max_output_tokens,
+                                     extra_body=self.model_config.extra_body,
+                                     timeout=self.settings.request_timeout)
+            for event, *payload in stream:
+                if self._stop.is_set():
+                    break
+                if event == "text":
+                    self.on_event("text", payload[0])
+                elif event == "thinking":
+                    self.on_event("thinking", payload[0])
+                elif event == "assistant":
+                    final = payload[0]
+                elif event == "done":
+                    usage = payload[0]
+                    if usage:
+                        self.last_usage = usage
+                        self.total_completion_tokens += usage.get("completion_tokens", 0)
+                        self.on_event("usage", usage)
+        except llm.ProviderError as exc:
+            self._provider_error = str(exc)
+        return final if final is not None else {"role": "assistant", "content": ""}
+
+    # ---------------------------------------------------------------- tool execution
+
+    def _execute_tool(self, call: dict) -> None:
+        tool = next((t for t in self.tools if t.name == call["name"]), None)
+        if tool is None:
+            self.messages.append({"role": "tool", "tool_call_id": call["id"],
+                                  "content": f"error: unknown tool '{call['name']}'",
+                                  "is_error": True})
+            return
+        verdict = "yes"
+        skips_approval = getattr(tool, "always_ok", False)
+        if not tool.readonly and not skips_approval and not self.auto_approve:
+            verdict = self.on_approve(tool.name, call["arguments"])
+            if verdict == "always":
+                self.auto_approve = True
+            elif verdict == "no":
+                self.messages.append({
+                    "role": "tool", "tool_call_id": call["id"], "is_error": True,
+                    "content": f"User denied the {call['name']} tool call. "
+                               "Find another approach or ask the user."})
+                self.on_event("tool_result", call, "denied by user", True)
+                return
+        self.on_event("tool_call", call)
+        cache_key = None
+        if tool.name in CACHEABLE_TOOLS:
+            cache_key = (tool.name, json.dumps(call["arguments"], sort_keys=True))
+            hit = self.tool_ctx.result_cache.get(cache_key)
+            if hit is not None:
+                entry = {"role": "tool", "tool_call_id": call["id"],
+                         "content": hit.text + "\n(cached — identical earlier call this session)"}
+                self.messages.append(entry)
+                self.on_event("tool_result", call, entry["content"], False, 0.0)
+                return
+        started = time.time()
+        try:
+            result = tool.run(call["arguments"], self.tool_ctx)
+        except Exception as exc:  # noqa: BLE001 - record + recover, model continues
+            import traceback
+            from . import heal as heal_mod
+            path = heal_mod.record_incident(self.cwd, kind=f"tool-{tool.name}",
+                                            detail=f"{tool.name} raised {exc!r}",
+                                            traceback_text=traceback.format_exc(),
+                                            context={"arguments": call["arguments"]})
+            self.on_event("incident", tool.name, str(path))
+            result = ToolResult(text=f"internal error in {tool.name}: {exc!r} "
+                                     f"(recorded to {path}); work around it or retry",
+                                is_error=True)
+        entry = {"role": "tool", "tool_call_id": call["id"], "content": result.text}
+        if result.is_error:
+            entry["is_error"] = True
+        if getattr(result, "images", None):
+            entry["images"] = result.images
+        self.messages.append(entry)
+        if cache_key is not None and not result.is_error:
+            self.tool_ctx.result_cache[cache_key] = result
+        self.on_event("tool_result", call, result.text, result.is_error,
+                      time.time() - started)
+
+    def _append_tool_results(self, remaining: list[dict]) -> None:
+        for call in remaining:
+            self.messages.append({"role": "tool", "tool_call_id": call["id"],
+                                  "content": "interrupted by user", "is_error": True})
+
+    @property
+    def tool_ctx(self):
+        if self._tool_ctx is None:
+            raise RuntimeError("tool context not bound; call bind_tool_ctx() first")
+        return self._tool_ctx
+
+    def bind_tool_ctx(self, tool_ctx) -> None:
+        self._tool_ctx = tool_ctx
+
+    # ---------------------------------------------------------------- token accounting
+
+    def tokens_now(self) -> int:
+        usage = self.last_usage.get("prompt_tokens") if self.last_usage else 0
+        if usage:
+            # usage is one turn stale if messages were appended since; add their estimate
+            return usage
+        return self.estimate_tokens()
+
+    def estimate_tokens(self) -> int:
+        total = llm.est_tokens(self.system_prompt) + 300  # tool schemas
+        for msg in self.messages:
+            total += llm.est_tokens(msg.get("content", "")) + 8
+            for call in msg.get("tool_calls", []):
+                total += llm.est_tokens(json.dumps(call.get("arguments", {}))) + 20
+            for image in msg.get("images", []):
+                total += image.get("approx_tokens", 800)
+        return total
+
+    def compaction_needed(self) -> bool:
+        if not self.messages:
+            return False
+        floor = self.estimate_tokens()
+        actual = self.last_usage.get("prompt_tokens", 0)
+        current = max(floor, actual)
+        return current >= self.model_config.context_window * self.settings.compact_threshold
+
+    # ---------------------------------------------------------------- compaction
+
+    def compact(self, provider, manual: bool = False) -> None:
+        """Summarize the older history and replace it, Claude-Code style."""
+        if self.compacting:
+            return
+        messages = self.messages
+        split = self._turn_split(messages)
+        if split == 0:
+            if not manual:
+                return
+            split = len(messages)  # forced: compact even without a clean boundary
+        head, tail = messages[:split], messages[split:]
+        if not head:
+            self.on_event("compact_end", {}, {})
+            return
+        self.compacting = True
+        self.on_event("compact_start")
+        before = self.last_usage.get("prompt_tokens") or self.estimate_tokens()
+        transcript = self._transcript(head)
+        out_parts = []
+        try:
+            stream = provider.stream(
+                [{"role": "user", "content": transcript}], COMPACT_PROMPT, [],
+                model=self.model_config.model,
+                max_output_tokens=max(self.model_config.max_output_tokens, 8192),
+                extra_body=self.model_config.extra_body,
+                timeout=self.settings.request_timeout)
+            for event, *payload in stream:
+                if event == "text":
+                    out_parts.append(payload[0])
+        except llm.ProviderError as exc:
+            self.compacting = False
+            self.messages = messages  # uncompacted
+            self.on_event("provider_error", f"compaction failed: {exc}")
+            return
+        except BaseException:
+            self.compacting = False
+            raise
+        summary = "".join(out_parts).strip()
+        compacted: list[dict] = [{"role": "user", "content":
+                                  f"<auto-compaction>\n\n{summary}\n</auto-compaction>\n\n"
+                                  + ON_COMPACTION_NOTE}]
+        self.messages = compacted + tail
+        self.last_usage = {}
+        self.compacting = False
+        after = self.estimate_tokens()
+        self.on_event("compact_end", {"before": before, "after": after,
+                                      "dropped": len(head), "kept": len(tail)})
+        self.save()
+
+    def _turn_split(self, messages: list[dict]) -> int:
+        """Index where the compacted tail begins: the last 1–2 real user turns."""
+        user_idx = [i for i, m in enumerate(messages) if m["role"] == "user"]
+        if not user_idx:
+            return 0
+        last = user_idx[-1]
+        if len(user_idx) >= 2 and (last - user_idx[-2]) <= 12:
+            return user_idx[-2]
+        return last
+
+    def _transcript(self, head: list[dict]) -> str:
+        lines = ["Below is a conversation transcript. Summarize it per the instructions."]
+        for msg in head:
+            role = msg["role"]
+            if role == "tool":
+                lines.append(f"[tool result] {msg.get('content', '')[:4000]}")
+            elif msg.get("tool_calls"):
+                for call in msg["tool_calls"]:
+                    lines.append(f"[assistant -> {call['name']}] "
+                                 f"{json.dumps(call['arguments'])[:1500]}")
+                if msg.get("content", "").strip():
+                    lines.append(f"[assistant] {msg['content']}")
+            else:
+                body = f"[{role}] {msg.get('content', '')}"
+                if role == "assistant":
+                    body = body[:8000]
+                lines.append(body)
+        return COMPACT_PROMPT + "\n\n" + "\n".join(lines[:400])
+
+    # ---------------------------------------------------------------- persistence
+
+    def save(self) -> None:
+        sessions = Path(home_data_dir() / "sessions")
+        try:
+            sessions.mkdir(parents=True, exist_ok=True)
+            payload = {
+                "id": self.id, "created": self.created,
+                "model": self.model_config.name, "messages": self.messages[-400:],
+            }
+            (sessions / f"{self.id}.json").write_text(json.dumps(payload))
+        except OSError:
+            pass
+
+    @classmethod
+    def resume_latest(cls) -> dict | None:
+        try:
+            sessions = sorted((home_data_dir() / "sessions").glob("*.json"),
+                              key=lambda p: p.stat().st_mtime)
+            if not sessions:
+                return None
+            return json.loads(sessions[-1].read_text())
+        except (OSError, json.JSONDecodeError, IndexError):
+            return None

@@ -1,93 +1,154 @@
 # hexiel
 
+**hexiel** is a terminal and browser coding agent — a guardian angel for your
+codebase. Local-first by design: everything that can be done without a model
+(discovery, waiting, searching, distilling) happens locally in Python, so the
+tokens you pay for are spent on the reasoning that matters.
 
+| | |
+|---|---|
+| TUI, browser, headless, or OpenAI-compatible API — same agent core | Pluggable providers: Ollama (local/cloud), Anthropic, OpenAI, Gemini, xAI, OpenRouter, DeepSeek |
+| Claude-Code-sized context window with automatic compaction | File-based memory (`MEMORY.md` + notes), Claude-Code-compatible skills |
+| todo.md progress tracking that survives interruptions | Self-healing: incidents → AI fix → MR for your approval |
+| GitLab collaboration: fork → branch → MR, owner approves | Toolchain-native: pytest/vitest/go/cargo, docker & podman, images, web |
 
-## Getting started
+![hexiel TUI](docs/screenshots/tui.png)
 
-To make it easy for you to get started with GitLab, here's a list of recommended next steps.
+## Quickstart
 
-Already a pro? Just edit this README.md and make it your own. Want to make it easy? [Use the template at the bottom](#editing-this-readme)!
-
-## Add your files
-
-* [Create](https://docs.gitlab.com/user/project/repository/web_editor/#create-a-file) or [upload](https://docs.gitlab.com/user/project/repository/web_editor/#upload-a-file) files
-* [Add files using the command line](https://docs.gitlab.com/topics/git/add_files/#add-files-to-a-git-repository) or push an existing Git repository with the following command:
-
+```bash
+git clone https://gitlab.com/jkagidesigns1/public/applications/hexiel.git
+cd hexiel
+python -m venv .venv
+.venv/bin/pip install -e 'hexiel[serve]'
+.venv/bin/hexiel --doctor        # preflight checks + copy-paste fixes
+.venv/bin/hexiel                 # TUI
 ```
-cd existing_repo
-git remote add origin https://gitlab.com/jkagidesigns1/public/applications/hexiel.git
-git branch -M main
-git push -uf origin main
+
+Configure a provider in `~/.config/hexiel/config.toml` (written on first run)
+— the default profile targets a local Ollama at `http://localhost:11434/v1`
+pointed at an Ollama **Cloud** model. Switch profiles with `/model NAME` in the
+TUI or `hexiel -m NAME`.
+
+### Three ways to talk to the agent
+
+```bash
+hexiel                    # full-screen TUI (Textual)
+hexiel --serve            # browser UI at http://127.0.0.1:8777
+hexiel -p "explain this repo in one paragraph"      # one-shot, headless
+hexiel --repl             # plain readline loop for piped/automated use
 ```
 
-## Integrate with your tools
+## What hexiel does
 
-* [Set up project integrations](https://gitlab.com/jkagidesigns1/public/applications/hexiel/-/settings/integrations)
+### Context discipline (the big one)
+- **Auto-compaction, Claude-Code style**: when the prompt reaches 82% of the
+  model's context window (configurable), hexiel summarizes the older history
+  into a structured, information-dense summary (Primary Task / Recent Work /
+  Key Decisions / Errors & Fixes / Current State / Next Steps) and continues
+  from it transparently. Real usage numbers from the provider drive the
+  trigger — not guesses.
+- **Local-first token economy**: tool outputs are budgeted and distilled by
+  Python before the model ever sees them; the directory map, test waits, web
+  pages, and repeated queries cost you little or nothing (see below).
 
-## Collaborate with your team
+### Tools (all built in)
+`bash` · `read` (line-numbered) · `write` · `edit` (find-and-replace with
+exactness guarantees) · `glob` · `grep` (ripgrep-first) · `list` · `file_info`
+· `test` (drives your detected runner) · `container` (docker/podman + compose)
+· `view_image` / `image_edit` (ImageMagick) · `web_fetch` / `web_search`
+(DuckDuckGo or SearXNG, no key needed) · `memory` · `todo` · `gitlab_mr` ·
+`skill` — plus any OpenWebUI plugin you drop into `plugins/`.
 
-* [Invite team members and collaborators](https://docs.gitlab.com/user/project/members/)
-* [Create a new merge request](https://docs.gitlab.com/user/project/merge_requests/creating_merge_requests/)
-* [Automatically close issues from merge requests](https://docs.gitlab.com/user/project/issues/managing_issues/#closing-issues-automatically)
-* [Enable merge request approvals](https://docs.gitlab.com/user/project/merge_requests/approvals/)
-* [Set auto-merge](https://docs.gitlab.com/user/project/merge_requests/auto_merge/)
+Every non-read-only call asks before running (TUI modal / browser dialog /
+terminal prompt). `/auto` flips to hands-free; per-tool "always" answers stick
+for the session.
 
-## Test and Deploy
+### todo.md progress tracking
+Multi-step work is tracked in `<project>/.hexiel/todo.md`: queued `- [ ]`,
+exactly one in-progress `- [~]`, done `- [x]`, plus a
+*where we left off* checkpoint. If hexiel (or your laptop) dies mid-task, the
+next session resumes from the checkpoint — the system prompt carries the state
+in on every resume (`hexiel -c`).
 
-Use the built-in continuous integration in GitLab.
+### Memory & skills
+- `~/.local/share/hexiel/memory/` (global) and `<project>/.hexiel/memory/`
+  (project): markdown files with frontmatter, indexed by `MEMORY.md`. hexiel
+  reads and writes them itself, like Claude Code.
+- Skills are `SKILL.md` folders (name + description frontmatter) from
+  `~/.local/share/hexiel/skills/`, the project dirs, **and `~/.claude/skills/`
+  directly** — your existing Claude Code skills work here with no changes.
+  Invoke with the `skill` tool or `/skillname`.
 
-* [Get started with GitLab CI/CD](https://docs.gitlab.com/ci/quick_start/)
-* [Analyze your code for known vulnerabilities with Static Application Security Testing (SAST)](https://docs.gitlab.com/user/application_security/sast/)
-* [Deploy to Kubernetes, Amazon EC2, or Amazon ECS using Auto Deploy](https://docs.gitlab.com/topics/autodevops/requirements/)
-* [Use pull-based deployments for improved Kubernetes management](https://docs.gitlab.com/user/clusters/agent/)
-* [Set up protected environments](https://docs.gitlab.com/ci/environments/protected_environments/)
+### Self-healing
+Exceptions and provider errors are recorded to `.hexiel/incidents/<ts>.json`
+(kind, traceback, context). `/heal` walks the agent through: run the test
+suite → reproduce → fix root cause → re-test → commit on `hexiel-fix/<slug>` →
+propose the MR. It never pushes to your default branch and never merges — that
+approval is yours, in GitLab.
 
-***
+### GitLab collaboration (`/ship`, `/heal`, `gitlab_mr` tool)
+- **Owner flow**: propose your uncommitted work as an MR (branch → commit →
+  push → MR), approving each step in the UI.
+- **Contributor flow like the big projects**: hexiel forks the repo via API,
+  pushes your branch to *your* fork, and opens an MR from
+  `your-fork:hexiel/...` with `source_project_id` — properly attributed to you.
+- Auth: `HEXIEL_GITLAB_TOKEN` / `GITLAB_TOKEN` env or `~/.config/hexiel/auth.toml`
+  (`/setup-gitlab <token>`, chmod 600). Without a token it degrades to plain
+  git and tells you exactly what to do next.
+- Works on gitlab.com and self-hosted (ssh, ssh://…:port, and https remotes).
 
-# Editing this README
+### Browser UI
+`hexiel --serve` opens the same agent in a browser: streamed markdown chat,
+collapsible tool-call cards with result previews, approval dialogs, model
+picker, context/compaction gauge, todo panel, memory and sessions browser,
+and a compact button. Local-only by default; `--host 0.0.0.0` prints a loud
+warning (anyone who can reach the port can run shell commands on your machine).
 
-When you're ready to make this README your own, just edit this file and use the handy template below (or feel free to structure it however you want - this is just a starting point!). Thanks to [makeareadme.com](https://www.makeareadme.com/) for this template.
+![hexiel web UI](docs/screenshots/web.png)
 
-## Suggestions for a good README
+### OpenWebUI compatibility
+Two doors from the web server:
+1. **Consume hexiel from OpenWebUI**: point an OpenWebUI "connection" (or any
+   OpenAI client) at `http://127.0.0.1:8777/v1/chat/completions` — streaming
+   included. Read-only tools (search, fetch, glob/grep/read, test) stay
+   available to the model; write tools are disabled behind an explicit
+   "unavailable over the API" message.
+2. **Use OpenWebUI plugins inside hexiel**: drop existing `Tools`, `Pipe`, or
+   `Filter` plugin files into `plugins/` (project or
+   `~/.local/share/hexiel/plugins/`). Their public methods become tools with
+   type-hint-derived schemas, `Valves` are honored, and `Filter.inlet` runs on
+   your messages. No porting — your existing community tools just work.
 
-Every project is different, so consider which of these sections apply to yours. The sections used in the template are suggestions for most open source projects. Also keep in mind that while a README can be too long and detailed, too long is better than too short. If you think your README is too long, consider utilizing another form of documentation rather than cutting out information.
+### Providers (any big model, local or cloud)
+Presets ship for Ollama (local + cloud), Anthropic, OpenAI, Gemini (via its
+OpenAI-compatible endpoint), xAI, OpenRouter, and DeepSeek — plus any
+OpenAI-compatible server (vLLM, LM Studio, TGI). `/models` lists your live
+Ollama inventory and `/model <name>` adopts any of it, creating a profile on
+the fly. Keys are read from the `*_API_KEY` env names in each profile.
 
-## Name
-Choose a self-explaining name for your project.
+## What runs locally vs. what costs tokens
 
-## Description
-Let people know what your project can do specifically. Provide context and add a link to any reference visitors might be unfamiliar with. A list of Features or a Background subsection can also be added here. If there are alternatives to your project, this is a good place to list differentiating factors.
-
-## Badges
-On some READMEs, you may see small images that convey metadata, such as whether or not all the tests are passing for the project. You can use Shields to add some to your README. Many services also have instructions for adding a badge.
-
-## Visuals
-Depending on what you are making, it can be a good idea to include screenshots or even a video (you'll frequently see GIFs rather than actual videos). Tools like ttygif can help, but check out Asciinema for a more sophisticated method.
-
-## Installation
-Within a particular ecosystem, there may be a common way of installing things, such as using Yarn, NuGet, or Homebrew. However, consider the possibility that whoever is reading your README is a novice and would like more guidance. Listing specific steps helps remove ambiguity and gets people to using your project as quickly as possible. If it only runs in a specific context like a particular programming language version or operating system or has dependencies that have to be installed manually, also add a Requirements subsection.
-
-## Usage
-Use examples liberally, and show the expected output if you can. It's helpful to have inline the smallest example of usage that you can demonstrate, while providing links to more sophisticated examples if they are too long to reasonably include in the README.
-
-## Support
-Tell people where they can go to for help. It can be any combination of an issue tracker, a chat room, an email address, etc.
-
-## Roadmap
-If you have ideas for releases in the future, it is a good idea to list them in the README.
-
-## Contributing
-State if you are open to contributions and what your requirements are for accepting them.
-
-For people who want to make changes to your project, it's helpful to have some documentation on how to get started. Perhaps there is a script that they should run or some environment variables that they need to set. Make these steps explicit. These instructions could also be useful to your future self.
-
-You can also document commands to lint the code or run tests. These steps help to ensure high code quality and reduce the likelihood that the changes inadvertently break something. Having instructions for running tests is especially helpful if it requires external setup, such as starting a Selenium server for testing in a browser.
-
-## Authors and acknowledgment
-Show your appreciation to those who have contributed to the project.
+| Work | Where it runs |
+|---|---|
+| Toolchain discovery, directory mapping, file indexing | local (Python) |
+| grep/glob/list results, read outputs — budgeted & compressed | local, then compacted |
+| Waiting for tests, containers, long commands | local; only the verdict + failure summary reaches the model |
+| Duplicate tool calls within a turn | answered from cache (`(cached)`) |
+| Web pages fetched for research | distilled to text on disk; summaries in context |
+| Image inspection | dimensions read locally; the model gets an attached image, not a dump |
+| Reasoning, planning, code writing | the model — spend tokens there, nowhere else |
 
 ## License
-For open source projects, say how it is licensed.
 
-## Project status
-If you have run out of energy or time for your project, put a note at the top of the README saying that development has slowed down or stopped completely. Someone may choose to fork your project or volunteer to step in as a maintainer or owner, allowing your project to keep going. You can also make an explicit request for maintainers.
+GPLv3 with the [Commons Clause](LICENSE): hexiel is free to use, study, fork,
+and contribute — **not** free to sell as a product or service. See
+[CONTRIBUTING.md](CONTRIBUTING.md) for the MR-based contribution flow.
+
+## Verification
+
+```bash
+.venv/bin/pytest          # 20 unit tests: tools, llm conversion, compaction,
+                          # todo, gitlab parsing, OpenWebUI adapter
+hexiel --doctor           # environment preflight
+```

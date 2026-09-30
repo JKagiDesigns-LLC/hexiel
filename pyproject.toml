@@ -1,0 +1,28 @@
+[project]
+name = "hexiel"
+version = "0.2.0"
+description = "Hexiel — terminal/agent coding assistant: pluggable providers, file-based memory, skills, auto-compaction, native toolchain integration, self-healing, GitLab MR flow, browser UI, OpenWebUI compatibility"
+requires-python = ">=3.11"
+dependencies = [
+    "textual>=0.86",
+    "httpx>=0.27",
+]
+
+[project.scripts]
+hexiel = "hexiel.main:main"
+
+[project.optional-dependencies]
+serve = ["aiohttp>=3.9"]
+
+[tool.setuptools.packages.find]
+include = ["hexiel*"]
+
+[tool.setuptools.package-data]
+hexiel = ["web/*"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

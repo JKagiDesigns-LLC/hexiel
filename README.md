@@ -10,7 +10,7 @@
   A free, self-hostable alternative to Claude Code and opencode.
 </p>
 
-<p align="center"><b>🌐 Website:</b> <a href="https://jkagidesigns1.gitlab.io/public/applications/hexiel/">jkagidesigns1.gitlab.io/public/applications/hexiel</a> · designed by <a href="https://www.jkagidesigns.com">JKagiDesigns LLC</a></p>
+<p align="center"><b>🌐 Website:</b> <a href="https://hexiel-f64d26.gitlab.io/">hexiel-f64d26.gitlab.io</a> · designed by <a href="https://www.jkagidesigns.com">JKagiDesigns LLC</a></p>
 
 <p align="center">
   <img src="docs/screenshots/tui-welcome.png" alt="hexiel terminal UI welcome screen" width="49%">

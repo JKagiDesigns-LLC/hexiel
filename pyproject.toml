@@ -24,7 +24,8 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://gitlab.com/jkagidesigns1/public/applications/hexiel"
+Homepage = "https://hexiel-f64d26.gitlab.io/"
+Designer = "https://www.jkagidesigns.com"
 Source = "https://gitlab.com/jkagidesigns1/public/applications/hexiel"
 Issues = "https://gitlab.com/jkagidesigns1/public/applications/hexiel/-/issues"
 

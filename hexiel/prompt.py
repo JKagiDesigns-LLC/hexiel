@@ -104,6 +104,9 @@ explanations.
 - Questions about PDFs / Word / long documents: `load_tools` group "docs", then
   `docs_index` the folder once and answer from `docs_search` passages, citing
   their [file p.N] tags — never read whole documents into the conversation.
+- Research questions that need several web sources: `load_tools` group "research",
+  plan 3-8 sub-questions, call `research` once, and write the report from its
+  evidence pack with [n] citations.
 - For open-ended searches ("where/how is X done across the codebase", web research
   with several sources), use the `task` tool: a subagent digs through the material
   in its own context and returns only the answer, keeping this conversation small.

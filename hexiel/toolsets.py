@@ -12,6 +12,7 @@ GROUPS = {
             "Excel read/write, charts",
     "schedule": "scheduled/recurring jobs (cron-like, runs even when hexiel is closed)",
     "docs": "question-answering over PDFs / Word / Markdown documents with page citations",
+    "research": "deep web research: many searches + pages read in parallel, cited evidence pack",
 }
 DATA_EXTS = {".csv", ".tsv", ".xlsx", ".xlsm", ".xls", ".parquet", ".db", ".sqlite", ".sqlite3"}
 SKIP = {".git", "node_modules", ".venv", "venv", "__pycache__", "dist", "build", ".hexiel"}
@@ -26,6 +27,9 @@ def _group_tools(group: str) -> list:
     if group == "docs":
         from .docqa import doc_tools
         return doc_tools()
+    if group == "research":
+        from .research import research_tools
+        return research_tools()
     return []
 
 

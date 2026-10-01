@@ -643,24 +643,42 @@ def _web_fetch(args: dict, ctx: ToolContext) -> ToolResult:
     return text_result(head, is_error=resp.status_code >= 400)
 
 
+def search_results(query: str, limit: int, ctx: ToolContext) -> list[dict]:
+    """[{title, url, snippet}] from the configured backend (raises on failure)."""
+    if ctx.search_backend.startswith("searx"):
+        if not ctx.searxng_url:
+            raise RuntimeError("search_backend=searxng but searxng_url is not set")
+        base = ctx.searxng_url.rstrip("/")
+        with httpx.Client(timeout=30, follow_redirects=True) as client:
+            resp = client.get(f"{base}/search", params={"q": query, "format": "json"},
+                              headers={"user-agent": "hexiel-agent/0.1"})
+            resp.raise_for_status()
+            data = resp.json()
+        return [{"title": r.get("title", ""), "url": r.get("url", ""),
+                 "snippet": r.get("content", "")} for r in data.get("results", [])[:limit]]
+    return _parse_ddg(_duckduckgo_html(query), limit)
+
+
+def fetch_text(url: str, ctx: ToolContext, timeout: float = 20) -> str:
+    """Distilled page text (also parked in the web cache). Raises on failure."""
+    with httpx.Client(timeout=timeout, follow_redirects=True) as client:
+        resp = client.get(url, headers={"user-agent": "hexiel-agent/0.1 (+local)"})
+    resp.raise_for_status()
+    body = html_to_text(resp.text) if "html" in resp.headers.get("content-type", "") else resp.text
+    try:
+        path = _fetch_cache_path(url, ctx)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(body)
+    except OSError:
+        pass
+    return body
+
+
 def _web_search(args: dict, ctx: ToolContext) -> ToolResult:
     query = args["query"]
     limit = int(args.get("max_results") or 5)
     try:
-        if ctx.search_backend.startswith("searx"):
-            if not ctx.searxng_url:
-                return text_result("error: search_backend=searxng but searxng_url is not set", True)
-            base = ctx.searxng_url.rstrip("/")
-            with httpx.Client(timeout=30, follow_redirects=True) as client:
-                resp = client.get(f"{base}/search", params={"q": query, "format": "json"},
-                                  headers={"user-agent": "hexiel-agent/0.1"})
-                resp.raise_for_status()
-                data = resp.json()
-            results = [{"title": r.get("title", ""), "url": r.get("url", ""),
-                        "snippet": r.get("content", "")} for r in data.get("results", [])[:limit]]
-        else:
-            html = _duckduckgo_html(query)
-            results = _parse_ddg(html, limit)
+        results = search_results(query, limit, ctx)
     except Exception as exc:  # noqa: BLE001
         return text_result(f"error: search failed: {exc}", True)
     if not results:

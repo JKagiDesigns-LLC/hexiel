@@ -3,3 +3,4 @@ hexiel.egg-info/
 __pycache__/
 *.pyc
 .hexiel/
+dist/

@@ -1,9 +1,10 @@
 [project]
 name = "hexiel"
-version = "0.2.8"
+version = "0.2.9"
 description = "Open-source AI coding agent for the terminal and browser — runs on local Ollama models (even on modest hardware) or any cloud LLM. A self-hostable alternative to Claude Code and opencode."
 readme = "README.md"
-license = { file = "LICENSE" }
+license = "LicenseRef-GPL-3.0-with-Commons-Clause"
+license-files = ["LICENSE"]
 requires-python = ">=3.11"
 keywords = ["ai", "coding-agent", "ai-coding-assistant", "llm", "ollama", "local-llm",
             "terminal", "tui", "cli", "claude-code-alternative", "opencode-alternative",
@@ -24,7 +25,7 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://hexiel-f64d26.gitlab.io/"
+Homepage = "https://hexiel.tech"
 Designer = "https://www.jkagidesigns.com"
 Source = "https://gitlab.com/jkagidesigns1/public/applications/hexiel"
 Issues = "https://gitlab.com/jkagidesigns1/public/applications/hexiel/-/issues"
@@ -42,7 +43,7 @@ include = ["hexiel*"]
 hexiel = ["web/*"]
 
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [tool.pytest.ini_options]

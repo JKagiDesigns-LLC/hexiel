@@ -1,8 +1,8 @@
 """Self-update: find the newest released version on GitLab, install it, restart.
 
-A git checkout (the normal `git clone` + `pip install -e` install) updates with
-`git pull --ff-only` and refuses when there are local changes; any other
-install upgrades through pip from the release tag. Checks are cached so the
+A git checkout (`git clone` + `pip install -e`) updates with `git pull --ff-only`
+and refuses when there are local changes; a `pip install hexiel` install
+upgrades from PyPI. Checks are cached so the
 network is asked at most every few hours, and never block startup."""
 
 import json
@@ -20,7 +20,6 @@ from .config import home_data_dir
 
 PROJECT = "jkagidesigns1/public/applications/hexiel"
 TAGS_API = f"https://gitlab.com/api/v4/projects/{PROJECT.replace('/', '%2F')}/repository/tags"
-PIP_SOURCE = f"git+https://gitlab.com/{PROJECT}.git"
 CHECK_EVERY = 6 * 3600
 REPO = Path(__file__).resolve().parent.parent
 
@@ -90,10 +89,8 @@ def apply_update() -> tuple[bool, str]:
             return False, "git pull failed:\n" + "\n".join(log)
         _git("fetch", "--tags")
         cmd = [sys.executable, "-m", "pip", "install", "-q", "-e", f"{REPO}[serve]"]
-    else:
-        latest = check(force=True)["latest"]
-        ref = f"@v{latest}" if latest else ""
-        cmd = [sys.executable, "-m", "pip", "install", "-q", "--upgrade", f"hexiel[serve] @ {PIP_SOURCE}{ref}"]
+    else:   # pip install: upgrade from PyPI
+        cmd = [sys.executable, "-m", "pip", "install", "-q", "--upgrade", "hexiel[serve]"]
     pip = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
     log.append(pip.stdout.strip() or pip.stderr.strip()[-800:] or "dependencies up to date")
     if pip.returncode != 0:

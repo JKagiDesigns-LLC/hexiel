@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/logo.svg" alt="hexiel logo — angel wings around an H" width="180">
+  <img src="https://gitlab.com/jkagidesigns1/public/applications/hexiel/-/raw/main/docs/logo.svg" alt="hexiel logo — angel wings around an H" width="180">
 </p>
 
 <h1 align="center">hexiel</h1>
@@ -10,11 +10,11 @@
   A free, self-hostable alternative to Claude Code and opencode.
 </p>
 
-<p align="center"><b>🌐 Website:</b> <a href="https://hexiel-f64d26.gitlab.io/">hexiel-f64d26.gitlab.io</a> · designed by <a href="https://www.jkagidesigns.com">JKagiDesigns LLC</a></p>
+<p align="center"><b>🌐 Website:</b> <a href="https://hexiel.tech">hexiel.tech</a> · designed by <a href="https://www.jkagidesigns.com">JKagiDesigns LLC</a></p>
 
 <p align="center">
-  <img src="docs/screenshots/tui-welcome.png" alt="hexiel terminal UI welcome screen" width="49%">
-  <img src="docs/screenshots/tui.png" alt="hexiel fixing a bug in the terminal UI" width="49%">
+  <img src="https://gitlab.com/jkagidesigns1/public/applications/hexiel/-/raw/main/docs/screenshots/tui-welcome.png" alt="hexiel terminal UI welcome screen" width="49%">
+  <img src="https://gitlab.com/jkagidesigns1/public/applications/hexiel/-/raw/main/docs/screenshots/tui.png" alt="hexiel fixing a bug in the terminal UI" width="49%">
 </p>
 
 ## Why hexiel
@@ -38,6 +38,16 @@
 - **Free to use, can't be resold.** GPLv3 + Commons Clause.
 
 ## Quickstart
+
+The quickest way, from [PyPI](https://pypi.org/project/hexiel/):
+
+```bash
+pipx install 'hexiel[serve]'          # or: pip install 'hexiel[serve]'
+hexiel --doctor                       # preflight checks with copy-paste fixes
+cd ~/code/your-project && hexiel
+```
+
+Or from source (to hack on it):
 
 ```bash
 git clone https://gitlab.com/jkagidesigns1/public/applications/hexiel.git
@@ -79,7 +89,7 @@ hexiel -m sonnet          # pick a model profile for this run
 
 | | |
 |---|---|
-| <img src="docs/screenshots/tui-menu.png" alt="slash command menu"> | <img src="docs/screenshots/tui-config.png" alt="settings editor"> |
+| <img src="https://gitlab.com/jkagidesigns1/public/applications/hexiel/-/raw/main/docs/screenshots/tui-menu.png" alt="slash command menu"> | <img src="https://gitlab.com/jkagidesigns1/public/applications/hexiel/-/raw/main/docs/screenshots/tui-config.png" alt="settings editor"> |
 | **Type `/`** for the command menu — every command and skill with what it does; ↑/↓, Tab to complete, Enter to run. `/model ` lists your profiles. | **`/config`** shows every setting in a table. Pick a row, pick a value, then choose **this session** or **save permanently** (one line of `config.toml` changes; comments are kept). |
 
 - **Screenshots:** type an image path in your message (`why does @shot.png look
@@ -102,7 +112,7 @@ and sessions. Local-only by default; `--host 0.0.0.0` prints a loud warning
 
 | | |
 |---|---|
-| <img src="docs/screenshots/web.png" alt="hexiel browser UI"> | <img src="docs/screenshots/web-settings.png" alt="browser settings panel"> |
+| <img src="https://gitlab.com/jkagidesigns1/public/applications/hexiel/-/raw/main/docs/screenshots/web.png" alt="hexiel browser UI"> | <img src="https://gitlab.com/jkagidesigns1/public/applications/hexiel/-/raw/main/docs/screenshots/web-settings.png" alt="browser settings panel"> |
 
 ## Models
 

@@ -16,26 +16,46 @@ secret_detection:
 include:
 - template: Security/Secret-Detection.gitlab-ci.yml
 
-# GitLab Pages: publishes site/ (the hexiel website) on every push to main.
-# __SITE_URL__ / __VERSION__ / __DATE__ placeholders are filled from CI variables,
-# so canonical links and social cards follow the real Pages URL or custom domain.
+# GitLab Pages: the old address now redirects to https://hexiel.tech (the site
+# itself lives in gitlab.com/jkagidesigns1/hexiel-website).
 pages:
   stage: deploy
   image: alpine:3.20
   rules:
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
   script:
-    - mkdir -p public/screenshots
-    - cp -r site/* public/
-    - cp docs/logo.svg docs/logo.png public/
-    - cp hexiel/web/logo.svg public/logo-mark.svg
-    - cp docs/screenshots/*.png public/screenshots/
-    - rm -f public/*.md
-    - VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' pyproject.toml)
-    - SITE_URL=${CI_PAGES_URL%/}
-    - TODAY=$(date -u +%Y-%m-%d)
-    - sed -i "s|__SITE_URL__|$SITE_URL|g; s|__VERSION__|$VERSION|g; s|__DATE__|$TODAY|g" public/*.html public/*.txt public/*.xml
-    - "! grep -rq __SITE_URL__ public"   # fail the job if any placeholder survived
+    - mkdir -p public && cp pages-redirect/* public/
   artifacts:
     paths:
       - public
+
+# PyPI release on version tags (vX.Y.Z) via Trusted Publishing — no stored secret.
+# PyPI side: publisher for project "hexiel", namespace jkagidesigns1/public/applications,
+# project hexiel, pipeline .gitlab-ci.yml, environment "pypi".
+pypi-build:
+  stage: deploy
+  image: python:3.12-bookworm
+  rules:
+    - if: $CI_COMMIT_TAG =~ /^v\d+\.\d+\.\d+$/
+  script:
+    - python -m pip install -q build twine
+    - python -m build
+    - python -m twine check --strict dist/*
+    - test "v$(python -c 'import tomllib;print(tomllib.load(open("pyproject.toml","rb"))["project"]["version"])')" = "$CI_COMMIT_TAG"
+  artifacts:
+    paths:
+      - dist/
+
+pypi-publish:
+  stage: deploy
+  image: python:3.12-bookworm
+  needs: [pypi-build]
+  rules:
+    - if: $CI_COMMIT_TAG =~ /^v\d+\.\d+\.\d+$/
+  environment: pypi
+  id_tokens:
+    PYPI_ID_TOKEN:
+      aud: pypi
+  script:
+    - python -m pip install -q -U twine
+    - python -m twine upload dist/*

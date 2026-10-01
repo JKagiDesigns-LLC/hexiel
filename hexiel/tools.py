@@ -1,6 +1,7 @@
 """The native tool set: files, images, web, testing, containers, skills, bash."""
 
 import base64
+import hashlib
 import os
 import re
 import shlex
@@ -48,14 +49,26 @@ class ToolContext:
     skills: list = field(default_factory=list)
     on_step: object = None   # approve gate for propose flows: (kind, description) -> bool
     result_cache: dict = field(default_factory=dict)   # dedup pure lookups within a session
+    dir_cache: dict = field(default_factory=dict)      # path/depth -> (fingerprint, output)
 
 
 # pure read tools whose identical calls can be answered from cache (token economy)
-CACHEABLE_TOOLS = {"read", "grep", "glob", "list", "file_info", "web_fetch", "view_image"}
+CACHEABLE_TOOLS = {"read", "grep", "glob", "list", "map", "file_info", "web_fetch", "view_image"}
 
 
 def text_result(text: str, is_error: bool = False) -> ToolResult:
     return ToolResult(text=text[:MAX_OUTPUT], is_error=is_error)
+
+
+def head_tail(text: str, head: int = 10_000, tail: int = 5_000) -> str:
+    """Keep both ends of a long local output — errors surface at the top
+    (head) and the verdict/summary lands at the bottom (tail); the middle
+    of a wall of logs is rarely worth its tokens."""
+    if len(text) <= head + tail:
+        return text
+    elided = len(text) - head - tail
+    return (text[:head] + f"\n\n... [{elided} chars elided locally to save context] ...\n\n"
+            + text[-tail:])
 
 
 # ---------------------------------------------------------------- bash
@@ -74,9 +87,9 @@ def _run_bash(args: dict, ctx: ToolContext) -> ToolResult:
         return text_result("error: /bin/bash unavailable", True)
     out = []
     if proc.stdout:
-        out.append(proc.stdout[:MAX_OUTPUT])
+        out.append(head_tail(proc.stdout))
     if proc.stderr.strip():
-        out.append(f"stderr:\n{proc.stderr[:5000]}")
+        out.append(f"stderr:\n{head_tail(proc.stderr.strip(), 4000, 2000)}")
     summary = "\n".join(out) or "(no output)"
     if proc.returncode != 0:
         summary += f"\n(exit code {proc.returncode})"
@@ -232,6 +245,73 @@ def _list(args: dict, ctx: ToolContext) -> ToolResult:
     return text_result("\n".join(lines) or "(empty)")
 
 
+def _tree_lines(path: Path, depth: int, budget: int) -> tuple[list[str], bool]:
+    """Recursive compact tree: `dir/` then `size name` lines. Local work only."""
+    lines: list[str] = []
+    try:
+        entries = sorted(path.iterdir(), key=lambda e: (not e.is_dir(), e.name.lower()))
+    except OSError:
+        return ["(unscannable)"], False
+    for e in entries:
+        if e.name in _SKIP_DIRS or e.name.startswith(".") or e.name == "__pycache__":
+            continue
+        try:
+            if e.is_dir():
+                if depth <= 0:
+                    lines.append(f"{e.name}/")
+                    continue
+                lines.append(f"{e.name}/")
+                if len(lines) > budget:
+                    return lines, True
+                sub, truncated = _tree_lines(e, depth - 1, budget - len(lines))
+                lines.extend("  " + l for l in sub)
+                if truncated:
+                    return lines, True
+            else:
+                size = e.stat().st_size
+                lines.append(f"{e.name:40} {size // 1024 or 1}k")
+        except OSError:
+            continue
+        if len(lines) > budget:
+            return lines, True
+    return lines, False
+
+
+def _fingerprint(path: Path) -> tuple:
+    """Cheap change signal for a tree: top-two-level dir name+mtime tuples.
+    Saves re-walking when nothing changed; miss still rescans only locally."""
+    marks = []
+    try:
+        marks.append((str(path), path.stat().st_mtime_ns))
+        for e in sorted(path.iterdir()):
+            if e.is_dir():
+                marks.append((e.name, e.stat().st_mtime_ns))
+    except OSError:
+        pass
+    return tuple(marks)
+
+
+def _map(args: dict, ctx: ToolContext) -> ToolResult:
+    """Compact project tree with file sizes — orientation in ONE cheap call
+    instead of chained list/glob/read probing. Cached until the tree changes."""
+    base = _resolve_path(args.get("path") or ".", ctx)
+    depth = min(int(args.get("depth") or 3), 6)
+    if not base.is_dir():
+        return text_result("error: not a directory", True)
+    fp = _fingerprint(base)
+    key = (str(base), depth)
+    cached = ctx.dir_cache.get(key)
+    if cached and cached[0] == fp:
+        return text_result(cached[1] + "\n(cached — project map unchanged)")
+    lines, truncated = _tree_lines(base, depth, budget=400)
+    out = f"project map of {base} (depth {depth}{', truncated' if truncated else ''}):\n"
+    out += "\n".join(lines)
+    if truncated:
+        out += "\n...(size budget reached; drill in with map path=... or list)"
+    ctx.dir_cache[key] = (fp, out)
+    return text_result(out)
+
+
 def _file_info(args: dict, ctx: ToolContext) -> ToolResult:
     path = _resolve_path(args["path"], ctx)
     try:
@@ -346,11 +426,15 @@ class _TextExtract(HTMLParser):
         self._skip = 0
 
     def handle_starttag(self, tag, attrs) -> None:
-        if tag in ("script", "style", "noscript", "template"):
+        # nav/header/footer boilerplate is stripped locally so the model pays
+        # tokens for content only
+        if tag in ("script", "style", "noscript", "template", "nav",
+                   "header", "footer", "aside", "form", "svg"):
             self._skip += 1
 
     def handle_endtag(self, tag) -> None:
-        if self._skip and tag in ("script", "style", "noscript", "template"):
+        if self._skip and tag in ("script", "style", "noscript", "template", "nav",
+                                  "header", "footer", "aside", "form", "svg"):
             self._skip -= 1
 
     def handle_data(self, data) -> None:
@@ -364,7 +448,20 @@ def html_to_text(html: str) -> str:
         parser.feed(html)
     except Exception:  # noqa: BLE001 - malformed html must not kill the tool
         pass
-    return re.sub(r"\n{3,}", "\n\n", "\n".join(parser.chunks))
+    text = re.sub(r"\n{3,}", "\n\n", "\n".join(parser.chunks))
+    # collapse run-together headings/menu repeats that survive tag stripping
+    seen_prev = None
+    deduped = []
+    for line in text.splitlines():
+        if line != seen_prev:
+            deduped.append(line)
+        seen_prev = line
+    return "\n".join(deduped)
+
+
+def _fetch_cache_path(url: str, ctx: ToolContext) -> Path:
+    digest = hashlib.sha1(url.encode()).hexdigest()[:16]
+    return Path(ctx.cwd) / ".hexiel" / "webcache" / f"{digest}.txt"
 
 
 def _web_fetch(args: dict, ctx: ToolContext) -> ToolResult:
@@ -378,11 +475,22 @@ def _web_fetch(args: dict, ctx: ToolContext) -> ToolResult:
         return text_result(f"error: fetch failed: {exc}", True)
     ctype = resp.headers.get("content-type", "")
     body = html_to_text(resp.text) if "html" in ctype else resp.text
-    limit = int(args.get("max_chars") or 24000)
+    limit = int(args.get("max_chars") or 16000)
+    # full distilled text on disk: `read offset/limit` it if more is needed,
+    # without another fetch (and without another web round-trip)
+    cache_path = _fetch_cache_path(url, ctx)
+    try:
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        cache_path.write_text(body)
+    except OSError:
+        cache_path = None
     head = f"{resp.url} [{resp.status_code}] {ctype}\n\n"
     head += body[:limit + 80]
     if len(body) > limit:
-        head += f"\n\n... (truncated, {len(body)} chars total)"
+        more = (f"\n\n... (truncated at {limit}; {len(body)} chars total — "
+                f"`read {cache_path}` with offset/limit for the rest)"
+                if cache_path else "\n\n... (truncated)")
+        head += more
     return text_result(head, is_error=resp.status_code >= 400)
 
 
@@ -531,7 +639,7 @@ def _container(args: dict, ctx: ToolContext) -> ToolResult:
     except subprocess.TimeoutExpired:
         return text_result(f"error: container command timed out: {shlex.join(cmd)}", True)
     out = proc.stdout + ("\n" + proc.stderr if proc.stderr.strip() else "")
-    summary = out.strip()[:MAX_OUTPUT] or "(no output)"
+    summary = head_tail(out.strip()) or "(no output)"
     if proc.returncode != 0:
         summary += f"\n(exit code {proc.returncode})"
     return text_result(f"$ {shlex.join(cmd)}\n{summary}", is_error=proc.returncode != 0)
@@ -636,6 +744,10 @@ def build_tools(chain: Toolchain) -> list[ToolDef]:
                 readonly=True, run=_grep),
         ToolDef("list", "List a directory's entries with sizes.",
                 obj(path={"type": "string"}), readonly=True, run=_list),
+        ToolDef("map", "Compact project tree (dirs + file sizes) for orientation — "
+                "one cheap local call instead of chained list/glob probing. Cached.",
+                obj(path={"type": "string"}, depth={"type": "integer"}),
+                readonly=True, run=_map),
         ToolDef("file_info", "Stat a file: size, mtime, permissions, line count, first lines.",
                 obj(path={"type": "string"}), readonly=True, run=_file_info),
         ToolDef("view_image", "Attach a local image (png/jpeg/gif/webp) to the conversation "

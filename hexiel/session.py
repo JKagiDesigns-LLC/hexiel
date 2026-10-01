@@ -254,11 +254,35 @@ class Session:
 
     # ---------------------------------------------------------------- compaction
 
+    def _elide_stale_tools(self) -> int:
+        """Token-economy pre-step: rewrite old tool results (everything before
+        the kept tail) as one-line stamps so compaction summarizes cheap text.
+        Returns the number of messages elided."""
+        split = self._turn_split(self.messages)
+        if split <= 0:
+            return 0
+        elided = 0
+        for msg in self.messages[:split]:
+            if msg.get("role") == "tool" and msg.get("content"):
+                kind_guess = len(msg["content"])
+                msg["content"] = f"[prior tool output elided: ~{kind_guess} chars]"
+                elided += 1
+        return elided
+
     def compact(self, provider, manual: bool = False) -> None:
-        """Summarize the older history and replace it, Claude-Code style."""
+        """Summarize the older history and replace it, Claude-Code style.
+        First a free local step: stale tool outputs are stamped out of history;
+        if that alone shrinks the context under the threshold, no model call is
+        spent on a summarized transcript at all."""
         if self.compacting:
             return
         messages = self.messages
+        n_elided = self._elide_stale_tools()
+        if n_elided and not manual and not self.compaction_needed():
+            self.on_event("compact_end", {"elided": n_elided}, {})
+            self.save()
+            return
+        self.messages = messages  # elision stays in history either way
         split = self._turn_split(messages)
         if split == 0:
             if not manual:

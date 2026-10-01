@@ -54,7 +54,8 @@ hexiel --repl             # plain readline loop for piped/automated use
 
 ### Tools (all built in)
 `bash` · `read` (line-numbered) · `write` · `edit` (find-and-replace with
-exactness guarantees) · `glob` · `grep` (ripgrep-first) · `list` · `file_info`
+exactness guarantees) · `glob` · `grep` (ripgrep-first) · `list` · `map`
+(project tree, cached) · `file_info`
 · `test` (drives your detected runner) · `container` (docker/podman + compose)
 · `view_image` / `image_edit` (ImageMagick) · `web_fetch` / `web_search`
 (DuckDuckGo or SearXNG, no key needed) · `memory` · `todo` · `gitlab_mr` ·
@@ -133,9 +134,12 @@ the fly. Keys are read from the `*_API_KEY` env names in each profile.
 |---|---|
 | Toolchain discovery, directory mapping, file indexing | local (Python) |
 | grep/glob/list results, read outputs — budgeted & compressed | local, then compacted |
+| Bash/container long output (walls of logs) | head + tail kept, middle elided with a stamp |
 | Waiting for tests, containers, long commands | local; only the verdict + failure summary reaches the model |
 | Duplicate tool calls within a turn | answered from cache (`(cached)`) |
+| Project orientation (`map` tool) | locally built compact tree, cached until files change |
 | Web pages fetched for research | distilled to text on disk; summaries in context |
+| Old tool outputs in long sessions | stamped out locally before full compaction — often no summarization call needed |
 | Image inspection | dimensions read locally; the model gets an attached image, not a dump |
 | Reasoning, planning, code writing | the model — spend tokens there, nowhere else |
 

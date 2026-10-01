@@ -78,11 +78,14 @@ class WebState:
 
     async def drain(self, app) -> None:
         """Event-loop task: pull messages pushed by worker threads and send them
-        to every websocket. Plain awaits — no cross-thread scheduling."""
-        import queue as _q
+        to every websocket. Plain awaits — no cross-thread scheduling.
+        `queue.get` runs in a thread because broadcast() may come from worker
+        threads; None is the shutdown sentinel that lets cancellation land."""
         loop = asyncio.get_running_loop()
         while True:
             payload = await loop.run_in_executor(None, self.queue.get)
+            if payload is None:
+                return
             with self.lock:
                 clients = list(self.clients.keys())
             for ws in clients:
@@ -116,10 +119,14 @@ class WebState:
             self.broadcast({"t": "note", "text": "Compacting context (summarizing history)…"})
         elif event == "compact_end":
             stats = payload[0] if payload else {}
-            if stats:
+            if stats.get("before") is not None:
                 self.broadcast({"t": "note", "text":
                                 f"✓ compacted: {stats.get('before', 0) // 1000}k → "
                                 f"{stats.get('after', 0) // 1000}k tokens"})
+            elif stats.get("elided"):
+                self.broadcast({"t": "note", "text":
+                                f"✓ saved ~{stats['elided']} tool outputs from context — "
+                                "no compaction needed"})
         elif event == "incident":
             self.broadcast({"t": "incident", "text": _shorten(str(payload[-1]), 300)})
         elif event == "usage":
@@ -177,7 +184,17 @@ def make_app(session: Session) -> web.Application:
 
     async def start_drain(app):
         app["drain_task"] = asyncio.create_task(state.drain(app))
+
+    async def stop_drain(app):
+        state.queue.put(None)          # unblock the executor get so it can exit
+        task = app.get("drain_task")
+        if task:
+            try:
+                await asyncio.wait_for(asyncio.shield(task), 5)
+            except (asyncio.TimeoutError, asyncio.CancelledError, Exception):
+                pass
     app.on_startup.append(start_drain)
+    app.on_cleanup.append(stop_drain)
 
     async def index(request):
         return web.FileResponse(WEB_DIR / "index.html")

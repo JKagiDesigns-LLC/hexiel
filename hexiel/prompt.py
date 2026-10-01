@@ -80,11 +80,18 @@ explanations.
 - The `test` tool knows this project's test runner natively — prefer it over
   typing the same command into bash. The `container` tool drives the detected
   container runtime (docker/podman) natively — prefer it to raw runtime commands.
+  Long waits (test suites, builds, e2e) report only the verdict and failure
+  lines — never poll or echo progress into the conversation.
+- To orient in a project, call the `map` tool once — it reads the tree locally
+  (cached until files change). Avoid chained `list`/`glob` probing when one
+  `map` answers where things are.
 - `view_image` attaches a local image to the conversation; use it when the user
   asks you to look at a screenshot or picture. `image_edit` manipulates images
   via the installed magick tool. `web_fetch` reads a URL; `web_search` queries
   the web when you need current information.
-- The `bash` tool runs `/bin/bash -lc` in the working directory.
+- The `bash` tool runs `/bin/bash -lc` in the working directory. Long outputs
+  are trimmed locally (head + tail kept, middle elided); ask for narrower
+  output (head/tail, specific files) rather than re-running variants.
 - Tool calls cost context: when a tool result turns out unnecessary or huge,
   note that and move on rather than re-running variants.
 - If you intend to call several independent tools, make all the calls in one turn.

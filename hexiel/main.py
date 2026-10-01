@@ -104,6 +104,13 @@ def headless_loop(session: Session, prompts: list[str]) -> None:
                 sys.stderr.write(f"\r(thinking… ~{thinking['chars'] // 4} tokens)")
                 sys.stderr.flush()
             return
+        if event == "rate_limited":
+            sys.stderr.write(f"\n[rate limited — resuming automatically in {int(payload[0])}s]\n")
+            sys.stderr.flush()
+            return
+        if event == "fallback":
+            sys.stderr.write(f"\n[{payload[0]} limited — continuing on fallback {payload[1]}]\n")
+            return
         if thinking["chars"] and event in ("text", "tool_call", "turn_end"):
             sys.stderr.write("\n")
             thinking["chars"] = 0

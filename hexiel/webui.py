@@ -102,6 +102,11 @@ class WebState:
             self.broadcast({"t": "text", "delta": payload[0]})
         elif event == "thinking":
             self.broadcast({"t": "thinking", "delta": payload[0]})
+        elif event == "rate_limited":
+            self.broadcast({"t": "note", "text": f"⏸ rate limited — resuming automatically in "
+                                                f"~{int(payload[0] // 60)}m{int(payload[0] % 60):02d}s"})
+        elif event == "fallback":
+            self.broadcast({"t": "note", "text": f"↪ {payload[0]} is limited — continuing on {payload[1]}"})
         elif event == "turn_end":
             error = payload[0].get("error") if payload and isinstance(payload[0], dict) else None
             if _kw.get("aborted"):

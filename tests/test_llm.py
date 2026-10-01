@@ -43,3 +43,13 @@ def test_reasoning_echoed_only_when_enabled():
     echoed = _captured_payload("https://api.deepseek.com", echo_reasoning=True)
     asst = [m for m in echoed["messages"] if m["role"] == "assistant"][0]
     assert asst["reasoning_content"] == "I should grep." and asst["tool_calls"]
+
+
+def test_anthropic_cache_breakpoints():
+    from hexiel.llm import _mark_cache_tail
+    out = _mark_cache_tail([{"role": "user", "content": "a"},
+                            {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "x", "content": "r"}]}])
+    assert "cache_control" not in str(out[0])
+    assert out[1]["content"][-1]["cache_control"] == {"type": "ephemeral"}
+    s = _mark_cache_tail([{"role": "user", "content": "hello"}])
+    assert s[0]["content"] == [{"type": "text", "text": "hello", "cache_control": {"type": "ephemeral"}}]

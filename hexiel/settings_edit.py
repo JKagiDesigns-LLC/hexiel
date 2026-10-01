@@ -33,6 +33,10 @@ FIELDS = [
      "help": "share of the context window that triggers auto-compaction"},
     {"key": "settings.request_timeout", "label": "Request timeout", "kind": "number",
      "options": [300, 600, 900, 1800, 3600], "help": "seconds per model request"},
+    {"key": "settings.auto_resume", "label": "Auto-resume", "kind": "bool",
+     "options": [True, False], "help": "wait out provider rate/usage limits and continue automatically"},
+    {"key": "settings.fallback_profile", "label": "Fallback model", "kind": "choice",
+     "help": "profile to switch to when a limit won't reset soon (e.g. your local model); empty = none"},
     {"key": "settings.search_backend", "label": "Web search", "kind": "choice",
      "options": ["duckduckgo", "searxng"], "help": "search engine for the web_search tool"},
     {"key": "settings.searxng_url", "label": "SearXNG URL", "kind": "text", "options": None,
@@ -71,6 +75,8 @@ def options_for(session, key: str) -> list | None:
     field = FIELD_BY_KEY[key]
     if key == "profile":
         return list(config_mod.load_config().models)
+    if key == "settings.fallback_profile":
+        return [""] + [n for n in config_mod.load_config().models if n != session.model_config.name]
     if key == "model.model":
         mc = session.model_config
         found = config_mod.list_ollama_models(mc.base_url) if mc.base_url else []

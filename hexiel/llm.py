@@ -11,6 +11,7 @@ via the AssistantBuffer returned by AssistantBuffer.from_stream().
 """
 
 import json
+import re
 import os
 from collections.abc import Iterator
 
@@ -19,6 +20,85 @@ import httpx
 
 class ProviderError(RuntimeError):
     pass
+
+
+class RateLimitError(ProviderError):
+    """429 / overloaded. retry_after: seconds until the limit resets (None = unknown).
+    long_term: a quota that won't reset soon (monthly cap, billing) — don't sit and wait."""
+
+    def __init__(self, message: str, retry_after: float | None = None, long_term: bool = False):
+        super().__init__(message)
+        self.retry_after = retry_after
+        self.long_term = long_term
+
+
+RETRYABLE_STATUS = {429, 503, 529}          # rate limited, unavailable, Anthropic "overloaded"
+_LONG_TERM = re.compile(r"monthly|weekly|daily (usage )?limit|insufficient_quota|billing|credit balance|"
+                        r"usage limit|quota exceeded|add (usage )?credits", re.I)
+
+
+def _duration(text: str) -> float | None:
+    """'1h2m3.5s' / '6m0s' / '20ms' / '30s' → seconds."""
+    parts = re.findall(r"([\d.]+)\s*(ms|h|m|s)", text)
+    if not parts:
+        return None
+    unit = {"h": 3600, "m": 60, "s": 1, "ms": 0.001}
+    return sum(float(n) * unit[u] for n, u in parts)
+
+
+def retry_after_from(headers, text: str) -> float | None:
+    """Seconds until a rate limit resets, from the standard and provider headers or
+    the error text. None when nothing says."""
+    import datetime
+    import email.utils
+    now = datetime.datetime.now(datetime.timezone.utc)
+    waits: list[float] = []
+    raw = (headers.get("retry-after") or "").strip()
+    if raw:
+        try:
+            waits.append(float(raw))
+        except ValueError:
+            try:
+                waits.append((email.utils.parsedate_to_datetime(raw) - now).total_seconds())
+            except (TypeError, ValueError):
+                pass
+    if not waits:
+        for name, value in headers.items():
+            name = name.lower()
+            if name.startswith("anthropic-ratelimit-") and name.endswith("-reset"):
+                try:
+                    when = datetime.datetime.fromisoformat(value.replace("Z", "+00:00"))
+                    waits.append((when - now).total_seconds())
+                except ValueError:
+                    pass
+            elif name.startswith("x-ratelimit-reset"):
+                d = _duration(value)
+                if d is not None:
+                    waits.append(d)
+    if not waits:
+        m = re.search(r"(?:try again|retry|reset[s]?)\s+(?:in|after)\s+([\dhms. ]+)", text, re.I)
+        if m:
+            d = _duration(m.group(1))
+            if d is not None:
+                waits.append(d)
+        m = re.search(r"reset[s]?\s+(?:at|on)\s+(\d{4}-\d\d-\d\dT[\d:.]+(?:Z|[+-]\d\d:?\d\d)?)", text, re.I)
+        if m:
+            try:
+                when = datetime.datetime.fromisoformat(m.group(1).replace("Z", "+00:00"))
+                if when.tzinfo is None:
+                    when = when.replace(tzinfo=datetime.timezone.utc)
+                waits.append((when - now).total_seconds())
+            except ValueError:
+                pass
+    waits = [w for w in waits if w > 0]
+    return max(waits) if waits else None
+
+
+def raise_for_status(status: int, headers, text: str, who: str) -> None:
+    if status in RETRYABLE_STATUS:
+        raise RateLimitError(f"{who} {status}: {text[:300]}", retry_after_from(headers, text),
+                             long_term=status == 429 and bool(_LONG_TERM.search(text)))
+    raise ProviderError(f"{who} {status}: {text[:500]}")
 
 
 def est_tokens(text: str) -> int:
@@ -64,6 +144,23 @@ class AssistantBuffer:
         if calls:
             msg["tool_calls"] = calls
         return msg
+
+
+def _mark_cache_tail(messages: list[dict]) -> list[dict]:
+    """Put a cache breakpoint on the last content block of the last message."""
+    if not messages:
+        return messages
+    last = messages[-1]
+    content = last.get("content")
+    if isinstance(content, str):
+        if not content:
+            return messages
+        content = [{"type": "text", "text": content}]
+    if not content:
+        return messages
+    content = [dict(b) for b in content]
+    content[-1]["cache_control"] = {"type": "ephemeral"}
+    return messages[:-1] + [{**last, "content": content}]
 
 
 class AnthropicProvider:
@@ -131,8 +228,11 @@ class AnthropicProvider:
         body = {
             "model": model,
             "max_tokens": max_output_tokens,
-            "system": system,
-            "messages": self._convert_messages(messages),
+            # prompt caching: tools + system are cached at the system breakpoint, and the
+            # conversation up to the newest message at the second — each turn re-reads the
+            # history at ~10% of the input price instead of paying for it again
+            "system": [{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}],
+            "messages": _mark_cache_tail(self._convert_messages(messages)),
             "stream": True,
             **extra_body,
         }
@@ -148,14 +248,19 @@ class AnthropicProvider:
             with client.stream("POST", f"{self.base_url}/v1/messages",
                                json=body, headers=headers) as resp:
                 if resp.status_code >= 400:
-                    raise ProviderError(f"anthropic {resp.status_code}: {resp.read().decode()[:500]}")
+                    raise_for_status(resp.status_code, resp.headers, resp.read().decode(), "anthropic")
                 usage = {}
                 kind, idx = "", 0
                 for sse in _iter_sse(resp.iter_lines()):
                     data = json.loads(sse)
                     mtype = data.get("type", "")
                     if mtype == "message_start":
-                        usage["prompt_tokens"] = data["message"]["usage"]["input_tokens"]
+                        u = data["message"]["usage"]
+                        cached = u.get("cache_read_input_tokens") or 0
+                        # with caching, input_tokens only counts the uncached part
+                        usage["prompt_tokens"] = (u.get("input_tokens", 0) + cached
+                                                  + (u.get("cache_creation_input_tokens") or 0))
+                        usage["cached_tokens"] = cached
                     elif mtype == "content_block_start":
                         block = data["content_block"]
                         if block["type"] == "tool_use":
@@ -281,7 +386,7 @@ class OpenAICompatProvider:
                 response.close()
                 if attempt == 1 and "stream_options" in text:
                     continue
-                raise ProviderError(f"provider {response.status_code}: {text}")
+                raise_for_status(response.status_code, response.headers, text, "provider")
             try:
                 usage = {}
                 for sse in _iter_sse(response.iter_lines()):

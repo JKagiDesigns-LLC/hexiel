@@ -53,6 +53,15 @@ ON_COMPACTION_NOTE = (
 )
 
 
+EMPTY_NUDGE = ("(Your previous reply was empty. Continue the task: either call the next tool "
+               "or reply to the user with your answer.)")
+
+
+def _is_empty_reply(msg: dict) -> bool:
+    return (msg.get("role") == "assistant" and not (msg.get("content") or "").strip()
+            and not msg.get("tool_calls"))
+
+
 class Session:
     def __init__(self, model_config: ModelConfig, settings: Settings, cwd: str,
                  tools: list, system_prompt: str, on_event: Callable = None,
@@ -68,6 +77,7 @@ class Session:
         self.created = time.time()
         self.messages: list[dict] = []
         self.mcp_servers: list = []   # started MCP servers (see mcp_client)
+        self._provider_override = None  # set when auto-resume switches to the fallback profile
         self.last_usage: dict = {}
         self.total_completion_tokens = 0
         self.auto_approve = settings.auto_approve
@@ -101,6 +111,8 @@ class Session:
         entry = {"role": "user", "content": "\n".join([user_text, *notes])}
         if images:
             entry["images"] = images
+        # empty assistant replies teach the model to keep answering with nothing
+        self.messages = [m for m in self.messages if not _is_empty_reply(m)]
         self.messages.append(entry)
         self.save()
         provider = llm.make_provider(self.model_config, self.settings)
@@ -109,6 +121,7 @@ class Session:
             for t in self.tools
         ]
         turn = {"tools": 0, "used_todo": False, "item": None, "ok": False}
+        self._provider_override = None   # a fallback switch already changed model_config
         try:
             while True:
                 if self._stop.is_set():
@@ -116,17 +129,32 @@ class Session:
                     return
                 if self.compaction_needed() and not self.compacting:
                     self.compact(provider)
+                self.on_event("request", self.tokens_now())
                 assistant = self._stream_assistant(provider, tool_defs)
+                if _is_empty_reply(assistant) and not getattr(self, "_provider_error", None) \
+                        and not self._stop.is_set():
+                    # some local models occasionally end their reply immediately (one
+                    # end-of-turn token); nudge once instead of storing an empty reply
+                    self.on_event("empty_retry")
+                    self.messages.append({"role": "user", "content": EMPTY_NUDGE})
+                    try:
+                        assistant = self._stream_assistant(provider, tool_defs)
+                    finally:
+                        self.messages.pop()
+                if _is_empty_reply(assistant):
+                    error = getattr(self, "_provider_error", None) or (
+                        "the model returned an empty reply twice — try rephrasing, /compact, "
+                        "or /model to switch models")
+                    self._provider_error = None
+                    if not self._stop.is_set():
+                        self.on_event("turn_end", {"error": error})
+                    else:
+                        self.on_event("turn_end", aborted=True)
+                    return
                 self.messages.append(assistant)
                 self.save()
                 calls = assistant.get("tool_calls") or []
                 if not calls:
-                    if not assistant.get("content", "").strip() and not calls:
-                        if getattr(self, "_provider_error", None):
-                            error, self._provider_error = self._provider_error, None
-                            self.messages.pop()  # drop the empty assistant
-                            self.on_event("turn_end", {"error": error})
-                            return
                     turn["ok"] = True
                     self.on_event("turn_end")
                     return
@@ -175,6 +203,55 @@ class Session:
             pass
 
     def _stream_assistant(self, provider, tool_defs) -> dict:
+        """Stream one assistant response, waiting out rate limits (auto-resume)
+        and switching to the fallback profile when a limit won't reset soon."""
+        attempt = 0
+        while True:
+            try:
+                return self._stream_once(self._provider_override or provider, tool_defs)
+            except llm.RateLimitError as exc:
+                wait = self._limit_wait(exc, attempt)
+                if wait is None:
+                    if self._switch_to_fallback(str(exc)):
+                        attempt = 0
+                        continue
+                    self._provider_error = str(exc) + (
+                        "" if self.settings.auto_resume else " (auto-resume is off)")
+                    return {"role": "assistant", "content": ""}
+                self.on_event("rate_limited", wait, str(exc)[:200])
+                deadline = time.time() + wait
+                while time.time() < deadline:
+                    if self._stop.is_set():
+                        return {"role": "assistant", "content": ""}
+                    time.sleep(min(1.0, deadline - time.time()))
+                self.on_event("resumed")
+                attempt += 1
+
+    def _limit_wait(self, exc: "llm.RateLimitError", attempt: int) -> float | None:
+        """Seconds to wait before retrying, or None to stop waiting."""
+        if not self.settings.auto_resume or exc.long_term and exc.retry_after is None:
+            return None
+        wait = exc.retry_after if exc.retry_after is not None else min(30 * 2 ** attempt, 900)
+        wait += 2                                         # land just after the reset
+        if wait > self.settings.auto_resume_max_wait or attempt >= 12:
+            return None
+        return wait
+
+    def _switch_to_fallback(self, reason: str) -> bool:
+        name = self.settings.fallback_profile
+        if not name or name == self.model_config.name:
+            return False
+        from .config import load_config
+        try:
+            fallback = load_config().model(name)
+        except (KeyError, SystemExit):
+            return False
+        self.on_event("fallback", self.model_config.name, name, reason[:200])
+        self.model_config = fallback
+        self._provider_override = llm.make_provider(fallback, self.settings)
+        return True
+
+    def _stream_once(self, provider, tool_defs) -> dict:
         """Stream one assistant response; returns the finalized message dict."""
         final = None
         reasoning: list[str] = []
@@ -203,6 +280,10 @@ class Session:
                         self.last_usage = usage
                         self.total_completion_tokens += usage.get("completion_tokens", 0)
                         self.on_event("usage", usage)
+        except llm.RateLimitError:
+            if final is None and not reasoning:
+                raise                      # nothing streamed yet: safe to wait and retry
+            self._provider_error = "rate limited mid-response"
         except llm.ProviderError as exc:
             self._provider_error = str(exc)
         final = final if final is not None else {"role": "assistant", "content": ""}

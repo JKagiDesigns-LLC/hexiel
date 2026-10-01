@@ -147,6 +147,9 @@ class Settings:
     request_timeout: int = 900
     search_backend: str = "duckduckgo"
     searxng_url: str = ""
+    auto_resume: bool = True          # wait out rate limits and continue automatically
+    auto_resume_max_wait: int = 21600 # longest wait (s) before giving up / falling back
+    fallback_profile: str = ""        # switch here when a limit won't reset soon (e.g. a local model)
 
 
 @dataclass
@@ -189,6 +192,9 @@ def load_config(model_override: str | None = None) -> Config:
         request_timeout=int(settings_raw.get("request_timeout", 900)),
         search_backend=str(settings_raw.get("search_backend", "duckduckgo")),
         searxng_url=str(settings_raw.get("searxng_url", "")),
+        auto_resume=bool(settings_raw.get("auto_resume", True)),
+        auto_resume_max_wait=int(settings_raw.get("auto_resume_max_wait", 21600)),
+        fallback_profile=str(settings_raw.get("fallback_profile", "")),
     )
 
     default_model = model_override or raw.get("default", next(iter(models), "default"))

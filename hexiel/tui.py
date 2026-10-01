@@ -552,6 +552,15 @@ class ActivityLine(Static):
     def add_chars(self, n: int) -> None:
         self._chars += n
 
+    def reading(self, tokens: int) -> None:
+        if self.display:
+            self._set("reading", f"Model is reading ~{tokens // 1000}k tokens of context")
+
+    def countdown(self, seconds: float) -> None:
+        """Rate limited: show the time until auto-resume instead of a verb."""
+        self._deadline = time.time() + seconds
+        self._set("limited", "Rate limited")
+
     def _set(self, phase: str, verb: str) -> None:
         self._phase, self._verb, self._verb_since = phase, verb, time.time()
 
@@ -561,6 +570,14 @@ class ActivityLine(Static):
             return
         self._frame += 1
         now = time.time()
+        if self._phase == "limited":
+            left = max(int(getattr(self, "_deadline", now) - now), 0)
+            h, rem = divmod(left, 3600)
+            clock = (f"{h}h{rem // 60:02d}m" if h else f"{rem // 60}m{rem % 60:02d}s")
+            at = time.strftime("%H:%M", time.localtime(getattr(self, "_deadline", now)))
+            self.update(f"[{GOLD}]⏸[/] [{GOLD}]Rate limited — resuming automatically in {clock}[/] "
+                        f"[dim](at {at} · [b]ctrl+c[/b] to stop)[/dim]")
+            return
         # long waits rotate the verb so the line visibly stays alive
         if self._phase == "waiting" and now - self._verb_since > 8:
             self._set("waiting", random.choice([v for v in self.WAITING if v != self._verb]))
@@ -992,6 +1009,30 @@ class HexielTUI(App):
         if self._think_chars and event in ("text", "tool_call", "turn_end"):
             chat.mount(Static(f"✓ thought for ~{self._think_chars // 4} tokens", classes="note"))
             self._think_chars = 0
+        if event == "request":
+            tokens = payload[0] if payload else 0
+            if tokens >= 8000:       # long prompts take a while on local hardware: say so
+                self.activity.reading(tokens)
+            return
+        if event == "empty_retry":
+            self.add_note("the model returned an empty reply — nudging it to continue")
+            return
+        if event == "rate_limited":
+            seconds, reason = payload[0], payload[1] if len(payload) > 1 else ""
+            self.activity.countdown(seconds)
+            self.add_note(f"⏸ rate limited — hexiel will resume on its own in ~{int(seconds // 60)}m"
+                          f"{int(seconds % 60):02d}s. ({reason[:120].replace('[', chr(92) + '[')})")
+            return
+        if event == "resumed":
+            self.activity.phase("waiting")
+            self.add_note("▶ limit reset — resuming")
+            return
+        if event == "fallback":
+            old, new, reason = payload[0], payload[1], payload[2] if len(payload) > 2 else ""
+            self.add_note(f"↪ {old} is limited and won't reset soon — continuing on fallback model "
+                          f"[b]{new}[/b] for this session")
+            self._refresh_status()
+            return
         if event == "text":
             self.activity.add_chars(len(payload[0]))
             self.activity.phase("writing")

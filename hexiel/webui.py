@@ -159,12 +159,13 @@ class WebState:
                 else:
                     items.append({"t": "user", "text": body})
             elif role == "assistant":
-                for call in msg.get("tool_calls", []):
-                    pending[call["id"]] = {"id": call["id"], "t": "tool", **short_call(call)}
-                    items.append(pending[call["id"]])
+                # the model's text precedes the tool calls it then makes
                 text = msg.get("content", "")
                 if text.strip():
                     items.append({"t": "assistant", "text": text})
+                for call in msg.get("tool_calls", []):
+                    pending[call["id"]] = {"id": call["id"], "t": "tool", **short_call(call)}
+                    items.append(pending[call["id"]])
             elif role == "tool":
                 entry = pending.get(msg.get("tool_call_id", ""))
                 if entry is not None:
@@ -307,6 +308,24 @@ def make_app(session: Session) -> web.Application:
         state.broadcast({"t": "status", "status": status_state(session)})
         return _json_response({"ok": True})
 
+    async def api_update_get(request):
+        from . import updater
+        loop = asyncio.get_running_loop()
+        force = request.query.get("force") == "1"
+        return _json_response(await loop.run_in_executor(None, lambda: updater.check(force=force)))
+
+    async def api_update_post(request):
+        from . import updater
+        if state.busy:
+            return _json_response({"ok": False, "log": "finish or stop the current turn first"}, 409)
+        loop = asyncio.get_running_loop()
+        ok, log = await loop.run_in_executor(None, updater.apply_update)
+        if ok:
+            session.save()
+            # restart after this response is flushed; the page reconnects by itself
+            loop.call_later(1.0, updater.restart)
+        return _json_response({"ok": ok, "log": log, "restarting": ok})
+
     async def api_config_get(request):
         loop = asyncio.get_running_loop()   # options may query the model server
         rows = await loop.run_in_executor(None, lambda: settings_edit.rows(session, with_options=True))
@@ -416,6 +435,8 @@ def make_app(session: Session) -> web.Application:
     app.router.add_get("/api/state", api_state)
     app.router.add_post("/api/model", api_model)
     app.router.add_post("/api/settings", api_settings)
+    app.router.add_get("/api/update", api_update_get)
+    app.router.add_post("/api/update", api_update_post)
     app.router.add_get("/api/config", api_config_get)
     app.router.add_post("/api/config", api_config_set)
     app.router.add_post("/api/approve", api_approve)

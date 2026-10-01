@@ -5,10 +5,11 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>hexiel</title>
 <link rel="stylesheet" href="/static/style.css">
+  <link rel="icon" type="image/svg+xml" href="/static/logo.svg">
 </head>
 <body>
   <aside id="sidebar">
-    <div id="brand">⚡ hexiel <small>web</small></div>
+    <div id="brand"><img src="/static/logo.svg" alt="" class="logo"> hexiel <small>web</small></div>
     <h3>Sessions</h3>
     <div class="side-section" id="sessions-list"></div>
     <h3>Skills</h3>
@@ -25,6 +26,7 @@
       <button id="compact-btn" title="Summarize history now (replaces tokens)">Compact</button>
       <button id="clear-btn" title="Start a fresh conversation">Clear</button>
       <button id="settings-btn" title="View and change settings">⚙ Settings</button>
+      <button id="update-btn" style="display:none" title="Install the newest hexiel and restart"></button>
       <div class="spacer"></div>
       <div id="todo-badge" class="dim"></div>
       <div id="ctx-label"></div>

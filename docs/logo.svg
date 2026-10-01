@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="hexiel logo: angel wings around an H">
+  <defs>
+    <linearGradient id="wing" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#e9f4f0"/>
+      <stop offset="1" stop-color="#7fb3a5"/>
+    </linearGradient>
+    <linearGradient id="h" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#f3d58a"/>
+      <stop offset="1" stop-color="#c9a24e"/>
+    </linearGradient>
+    <!-- one wing (left); the right wing is its mirror -->
+    <g id="w">
+      <path d="M214 214 C170 150 104 112 26 104 C52 132 70 150 92 160 C66 160 46 158 24 152 C50 182 74 196 104 204 C80 208 60 208 40 204 C68 232 98 244 132 248 C112 256 94 260 76 260 C108 284 142 292 176 290 C162 302 148 310 134 316 C166 326 198 322 222 306 Z"
+            fill="url(#wing)" stroke="#5f9486" stroke-width="5" stroke-linejoin="round"/>
+      <path d="M200 222 C160 190 120 176 70 172 M206 248 C168 232 132 226 96 226 M210 274 C180 270 150 272 120 278"
+            fill="none" stroke="#5f9486" stroke-width="4" stroke-linecap="round" opacity=".7"/>
+    </g>
+  </defs>
+  <rect width="512" height="512" rx="112" fill="#12141a"/>
+  <!-- halo -->
+  <ellipse cx="256" cy="118" rx="74" ry="20" fill="none" stroke="url(#h)" stroke-width="12"/>
+  <use href="#w"/>
+  <use href="#w" transform="translate(512 0) scale(-1 1)"/>
+  <!-- the H -->
+  <g fill="url(#h)" stroke="#8a6d2c" stroke-width="4" stroke-linejoin="round">
+    <path d="M198 176 q0-8 8-8 h22 q8 0 8 8 v72 h40 v-72 q0-8 8-8 h22 q8 0 8 8 v184 q0 8-8 8 h-22 q-8 0-8-8 v-78 h-40 v78 q0 8-8 8 h-22 q-8 0-8-8 Z"/>
+  </g>
+  <text x="256" y="452" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif"
+        font-size="64" font-weight="700" letter-spacing="6" fill="#d7dae0">hexiel</text>
+</svg>

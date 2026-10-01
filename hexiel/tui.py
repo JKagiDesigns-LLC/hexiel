@@ -1,6 +1,7 @@
 """Textual TUI: streaming chat, tool-call rendering, approval modal, context gauge."""
 
 import json
+import os
 import threading
 import time
 from pathlib import Path
@@ -213,6 +214,31 @@ class ConfigScreen(ModalScreen):
         self.dismiss(None)
 
 
+class RestartScreen(ModalScreen):
+    """After an update: restart now (resumes this conversation) or later."""
+
+    BINDINGS = [("r", "pick('restart')", "Restart"), ("escape", "pick('')", "Later")]
+
+    def __init__(self, version: str) -> None:
+        super().__init__()
+        self._version = version
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="scope-box"):
+            yield Label(f"[b]hexiel {self._version} installed[/b]")
+            yield Static("Restart now to use it? Your conversation is saved and resumes "
+                         "automatically.", classes="note")
+            with Horizontal(id="scope-buttons"):
+                yield Button("Restart now  \\[r]", variant="primary", id="restart-now")
+                yield Button("Later  \\[esc]", id="restart-later")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        self.action_pick("restart" if event.button.id == "restart-now" else "")
+
+    def action_pick(self, choice: str) -> None:
+        self.dismiss(choice or None)
+
+
 class ToolLine(Static):
     """One tool invocation line: name, args preview, and result preview once done."""
 
@@ -286,6 +312,7 @@ COMMANDS = [
     ("ship", "[title]", "propose your changes as a GitLab merge request"),
     ("heal", "", "fix recorded hexiel incidents and propose the fix"),
     ("setup-gitlab", "<token>", "save a GitLab access token"),
+    ("update", "", "install the newest hexiel release and restart"),
     ("exit", "", "quit hexiel"),
 ]
 
@@ -501,6 +528,7 @@ class HexielTUI(App):
     #banner { width: 100%; height: 1; padding: 0 2; background: $surface; }
     #chat { height: 1fr; padding: 0 2; }
     #activity { height: 1; padding: 0 2; }
+    #logo { margin: 1 0 0 0; }
     #cmd-menu { height: auto; max-height: 12; margin: 0 1; border: round $accent 50%;
                 background: $surface; }
     #input-row { height: auto; padding: 0 1; }
@@ -514,7 +542,7 @@ class HexielTUI(App):
                  border: heavy $accent; background: $surface; }
     #scope-buttons { height: auto; padding: 1 0 0 0; }
     #scope-buttons Button { margin: 0 1 0 0; }
-    ScopeScreen, ConfigScreen { align: center middle; }
+    ScopeScreen, ConfigScreen, RestartScreen { align: center middle; }
     #config-box { width: 100%; max-width: 110; height: auto; max-height: 90%; padding: 1 2;
                   border: heavy $accent; background: $surface; }
     #config-table { height: auto; max-height: 16; }
@@ -556,10 +584,16 @@ class HexielTUI(App):
         self.status.refresh_text()
         self.query_one("#prompt", Input).focus()
         self.set_interval(1.0, self._tick)
-        self.query_one("#chat", VerticalScroll).mount(
-            Label("Type your first request; /help lists commands.", classes="note"))
+        from .brand import LOGO_WIDTH, logo_text, small_logo_text
+        chat = self.query_one("#chat", VerticalScroll)
+        wide = self.size.width >= LOGO_WIDTH + 6
+        chat.mount(Static(logo_text() if wide else small_logo_text(), id="logo"))
+        chat.mount(Label("Type your first request — / opens the command menu, "
+                         "@file.png attaches a screenshot.", classes="note"))
         self.replay_history()
         self._refresh_status()
+        if not os.environ.get("HEXIEL_NO_UPDATE_CHECK"):
+            threading.Thread(target=self._check_update, daemon=True).start()
 
     def replay_history(self) -> None:
         """Render an existing conversation (e.g. after -c resume) into the chat."""
@@ -574,15 +608,15 @@ class HexielTUI(App):
                 else:
                     self.add_user_msg(body[:2000])
             elif role == "assistant":
+                # the model's text precedes the tool calls it then makes
+                text = msg.get("content", "")
+                if text.strip():
+                    chat.mount(Markdown(text))
                 for call in msg.get("tool_calls", []):
                     wid = ToolLine(classes="tool")
                     pending[call["id"]] = wid
                     wid.running(call_short(call))
                     chat.mount(wid)
-                text = msg.get("content", "")
-                if text.strip():
-                    md = Markdown(text)
-                    chat.mount(md)
             elif role == "tool":
                 wid = pending.get(msg.get("tool_call_id", ""))
                 if wid is not None:
@@ -653,7 +687,7 @@ class HexielTUI(App):
         arg = arg.strip()
         handler = {
             "help": self.cmd_help, "clear": self.cmd_clear, "compact": self.cmd_compact,
-            "config": self.cmd_config,
+            "config": self.cmd_config, "update": self.cmd_update,
             "model": self.cmd_model, "models": self.cmd_models, "auto": self.cmd_auto,
             "memory": self.cmd_memory, "skills": self.cmd_skills,
             "ship": self.cmd_ship, "heal": self.cmd_heal,
@@ -712,6 +746,42 @@ class HexielTUI(App):
                 context_window=base.context_window, max_output_tokens=base.max_output_tokens)
             self.add_note(f"profile '{arg}' created on the fly ({arg} @ {base.base_url})")
         self._refresh_status()
+
+    def _check_update(self) -> None:
+        from . import updater
+        info = updater.check()
+        if info["available"]:
+            self.call_from_thread(
+                self.add_note, f"[b]⬆ hexiel {info['latest']} is available[/b] "
+                f"(you have {info['current']}) — type /update to install it and restart")
+
+    def cmd_update(self, arg: str) -> None:
+        from . import updater
+        if self._thread and self._thread.is_alive():
+            self.add_note("finish or Ctrl+C the current turn first, then /update")
+            return
+
+        def work() -> None:
+            info = updater.check(force=True)
+            if not info["available"]:
+                self.call_from_thread(self.add_note, f"hexiel {info['current']} is the newest release "
+                                      f"(latest on GitLab: {info['latest'] or 'unknown'})")
+                return
+            self.call_from_thread(self.add_note, f"updating {info['current']} → {info['latest']}…")
+            ok, log = updater.apply_update()
+            self.call_from_thread(self.add_note, log.replace("[", "\\["))
+            if ok:
+                self.call_from_thread(self._offer_restart, info["latest"])
+        self.activity.start()
+        threading.Thread(target=lambda: (work(), self.call_from_thread(self.activity.stop)),
+                         daemon=True).start()
+
+    def _offer_restart(self, version: str) -> None:
+        def done(choice) -> None:
+            if choice == "restart":
+                self.session.save()
+                self.exit(result="restart")
+        self.push_screen(RestartScreen(version), callback=done)
 
     def cmd_config(self, arg: str) -> None:
         self.push_screen(ConfigScreen(self.session))

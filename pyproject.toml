@@ -1,12 +1,32 @@
 [project]
 name = "hexiel"
-version = "0.2.6"
-description = "Hexiel — terminal/agent coding assistant: pluggable providers, file-based memory, skills, auto-compaction, native toolchain integration, self-healing, GitLab MR flow, browser UI, OpenWebUI compatibility"
+version = "0.2.7"
+description = "Open-source AI coding agent for the terminal and browser — runs on local Ollama models (even on modest hardware) or any cloud LLM. A self-hostable alternative to Claude Code and opencode."
+readme = "README.md"
+license = { file = "LICENSE" }
 requires-python = ">=3.11"
+keywords = ["ai", "coding-agent", "ai-coding-assistant", "llm", "ollama", "local-llm",
+            "terminal", "tui", "cli", "claude-code-alternative", "opencode-alternative",
+            "anthropic", "openai", "qwen", "agent", "developer-tools", "self-hosted"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Environment :: Web Environment",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Topic :: Software Development",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
 dependencies = [
     "textual>=0.86",
     "httpx>=0.27",
 ]
+
+[project.urls]
+Homepage = "https://gitlab.com/jkagidesigns1/public/applications/hexiel"
+Source = "https://gitlab.com/jkagidesigns1/public/applications/hexiel"
+Issues = "https://gitlab.com/jkagidesigns1/public/applications/hexiel/-/issues"
 
 [project.scripts]
 hexiel = "hexiel.main:main"

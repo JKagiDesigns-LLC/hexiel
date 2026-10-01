@@ -387,5 +387,33 @@ $("#send").addEventListener("click", submit);
 connect();
 refreshState();
 setInterval(refreshState, 20000);
+// ---------------------------------------------------------------- self-update
+
+async function checkUpdate() {
+  try {
+    const info = await (await fetch("/api/update")).json();
+    const btn = $("#update-btn");
+    if (info.available) {
+      btn.textContent = `⬆ Update to ${info.latest}`;
+      btn.title = `You have ${info.current}. Install ${info.latest} and restart (your conversation is kept).`;
+      btn.style.display = "";
+    } else { btn.style.display = "none"; }
+  } catch { /* offline */ }
+}
+$("#update-btn").addEventListener("click", async () => {
+  const btn = $("#update-btn");
+  if (!confirm(`${btn.title}\n\nUpdate now?`)) return;
+  btn.disabled = true; btn.textContent = "updating…";
+  const r = await (await fetch("/api/update", { method: "POST" })).json();
+  const div = document.createElement("div");
+  div.className = "note"; div.textContent = (r.ok ? "✓ " : "⚠ ") + r.log + (r.restarting ? "\nrestarting…" : "");
+  $("#chat").appendChild(div);
+  if (r.restarting) {   // wait for the new server, then reload onto the new UI
+    const wait = async () => { try { await fetch("/api/state"); location.reload(); } catch { setTimeout(wait, 1000); } };
+    setTimeout(wait, 2500);
+  } else { btn.disabled = false; checkUpdate(); }
+});
+checkUpdate();
+
 // deep link: /#settings opens the settings panel (bookmarks, screenshots)
 if (location.hash === "#settings") $("#settings-btn").click();

@@ -73,3 +73,31 @@ def test_activity_line_lifecycle(tmp_path):
     hidden_at_start, shown, still_shown = run(go())
     assert hidden_at_start and "Testing the spirits" in shown and "ctrl+c" in shown
     assert not still_shown
+
+
+def test_replayed_history_keeps_text_before_its_tool_calls(tmp_path):
+    async def go():
+        app = make_app(tmp_path)
+        app.session.messages = [
+            {"role": "user", "content": "fix it"},
+            {"role": "assistant", "content": "Checking first.",
+             "tool_calls": [{"id": "c1", "name": "grep", "arguments": {"pattern": "x"}}]},
+            {"role": "tool", "tool_call_id": "c1", "content": "hit"},
+            {"role": "assistant", "content": "Done."},
+        ]
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause()
+            return [type(w).__name__ for w in app.query_one("#chat").children
+                    if isinstance(w, (Markdown, ToolLine))]
+    assert run(go()) == ["Markdown", "ToolLine", "Markdown"]
+
+
+def test_web_history_order(tmp_path):
+    from hexiel.webui import WebState
+    app = make_app(tmp_path)
+    app.session.messages = [
+        {"role": "assistant", "content": "Checking first.",
+         "tool_calls": [{"id": "c1", "name": "grep", "arguments": {"pattern": "x"}}]},
+        {"role": "tool", "tool_call_id": "c1", "content": "hit"},
+    ]
+    assert [i["t"] for i in WebState(app.session).render_history()] == ["assistant", "tool"]

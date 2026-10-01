@@ -110,6 +110,8 @@ async def tui_shots(tmp: Path) -> None:
         svg_to_png(tmp / f"{name}.svg", OUT / f"{name}.png")
 
     async def main_view(app, pilot):
+        for wid in app.query("#logo"):    # the welcome art would be half-scrolled away
+            wid.remove()
         app.query_one(ActivityLine).start()
         app.query_one(ActivityLine).add_chars(2400)
         app.query_one(ActivityLine).phase("tool", "test")

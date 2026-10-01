@@ -8,9 +8,34 @@
 stages:
 - test
 - secret-detection
+- deploy
 variables:
   SECRET_DETECTION_ENABLED: 'true'
 secret_detection:
   stage: secret-detection
 include:
 - template: Security/Secret-Detection.gitlab-ci.yml
+
+# GitLab Pages: publishes site/ (the hexiel website) on every push to main.
+# __SITE_URL__ / __VERSION__ / __DATE__ placeholders are filled from CI variables,
+# so canonical links and social cards follow the real Pages URL or custom domain.
+pages:
+  stage: deploy
+  image: alpine:3.20
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+  script:
+    - mkdir -p public/screenshots
+    - cp -r site/* public/
+    - cp docs/logo.svg docs/logo.png public/
+    - cp hexiel/web/logo.svg public/logo-mark.svg
+    - cp docs/screenshots/*.png public/screenshots/
+    - rm -f public/*.md
+    - VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' pyproject.toml)
+    - SITE_URL=${CI_PAGES_URL%/}
+    - TODAY=$(date -u +%Y-%m-%d)
+    - sed -i "s|__SITE_URL__|$SITE_URL|g; s|__VERSION__|$VERSION|g; s|__DATE__|$TODAY|g" public/*.html public/*.txt public/*.xml
+    - "! grep -rq __SITE_URL__ public"   # fail the job if any placeholder survived
+  artifacts:
+    paths:
+      - public

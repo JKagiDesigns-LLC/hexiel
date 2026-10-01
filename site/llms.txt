@@ -1,0 +1,37 @@
+# hexiel
+
+> hexiel is a free, open-source AI coding agent for the terminal and the browser, designed and owned by JKagiDesigns LLC (https://www.jkagidesigns.com), Kingston, Massachusetts. It runs on local models through Ollama or any OpenAI-compatible server — tuned to be fast on modest hardware such as an Intel iGPU mini-PC — or on cloud models (Anthropic Claude, OpenAI, Gemini, xAI, OpenRouter, DeepSeek). License: GPLv3 with the Commons Clause — free to use, modify and share; it may not be sold without permission from JKagiDesigns LLC.
+
+Current version: __VERSION__. Source: https://gitlab.com/jkagidesigns1/public/applications/hexiel
+
+## What it does
+- Reads and edits code, runs shell commands, tests (pytest, vitest, Maven, Gradle, Go, Cargo) and containers (Docker, Podman), searches and reads the web, and accepts screenshots for vision models.
+- Interfaces: full-screen terminal UI, browser UI (`hexiel --serve`), headless one-shot mode (`hexiel -p "…"`), and an OpenAI-compatible `/v1/chat/completions` endpoint.
+- Context: automatic compaction at a Claude-Code-sized context window; file-based memory (MEMORY.md); project instructions from AGENTS.md / CLAUDE.md; a todo.md it maintains automatically; durable facts saved to memory during compaction.
+- Local-first token economy: project mapping, searching, waiting on tests and parsing run in Python; a `python` tool batches many steps into one local script.
+- Compatible with existing Claude Code skills (~/.claude/skills) and OpenWebUI tool/pipe/filter plugins.
+- Self-healing (crashes → reviewed merge requests via /heal), GitLab merge-request flow (/ship), settings editor (/config, session or permanent), self-update (/update).
+- Runs on Linux, macOS and Windows (PowerShell built in).
+
+## Who it is for
+Developers who want a capable coding agent they own: on their own hardware with local models, or with any cloud model, without a subscription.
+
+## How it compares (checked 2026-10-01)
+- Claude Code (Anthropic): proprietary; requires a paid plan or API usage; Claude models only officially; very broad first-party integrations (IDE, desktop, web), MCP.
+- opencode: MIT-licensed, free, provider-agnostic including local models, terminal + web UI, MCP, reads Claude Code skills.
+- Aider: Apache-2.0, free, git-centric terminal pair programmer, supports local models.
+- hexiel: free (GPLv3 + Commons Clause, no resale without permission), local-model performance on modest hardware, automatic todo/memory upkeep, OpenWebUI plugin + OpenAI-compatible API, self-healing merge requests. No MCP support yet.
+
+## Install
+```
+git clone https://gitlab.com/jkagidesigns1/public/applications/hexiel.git
+cd hexiel && python3 -m venv .venv && .venv/bin/pip install -e '.[serve]'
+.venv/bin/hexiel --doctor
+```
+Recommended local model: qwen3.6:35b-a3b-coding on Ollama with reasoning_effort = "none".
+
+## Links
+- Website: __SITE_URL__/
+- Source code and issues: https://gitlab.com/jkagidesigns1/public/applications/hexiel
+- README: https://gitlab.com/jkagidesigns1/public/applications/hexiel/-/blob/main/README.md
+- Owner/designer: JKagiDesigns LLC — https://www.jkagidesigns.com

@@ -394,6 +394,7 @@ COMMANDS = [
     ("auto", "", "toggle auto-approve for edits and commands"),
     ("memory", "", "show what hexiel remembers about you and this project"),
     ("skills", "", "list installed skills"),
+    ("mcp", "", "show connected MCP servers and their tools"),
     ("ship", "[title]", "propose your changes as a GitLab merge request"),
     ("heal", "[what broke]", "fix a hexiel bug itself, review the diff, share it or keep it"),
     ("setup-gitlab", "<token>", "save a GitLab access token"),
@@ -788,7 +789,7 @@ class HexielTUI(App):
         arg = arg.strip()
         handler = {
             "help": self.cmd_help, "clear": self.cmd_clear, "compact": self.cmd_compact,
-            "config": self.cmd_config, "update": self.cmd_update,
+            "config": self.cmd_config, "update": self.cmd_update, "mcp": self.cmd_mcp,
             "model": self.cmd_model, "models": self.cmd_models, "auto": self.cmd_auto,
             "memory": self.cmd_memory, "skills": self.cmd_skills,
             "ship": self.cmd_ship, "heal": self.cmd_heal,
@@ -883,6 +884,15 @@ class HexielTUI(App):
                 self.session.save()
                 self.exit(result="restart")
         self.push_screen(RestartScreen(version, headline), callback=done)
+
+    def cmd_mcp(self, arg: str) -> None:
+        from . import mcp_client
+        servers = getattr(self.session, "mcp_servers", [])
+        if not servers:
+            self.add_note("no MCP servers configured — add them to <project>/.mcp.json "
+                          "(Claude Code format) or [mcp.servers.NAME] in config.toml")
+            return
+        self.add_note("\n".join(line.replace("[", "\\[") for line in mcp_client.status_lines(servers)))
 
     def cmd_config(self, arg: str) -> None:
         self.push_screen(ConfigScreen(self.session))

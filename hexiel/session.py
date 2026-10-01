@@ -67,6 +67,7 @@ class Session:
         self.id = uuid.uuid4().hex[:12]
         self.created = time.time()
         self.messages: list[dict] = []
+        self.mcp_servers: list = []   # started MCP servers (see mcp_client)
         self.last_usage: dict = {}
         self.total_completion_tokens = 0
         self.auto_approve = settings.auto_approve

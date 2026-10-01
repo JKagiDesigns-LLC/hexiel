@@ -152,6 +152,7 @@ class Config:
     default_model: str
     models: dict[str, ModelConfig]
     settings: Settings
+    mcp: dict = field(default_factory=dict)       # raw [mcp] table (servers)
 
     def model(self, name: str | None = None) -> ModelConfig:
         key = name or self.default_model
@@ -191,4 +192,5 @@ def load_config(model_override: str | None = None) -> Config:
     default_model = model_override or raw.get("default", next(iter(models), "default"))
     if default_model not in models:
         models.setdefault(default_model, ModelConfig(name=default_model, provider="openai"))
-    return Config(default_model=default_model, models=models, settings=settings)
+    return Config(default_model=default_model, models=models, settings=settings,
+                  mcp=raw.get("mcp", {}))

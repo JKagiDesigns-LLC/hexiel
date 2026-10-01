@@ -52,6 +52,9 @@ def build_session(cwd: str, model_name: str | None, resumed: dict | None = None)
     tools = build_tools(chain)
     plugins = openwebui_compat.discover_plugins(cwd)
     tool_defs = openwebui_compat.plugin_tool_defs(plugins, cwd)
+    from . import mcp_client
+    mcp_servers = mcp_client.start_servers(mcp_client.load_configs(cwd, config.mcp))
+    tool_defs = tool_defs + mcp_client.tool_defs(mcp_servers)
     if tool_defs:
         known = {t.name for t in tools}
         tools = tools + [t for t in tool_defs if t.name not in known]
@@ -63,6 +66,7 @@ def build_session(cwd: str, model_name: str | None, resumed: dict | None = None)
         cwd, skills_mod.prompt_section(skills), toolchain_section(chain, cwd),
         task_state=(todo_mod.summary_line(cwd) if resumed else ""))
     session = Session(model_config, settings, cwd, tools, system)
+    session.mcp_servers = mcp_servers
     session.bind_tool_ctx(tool_ctx)
     # gitlab propose steps share the standard approval gate; "no" declines the step
     tool_ctx.on_step = (lambda kind, desc: session.on_approve(f"gitlab:{kind}",

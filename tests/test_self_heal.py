@@ -108,3 +108,55 @@ def test_tui_heal_flow_review_and_keep(scratch_install, tmp_path, monkeypatch):
     assert (scratch_install / "hexiel" / "a.py").read_text() == "A = 42\n"
     assert (scratch_install / "hexiel" / "b.py").read_text() == "B = 1\n"   # excluded
     assert restarts == ["self-heal fix applied"]
+
+
+def test_web_heal_flow_review_and_keep(scratch_install, tmp_path, monkeypatch):
+    """Browser: /heal → isolated fix → heal_review over the WebSocket → keep one file."""
+    import json
+    aiohttp = pytest.importorskip("aiohttp")
+    from aiohttp import web
+    from hexiel import updater
+    from hexiel.webui import make_app
+
+    project = tmp_path / "proj"
+    project.mkdir()
+
+    def fake_turn(self, user_text):
+        if "SELF-HEALING" in user_text:
+            (Path(self.cwd) / "hexiel" / "a.py").write_text("A = 7\n")
+            (Path(self.cwd) / "hexiel" / "b.py").write_text("B = 7\n")
+        self.on_event("turn_end")
+    monkeypatch.setattr(Session, "_turn_body", fake_turn)
+    monkeypatch.setattr(updater, "restart", lambda *a, **k: None)
+    session = Session(ModelConfig(name="t", provider="openai", model="m", base_url=""),
+                      Settings(), str(project), [], "sys")
+
+    async def go():
+        runner = web.AppRunner(make_app(session))
+        await runner.setup()
+        site = web.TCPSite(runner, "127.0.0.1", 0)
+        await site.start()
+        port = site._server.sockets[0].getsockname()[1]
+        try:
+            async with aiohttp.ClientSession() as client:
+                async with client.ws_connect(f"http://127.0.0.1:{port}/ws") as ws:
+                    await ws.receive_str()
+                    await ws.send_str(json.dumps({"t": "send", "text": "/heal the status line crashes"}))
+                    review = None
+                    for _ in range(60):
+                        data = json.loads(await asyncio.wait_for(ws.receive_str(), 10))
+                        if data["t"] == "heal_review":
+                            review = data
+                            break
+                async with client.post(f"http://127.0.0.1:{port}/api/heal/decide",
+                                       json={"choice": "keep", "files": ["hexiel/a.py"]}) as resp:
+                    result = await resp.json()
+        finally:
+            await runner.cleanup()
+        return review, result
+    review, result = asyncio.run(go())
+    assert [f["path"] for f in review["files"]] == ["hexiel/a.py", "hexiel/b.py"]
+    assert "+A = 7" in review["files"][0]["diff"]
+    assert result["ok"] and result["restarting"]
+    assert (scratch_install / "hexiel" / "a.py").read_text() == "A = 7\n"
+    assert (scratch_install / "hexiel" / "b.py").read_text() == "B = 1\n"      # not selected

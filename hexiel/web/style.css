@@ -221,6 +221,18 @@ body {
 #picker-list .item .cur { color: var(--ok); font-size: 12px; }
 #picker-status { margin-top: 8px; font-size: 12.5px; }
 #picker-status .err { color: var(--err); }
+#heal-box { width: min(1100px, 96vw); height: min(760px, 90vh); display: flex; flex-direction: column; }
+#heal-panes { flex: 1; display: grid; grid-template-columns: minmax(220px, 34%) 1fr; gap: 10px; min-height: 0; }
+#heal-files { overflow-y: auto; border: 1px solid var(--border); border-radius: 8px; padding: 4px; }
+#heal-files label { display: flex; gap: 8px; align-items: center; padding: 6px 8px; border-radius: 6px;
+                    cursor: pointer; font-size: 13px; }
+#heal-files label.sel, #heal-files label:hover { background: var(--bg-hover); }
+#heal-files .st { font-family: ui-monospace, monospace; font-weight: 700; width: 1em; }
+#heal-files .st.M { color: var(--warn); } #heal-files .st.A { color: var(--ok); } #heal-files .st.D { color: var(--err); }
+#heal-files .n { color: var(--text-dim); margin-left: auto; font-size: 12px; white-space: nowrap; }
+#heal-diff { margin: 0; overflow: auto; border: 1px solid var(--border); border-radius: 8px; padding: 10px;
+             background: #0d0f14; font: 12.5px/1.5 ui-monospace, monospace; white-space: pre; }
+#heal-diff .add { color: var(--ok); } #heal-diff .del { color: var(--err); } #heal-diff .hunk { color: #7aa2f7; }
 #update-btn { border-color: var(--warn) !important; color: var(--warn) !important; }
 
 /* settings + scope dialogs */

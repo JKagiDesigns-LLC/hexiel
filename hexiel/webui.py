@@ -7,6 +7,7 @@ The server shares the same Session object the TUI uses, so `hexiel serve` and
 `hexiel` stay in sync on messages, todo state and incidents."""
 
 import asyncio
+import sys
 import json
 import threading
 import time
@@ -232,6 +233,57 @@ def make_app(session: Session) -> web.Application:
             state.clients.pop(ws, None)
         return ws
 
+    heal = {"ws": None, "incidents": [], "description": "", "changes": None}
+
+    def heal_review_payload() -> dict:
+        changes = heal["changes"] or []
+        return {"t": "heal_review",
+                "summary": f"{len(changes)} file(s) changed, +{sum(c.added for c in changes)} "
+                           f"−{sum(c.removed for c in changes)}",
+                "files": [{"path": c.path, "status": c.status, "added": c.added, "removed": c.removed,
+                           "diff": c.diff[:60000]} for c in changes]}
+
+    def start_heal(description: str) -> str:
+        from . import contribute, heal as heal_mod
+        from .heal import heal_prompt
+        from .main import build_session
+        if heal["ws"] is not None:
+            return "a self-heal fix is already in progress or waiting — /heal review"
+        incidents = heal_mod.unhealed(session.cwd)
+
+        def run():
+            try:
+                ws = contribute.prepare()
+            except Exception as exc:  # noqa: BLE001
+                state.broadcast({"t": "note", "text": f"could not prepare the heal workspace: {exc}"})
+                return
+            heal.update(ws=ws, incidents=incidents, description=description)
+            try:
+                healer = build_session(str(ws.path), session.model_config.name)
+            except Exception:  # noqa: BLE001
+                healer = build_session(str(ws.path), None)
+            healer.model_config = session.model_config
+            healer.auto_approve = session.auto_approve
+            healer.on_event = state.on_event
+            healer.on_approve = state.ask_approval
+            with state.lock:
+                state.busy = True
+            try:
+                healer.run_turn(heal_prompt(incidents, str(ws.path), description, sys.executable))
+            finally:
+                with state.lock:
+                    state.busy = False
+            heal["changes"] = contribute.changes(ws)
+            if not heal["changes"]:
+                contribute.discard(ws)
+                heal.update(ws=None, changes=None)
+                state.broadcast({"t": "note", "text": "self-heal made no changes"})
+            else:
+                state.broadcast(heal_review_payload())
+        threading.Thread(target=run, daemon=True).start()
+        return (f"🔧 self-heal: {len(incidents)} recorded incident(s) — fixing hexiel in an isolated copy of "
+                "its source; your project is untouched. You'll review the diff before anything is kept.")
+
     def web_command(text: str) -> str | None:
         """Slash commands typed in the browser. Returns a note to show, or None
         when the text should go to the model (skills / custom commands render to
@@ -277,8 +329,15 @@ def make_app(session: Session) -> web.Application:
             session.messages = []
             session.last_usage = {}
             return "conversation cleared"
-        if cmd in ("heal", "ship"):
-            return f"/{cmd} uses the terminal UI's review screen — run it there (hexiel)"
+        if cmd == "heal":
+            if arg == "review":
+                if heal["changes"]:
+                    state.broadcast(heal_review_payload())
+                    return "reopened the self-heal review"
+                return "no self-heal fix is waiting for review"
+            return start_heal(arg)
+        if cmd == "ship":
+            return "/ship uses the terminal UI's step-by-step approvals — run it there (hexiel)"
         custom = commands_mod.discover(session.cwd)
         if cmd in custom:
             return "prompt:" + custom[cmd].render(arg)
@@ -322,6 +381,45 @@ def make_app(session: Session) -> web.Application:
             if holder:
                 holder["verdict"] = data.get("verdict", "no")
                 holder["event"].set()
+
+    async def api_heal_decide(request):
+        from . import contribute, heal as heal_mod, updater
+        data = await request.json()
+        choice = data.get("choice", "later")
+        if heal["ws"] is None or not heal["changes"]:
+            return _json_response({"error": "no self-heal fix is waiting"}, 400)
+        if choice == "later":
+            return _json_response({"ok": True, "message": "kept for later — /heal review to decide"})
+        if choice == "discard":
+            contribute.discard(heal["ws"])
+            heal.update(ws=None, changes=None)
+            return _json_response({"ok": True, "message": "self-heal fix discarded"})
+        wanted = set(data.get("files") or [])
+        chosen = [c for c in heal["changes"] if c.path in wanted]
+        if not chosen:
+            return _json_response({"error": "select at least one file"}, 400)
+
+        def apply() -> str:
+            contribute.keep(heal["ws"], chosen)
+            msg = f"applied {len(chosen)} file(s) to your hexiel"
+            if choice == "send":
+                title = "self-heal: " + (" ".join((heal["description"] or next(
+                    (str(i.get("detail", "")) for i in heal["incidents"]), "")).split())[:70] or "fix")
+                sent = contribute.send(heal["ws"], chosen, title,
+                                       contribute.mr_body(heal["description"], heal["incidents"], chosen))
+                msg += f"; sent to hexiel for review: {sent['mr_url']} — thank you!"
+            heal_mod.mark_healed(session.cwd)
+            contribute.discard(heal["ws"])
+            heal.update(ws=None, changes=None)
+            return msg
+        loop = asyncio.get_running_loop()
+        try:
+            msg = await loop.run_in_executor(None, apply)
+        except Exception as exc:  # noqa: BLE001 - e.g. no GitLab token: the fix is still kept locally
+            return _json_response({"error": f"{exc}", "kept": True})
+        session.save()
+        loop.call_later(1.0, updater.restart)        # load the fixed code; the page reconnects
+        return _json_response({"ok": True, "message": msg, "restarting": True})
 
     async def api_commands(request):
         from . import commands as commands_mod
@@ -572,6 +670,7 @@ def make_app(session: Session) -> web.Application:
     app.router.add_post("/api/model", api_model)
     app.router.add_post("/api/settings", api_settings)
     app.router.add_get("/api/commands", api_commands)
+    app.router.add_post("/api/heal/decide", api_heal_decide)
     app.router.add_get("/api/models/live", api_models_live)
     app.router.add_post("/api/models/select", api_models_select)
     app.router.add_get("/api/update", api_update_get)

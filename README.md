@@ -292,7 +292,7 @@ Fork → branch → merge request; the maintainer reviews and approves. hexiel c
 do the whole flow for you (`/ship`). See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ```bash
-.venv/bin/pytest                    # 116 tests: tools, providers, compaction, TUI, MCP,
+.venv/bin/pytest                    # 117 tests: tools, providers, compaction, TUI, MCP,
                                     # self-heal, settings, updater, web UI, plugins
 .venv/bin/python scripts/screenshots.py   # regenerate these screenshots
 ```

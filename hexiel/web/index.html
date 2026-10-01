@@ -78,6 +78,21 @@
     </div>
   </div>
 
+  <div class="modal-back" id="heal-back">
+    <div class="panel" id="heal-box">
+      <div class="panel-head"><h4>Review the self-heal fix</h4><span class="dim" id="heal-summary"></span></div>
+      <div class="dim" style="margin-bottom:8px">Tick the files to include. <b>Send</b> opens a merge request to the
+        official hexiel repo so every user gets the fix (you keep it too); <b>Keep</b> applies it to your hexiel only.</div>
+      <div id="heal-panes"><div id="heal-files"></div><pre id="heal-diff"></pre></div>
+      <div class="row">
+        <button class="yes" id="heal-send">Send to hexiel (and keep)</button>
+        <button id="heal-keep">Keep just for me</button>
+        <button id="heal-discard">Discard</button>
+        <button id="heal-later">Decide later</button>
+      </div>
+    </div>
+  </div>
+
   <div class="modal-back" id="scope-back">
     <div class="panel" id="scope-box">
       <h4 id="scope-title"></h4>

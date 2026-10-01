@@ -156,6 +156,7 @@ function connect() {
         if (!live) live = newLive();
         live.thinking.textContent = "thinking" + "…";
         break;
+      case "heal_review": showHealReview(data); break;
       case "tool": addTool(data); break;
       case "tool_done": toolDone(data); break;
       case "note": {
@@ -334,6 +335,48 @@ $("#settings-close").addEventListener("click", () => $("#settings-back").classLi
 document.addEventListener("keydown", ev => {
   if (ev.key === "Escape" && !$("#scope-back").classList.contains("show")) $("#settings-back").classList.remove("show");
 });
+
+// ---------------------------------------------------------------- self-heal review
+let healFiles = [], healSel = 0;
+
+function renderHealDiff() {
+  const f = healFiles[healSel];
+  $("#heal-diff").innerHTML = !f ? "" : esc(f.diff || "(binary or empty change)").split("\n").map(line =>
+    line.startsWith("+") && !line.startsWith("+++") ? `<span class="add">${line}</span>` :
+    line.startsWith("-") && !line.startsWith("---") ? `<span class="del">${line}</span>` :
+    line.startsWith("@@") ? `<span class="hunk">${line}</span>` : line).join("\n");
+  $$("#heal-files label").forEach((el, i) => el.classList.toggle("sel", i === healSel));
+}
+
+function showHealReview(data) {
+  healFiles = data.files.map(f => ({ ...f, selected: true }));
+  healSel = 0;
+  $("#heal-summary").textContent = data.summary;
+  const letter = { modified: "M", added: "A", deleted: "D" };
+  $("#heal-files").innerHTML = healFiles.map((f, i) =>
+    `<label data-i="${i}"><input type="checkbox" checked data-i="${i}"><span class="st ${letter[f.status]}">${letter[f.status] || "?"}</span>` +
+    `<span>${esc(f.path)}</span><span class="n">+${f.added} −${f.removed}</span></label>`).join("");
+  $$("#heal-files label").forEach(el => el.addEventListener("click", () => { healSel = +el.dataset.i; renderHealDiff(); }));
+  $$("#heal-files input").forEach(el => el.addEventListener("change", () => { healFiles[+el.dataset.i].selected = el.checked; }));
+  renderHealDiff();
+  $("#heal-back").classList.add("show");
+}
+
+async function decideHeal(choice) {
+  const files = healFiles.filter(f => f.selected).map(f => f.path);
+  const r = await (await fetch("/api/heal/decide", { method: "POST", headers: { "content-type": "application/json" },
+                                body: JSON.stringify({ choice, files }) })).json();
+  if (r.error && !r.kept) { alert(r.error); return; }
+  $("#heal-back").classList.remove("show");
+  const div = document.createElement("div");
+  div.className = "note"; div.textContent = (r.error ? "⚠ " + r.error : "✓ " + r.message) + (r.restarting ? " — restarting…" : "");
+  $("#chat").appendChild(div);
+  if (r.restarting) {
+    const wait = async () => { try { await fetch("/api/state"); location.reload(); } catch { setTimeout(wait, 1000); } };
+    setTimeout(wait, 2500);
+  }
+}
+["send", "keep", "discard", "later"].forEach(c => $(`#heal-${c}`).addEventListener("click", () => decideHeal(c)));
 
 // ---------------------------------------------------------------- live model picker
 let pickerItems = [], pickerSel = 0;

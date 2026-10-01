@@ -20,10 +20,14 @@ tokens you pay for are spent on the reasoning that matters.
 git clone https://gitlab.com/jkagidesigns1/public/applications/hexiel.git
 cd hexiel
 python -m venv .venv
-.venv/bin/pip install -e 'hexiel[serve]'
+.venv/bin/pip install -e 'hexiel[serve]'    # Windows: .venv\Scripts\pip install -e 'hexiel[serve]'
 .venv/bin/hexiel --doctor        # preflight checks + copy-paste fixes
 .venv/bin/hexiel                 # TUI
 ```
+
+Windows works out of the box: the agent shells through `powershell` (pwsh —
+install it with `winget install Microsoft.PowerShell`), and `bash` falls back
+to PowerShell when no bash (WSL/git-bash) is on PATH.
 
 Configure a provider in `~/.config/hexiel/config.toml` (written on first run)
 — the default profile targets a local Ollama at `http://localhost:11434/v1`
@@ -55,7 +59,8 @@ hexiel --repl             # plain readline loop for piped/automated use
 ### Tools (all built in)
 `bash` · `read` (line-numbered) · `write` · `edit` (find-and-replace with
 exactness guarantees) · `glob` · `grep` (ripgrep-first) · `list` · `map`
-(project tree, cached) · `file_info`
+(project tree, cached) · `file_info` · `powershell` (pwsh — the `bash` tool
+falls back to it on Windows)
 · `test` (drives your detected runner) · `container` (docker/podman + compose)
 · `view_image` / `image_edit` (ImageMagick) · `web_fetch` / `web_search`
 (DuckDuckGo or SearXNG, no key needed) · `memory` · `todo` · `gitlab_mr` ·

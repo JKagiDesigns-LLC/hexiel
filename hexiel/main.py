@@ -26,6 +26,8 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("-m", "--model", help="model profile name from config.toml")
     ap.add_argument("-p", "--print", dest="print_mode", metavar="PROMPT",
                     help="run one prompt headlessly, then exit")
+    ap.add_argument("-y", "--yes", action="store_true",
+                    help="auto-approve all tool calls (headless/scripted runs)")
     ap.add_argument("-c", "--continue", dest="continue_", action="store_true",
                     help="resume the most recent session")
     ap.add_argument("--repl", action="store_true", help="plain readline loop (no TUI)")
@@ -164,6 +166,8 @@ def main() -> None:
     resumed = Session.resume_latest() if args.continue_ else None
     session = build_session(cwd, args.model, resumed)
     memory_mod.ensure_dirs(cwd)
+    if args.yes:
+        session.auto_approve = True
 
     if args.print_mode is not None:
         prompts = [args.print_mode]

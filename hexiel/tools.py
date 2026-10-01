@@ -71,29 +71,75 @@ def head_tail(text: str, head: int = 10_000, tail: int = 5_000) -> str:
             + text[-tail:])
 
 
-# ---------------------------------------------------------------- bash
+# ---------------------------------------------------------------- shells
 
-def _run_bash(args: dict, ctx: ToolContext) -> ToolResult:
+_ANSI = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def _clean(text: str) -> str:
+    """Strip ANSI color escapes (pwsh colorizes PowerShell errors)."""
+    return _ANSI.sub("", text)
+
+
+def _run_shell(args: dict, ctx: ToolContext, argv: list[str], shell_label: str) -> ToolResult:
+    """Shared shell runner (bash / powershell): same timeout, head+tail capping,
+    and error shape for every platform."""
     cmd = args.get("command", "").strip()
     if not cmd:
         return text_result("error: command is required", True)
     timeout = float(args.get("timeout") or 120)
     try:
-        proc = subprocess.run(["/bin/bash", "-lc", cmd], cwd=ctx.cwd,
+        proc = subprocess.run(argv, cwd=ctx.cwd,
                               capture_output=True, text=True, timeout=timeout)
     except subprocess.TimeoutExpired:
         return text_result(f"error: command timed out after {timeout}s", True)
     except FileNotFoundError:
-        return text_result("error: /bin/bash unavailable", True)
+        return text_result(f"error: {shell_label} not installed", True)
+    except PermissionError:
+        return text_result(f"error: {shell_label} is not executable", True)
     out = []
     if proc.stdout:
-        out.append(head_tail(proc.stdout))
+        out.append(head_tail(_clean(proc.stdout)))
     if proc.stderr.strip():
-        out.append(f"stderr:\n{head_tail(proc.stderr.strip(), 4000, 2000)}")
+        out.append(f"stderr:\n{head_tail(_clean(proc.stderr.strip()), 4000, 2000)}")
     summary = "\n".join(out) or "(no output)"
     if proc.returncode != 0:
         summary += f"\n(exit code {proc.returncode})"
     return text_result(summary, is_error=proc.returncode != 0)
+
+
+def _pwsh_argv() -> str | None:
+    """Locate a PowerShell for the powershell tool (pwsh preferred, then the
+    Windows built-in powershell.exe)."""
+    for exe in ("pwsh", "pwsh.exe", "powershell.exe", "powershell"):
+        path = shutil.which(exe)
+        if path:
+            return path
+    return None
+
+
+def _run_powershell(args: dict, ctx: ToolContext) -> ToolResult:
+    pwsh = _pwsh_argv()
+    if not pwsh:
+        return text_result(
+            "error: no PowerShell on this machine — install one with "
+            "`winget install Microsoft.PowerShell` (Windows) or "
+            "`sudo pacman -S powershell` (Arch)", True)
+    argv = [pwsh, "-NoProfile", "-NonInteractive", "-Command", args.get("command", "")]
+    return _run_shell(args, ctx, argv, "pwsh")
+
+
+def _run_bash(args: dict, ctx: ToolContext) -> ToolResult:
+    # `bash` is the agent's default shell everywhere; on Windows without a real
+    # bash (WSL/git-bash are both on PATH when present) fall back to PowerShell
+    if os.name == "nt" and not shutil.which("bash"):
+        pwsh = _pwsh_argv()
+        if pwsh:
+            return _run_powershell(args, ctx)
+        return text_result(
+            "error: neither bash nor PowerShell is available — install PowerShell "
+            "with `winget install Microsoft.PowerShell`", True)
+    return _run_shell(args, ctx, ["/bin/bash", "-lc", args.get("command", "")], "/bin/bash")
 
 
 # ---------------------------------------------------------------- read / write / edit
@@ -721,9 +767,15 @@ def build_tools(chain: Toolchain) -> list[ToolDef]:
     obj = lambda **props: {"type": "object", "properties": props}  # noqa: E731
     return [
         ToolDef("bash", "Run a shell command (/bin/bash -lc) in the project directory. "
-                "Use for git, builds, installs, anything without a dedicated tool.",
+                "Use for git, builds, installs, anything without a dedicated tool. "
+                "On Windows this falls back to PowerShell when bash is absent.",
                 obj(command={"type": "string"}, timeout={"type": "number"}),
                 run=_run_bash),
+        ToolDef("powershell", "Run a PowerShell command (pwsh) in the project directory — "
+                "Windows-native paths, registry, services, WMI, etc. Use instead of "
+                "bash for Windows-specific operations.",
+                obj(command={"type": "string"}, timeout={"type": "number"}),
+                run=_run_powershell),
         ToolDef("read", "Read a text file with line numbers; supports offset/limit for long files.",
                 obj(path={"type": "string"}, offset={"type": "integer"}, limit={"type": "integer"}),
                 readonly=True, run=_read),

@@ -89,7 +89,10 @@ explanations.
   asks you to look at a screenshot or picture. `image_edit` manipulates images
   via the installed magick tool. `web_fetch` reads a URL; `web_search` queries
   the web when you need current information.
-- The `bash` tool runs `/bin/bash -lc` in the working directory. Long outputs
+- The `bash` tool runs `/bin/bash -lc` in the working directory (on Windows it
+  falls back to PowerShell). The `powershell` tool runs `pwsh -NoProfile
+  -NonInteractive -Command` — prefer it for Windows-native work (registry,
+  services, WMI, Windows paths). Long outputs
   are trimmed locally (head + tail kept, middle elided); ask for narrower
   output (head/tail, specific files) rather than re-running variants.
 - Tool calls cost context: when a tool result turns out unnecessary or huge,

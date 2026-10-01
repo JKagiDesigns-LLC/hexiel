@@ -97,6 +97,16 @@ def run_checks(cwd: str) -> dict:
     results["git"] = _check("git", bool(shutil.which("git")),
                             "(needed for the /ship and /heal flows)",
                             fix="sudo pacman -S git")
+    pwsh = shutil.which("pwsh") or shutil.which("powershell.exe") or shutil.which("powershell")
+    if os.name == "nt":
+        results["powershell"] = _check(
+            "PowerShell", bool(pwsh), pwsh or "missing — the shell tools need it",
+            fix="winget install Microsoft.PowerShell")
+    else:
+        results["powershell"] = _check(
+            "powershell tool", bool(pwsh),
+            pwsh or "not installed — optional here, required on Windows hosts",
+            fix="yay -S powershell-bin (or winget install Microsoft.PowerShell)")
 
     # gitlab token
     token = load_token()

@@ -124,12 +124,19 @@ def _detect_container() -> ContainerRuntime | None:
 
 
 def _venv_bin(cwd: str, name: str) -> str | None:
-    """Find a runner binary in the project's virtualenv even if it's not on PATH."""
-    for candidate in (Path(cwd) / ".venv" / "bin" / name,
-                      Path(cwd) / "venv" / "bin" / name,
-                      Path(cwd) / "node_modules" / ".bin" / name):
-        if candidate.is_file():
-            return str(candidate)
+    """Find a runner binary in the project's virtualenv even if it's not on PATH.
+    Handles POSIX (bin/) and Windows (Scripts/, .exe suffix) layouts."""
+    names = [name] + ([name + ".exe"] if os.name == "nt" else [])
+    dirs = (".venv", "venv")
+    for sub in dirs:
+        for bindir in ("bin", "Scripts"):
+            for n in names:
+                candidate = Path(cwd) / sub / bindir / n
+                if candidate.is_file():
+                    return str(candidate)
+    nodebin = Path(cwd) / "node_modules" / ".bin" / name
+    if nodebin.is_file():
+        return str(nodebin)
     return None
 
 

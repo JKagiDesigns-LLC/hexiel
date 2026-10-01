@@ -3,17 +3,20 @@
 import json
 import threading
 import time
+from pathlib import Path
 
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
-from textual.widgets import Button, Input, Label, Markdown, Static
+from textual.widgets import Button, Input, Label, Markdown, OptionList, Static
+from textual.widgets.option_list import Option
 
 from . import memory as memory_mod
 from . import skills as skills_mod
 
 ACCENT = "#c8b6ff"
+GOLD = "#d9b55a"          # halo gold for the activity line
 
 
 class TurnThread(threading.Thread):
@@ -36,6 +39,7 @@ class TurnThread(threading.Thread):
             app.call_from_thread(self.app_ref.add_note, f"agent crashed: {exc!r}")
         finally:
             session.save()
+            app.call_from_thread(self.app_ref.activity.stop)
 
 
 class ApproveScreen(ModalScreen):
@@ -110,14 +114,247 @@ class StatusLine(Static):
             model = self._session.model_config.model
             from . import todo as todo_mod
             todo_line = todo_mod.summary_line(self._session.cwd)
-            self.update(
-                f" hexiel | {model} | ctx {pct}% ({tokens_now // 1000}k/{window // 1000}k) "
-                f"| auto-compact at {compact_at}% ({until}% left) "
-                f"| {'[yellow]auto-approve[/]' if self._session.auto_approve else 'approving each write'}"
-                + (f" | {todo_line}" if todo_line else "")
-            )
+            approve = ("[yellow]auto-approve[/]", "auto-approve") if self._session.auto_approve \
+                else ("approving writes", "approving writes")
+            # (markup, plain) segments in priority order; low-priority ones drop
+            # first so the line always fits the window instead of running off it
+            segments = [
+                (model, model),
+                (f"ctx {pct}% ({tokens_now // 1000}k/{window // 1000}k)",) * 2,
+                approve,
+                (f"compacts at {compact_at}% ({until}% left)",) * 2,
+            ] + ([(todo_line, todo_line)] if todo_line else [])
+            width = max(self.size.width - 4, 20) if self.size.width else 200
+            shown, used = [], 0
+            for markup, plain in segments:
+                cost = len(plain) + (3 if shown else 0)
+                if used + cost > width:
+                    if not shown:   # even the model name is too long: hard-truncate it
+                        shown.append(plain[:max(width - 1, 1)] + "…")
+                    continue
+                shown.append(markup)
+                used += cost
+            self.update(" " + " · ".join(shown))
         except Exception:  # noqa: BLE001 status line must never crash the app
             self.update(" hexiel")
+
+    def on_resize(self) -> None:
+        self.refresh_text()
+
+
+# slash commands: (name, argument hint, what it does) — drives /help and the menu
+COMMANDS = [
+    ("help", "", "list commands and skills"),
+    ("model", "<name>", "switch model profile (e.g. gmktec, anthropic-sonnet)"),
+    ("models", "", "list models available on the Ollama server"),
+    ("clear", "", "start a fresh conversation"),
+    ("compact", "", "summarize history now to free up context"),
+    ("auto", "", "toggle auto-approve for edits and commands"),
+    ("memory", "", "show what hexiel remembers about you and this project"),
+    ("skills", "", "list installed skills"),
+    ("ship", "[title]", "propose your changes as a GitLab merge request"),
+    ("heal", "", "fix recorded hexiel incidents and propose the fix"),
+    ("setup-gitlab", "<token>", "save a GitLab access token"),
+    ("exit", "", "quit hexiel"),
+]
+
+
+class CommandMenu(OptionList):
+    """Popup above the prompt listing slash commands / skills / model profiles."""
+
+    def __init__(self) -> None:
+        super().__init__(id="cmd-menu")
+        self.display = False
+        self.can_focus = False
+        self._items: list[tuple[str, str]] = []   # (kind, value) parallel to options
+
+    def show_for(self, text: str, skills, profiles: dict, current: str) -> None:
+        rows: list[tuple[str, str, str]] = []      # (kind, value, label)
+        if text.startswith("/model "):
+            q = text[len("/model "):].strip().lower()
+            for name, cfg in profiles.items():
+                if q in name.lower() or q in cfg.model.lower():
+                    mark = " [green]● current[/]" if name == current else ""
+                    rows.append(("model", name, f"[b]{name:<18}[/b] [dim]{cfg.model}[/dim]{mark}"))
+        elif text.startswith("/") and " " not in text:
+            q = text[1:].lower()
+            cmds = [(n, a, d) for n, a, d in COMMANDS if n.startswith(q)]
+            fuzzy = len(q) >= 2   # contains-matches only once a couple of letters are typed
+            cmds += [(n, a, d) for n, a, d in COMMANDS if fuzzy and q in n and not n.startswith(q)]
+            for n, a, d in cmds:
+                pad = " " * max(22 - len(f"/{n} {a}"), 2)
+                rows.append(("cmd", n, f"[b]/{n}[/b] [dim]{a}[/dim]{pad}{d}"))
+            for sk in skills:
+                if sk.name.lower().startswith(q) or (fuzzy and q in sk.name.lower()):
+                    desc = sk.description.replace("[", "(").splitlines()[0][:70] if sk.description else ""
+                    pad = " " * max(22 - len(f"/{sk.name} skill"), 2)
+                    rows.append(("skill", sk.name, f"[b]/{sk.name}[/b] [dim]skill[/dim]{pad}{desc}"))
+        if not rows:
+            self.hide()
+            return
+        self.clear_options()
+        self.add_options([Option(label) for _, _, label in rows])
+        self._items = [(k, v) for k, v, _ in rows]
+        self.highlighted = 0
+        self.display = True
+
+    def hide(self) -> None:
+        self.display = False
+        self._items = []
+
+    def selected(self) -> tuple[str, str] | None:
+        if not self.display or self.highlighted is None or not self._items:
+            return None
+        return self._items[self.highlighted]
+
+
+class PromptInput(Input):
+    """The prompt: drives the slash menu with ↑/↓, Tab to complete, Enter to run, Esc to close."""
+
+    BINDINGS = [Binding("up", "menu_up", show=False), Binding("down", "menu_down", show=False),
+                Binding("tab", "menu_complete", show=False), Binding("escape", "menu_close", show=False)]
+
+    @property
+    def menu(self) -> CommandMenu:
+        return self.app.query_one(CommandMenu)
+
+    def action_menu_up(self) -> None:
+        if self.menu.display:
+            self.menu.action_cursor_up()
+
+    def action_menu_down(self) -> None:
+        if self.menu.display:
+            self.menu.action_cursor_down()
+
+    def action_menu_close(self) -> None:
+        self.menu.hide()
+
+    def action_menu_complete(self) -> None:
+        self.app.accept_menu(run=False)
+
+    async def action_submit(self) -> None:
+        if self.menu.display and self.app.accept_menu(run=True):
+            return
+        await super().action_submit()
+
+
+class ActivityLine(Static):
+    """Bottom-left "hexiel is working" line: spinner + shimmering themed verb +
+    elapsed time + tokens. Hidden while idle."""
+
+    FRAMES = "·✢✳✶✻✽✻✶✳✢"
+    WAITING = ["Discerning", "Pondering", "Contemplating", "Shepherding your code",
+               "Lighting the lamp", "Gathering wisdom", "Untangling the spaghetti",
+               "Counting loaves and fishes", "Herding semicolons", "Polishing halos",
+               "Consulting the scrolls", "Parting the sea of brackets", "Tending the vineyard",
+               "Refactoring the ark", "Seeking understanding", "Keeping watch"]
+    TOOLS = {"grep": "Searching the scrolls", "glob": "Searching the scrolls",
+             "list": "Surveying the land", "map": "Surveying the land",
+             "read": "Reading the scrolls", "file_info": "Examining",
+             "write": "Inscribing", "edit": "Inscribing",
+             "bash": "Running", "powershell": "Running",
+             "test": "Testing the spirits", "container": "Herding containers",
+             "web_search": "Seeking far and wide", "web_fetch": "Reading the web",
+             "view_image": "Beholding", "image_edit": "Restoring the image",
+             "memory": "Remembering", "todo": "Keeping the ledger",
+             "gitlab_mr": "Preparing the offering", "skill": "Drawing on a gift"}
+
+    def __init__(self) -> None:
+        super().__init__("", id="activity")
+        self.display = False
+        self._phase, self._verb, self._detail = "", "", ""
+        self._started = self._verb_since = 0.0
+        self._chars = 0          # streamed text + thinking chars this turn
+        self._frame = 0
+        self._timer = None
+
+    def start(self) -> None:
+        import random
+        self._started = time.time()
+        self._chars = 0
+        self._set("waiting", random.choice(self.WAITING))
+        self.display = True
+        if self._timer is None:
+            self._timer = self.set_interval(0.12, self._spin)
+        self._spin()
+
+    def stop(self) -> None:
+        self.display = False
+        if self._timer is not None:
+            self._timer.stop()
+            self._timer = None
+
+    def phase(self, phase: str, detail: str = "") -> None:
+        import random
+        if not self.display:
+            return
+        if phase == self._phase and phase != "tool":
+            return
+        verb = {"thinking": "Pondering deeply", "writing": "Scribing",
+                "approval": "Awaiting your blessing", "compacting": "Condensing the chronicles",
+                "tool": self.TOOLS.get(detail, f"Running {detail}"),
+                "waiting": random.choice(self.WAITING)}.get(phase, "Working")
+        self._set(phase, verb)
+
+    def add_chars(self, n: int) -> None:
+        self._chars += n
+
+    def _set(self, phase: str, verb: str) -> None:
+        self._phase, self._verb, self._verb_since = phase, verb, time.time()
+
+    def _spin(self) -> None:
+        import random
+        if not self.display:
+            return
+        self._frame += 1
+        now = time.time()
+        # long waits rotate the verb so the line visibly stays alive
+        if self._phase == "waiting" and now - self._verb_since > 8:
+            self._set("waiting", random.choice([v for v in self.WAITING if v != self._verb]))
+        spin = self.FRAMES[self._frame % len(self.FRAMES)]
+        # shimmer: a bright band sweeps across the verb
+        verb = self._verb + "…"
+        band = self._frame % (len(verb) + 8) - 4
+        shimmer = "".join(
+            f"[b {ACCENT}]{ch}[/]" if abs(i - band) <= 1 else f"[{ACCENT}]{ch}[/]" if abs(i - band) <= 3 else ch
+            for i, ch in enumerate(verb.replace("[", "(")))
+        bits = [f"{int(now - self._started)}s"]
+        if self._chars:
+            bits.append(f"~{self._chars // 4} tokens")
+        bits.append("[b]ctrl+c[/b] to stop" if self._phase != "approval" else "[b]y[/b]/[b]a[/b]/[b]n[/b]")
+        self.update(f"[{ACCENT}]{spin}[/] [{GOLD}]{shimmer}[/] [dim]({' · '.join(bits)})[/dim]")
+
+
+class Banner(Static):
+    """Pinned header: version + current project dir, fitted to the window width."""
+
+    def __init__(self, cwd: str) -> None:
+        super().__init__("", id="banner")
+        from . import __version__
+        self._version = __version__
+        home = str(Path.home())
+        self._path = "~" + cwd[len(home):] if cwd == home or cwd.startswith(home + "/") else cwd
+        self._project = Path(cwd).name or cwd
+
+    def on_mount(self) -> None:
+        self.refresh_text()
+
+    def on_resize(self) -> None:
+        self.refresh_text()
+
+    def refresh_text(self) -> None:
+        width = max(self.size.width - 4, 20) if self.size.width else 200
+        head = f"hexiel v{self._version}"
+        tagline = " — your codebase's guardian angel"
+        # "~/code/" dim + "myproj" bold; the parent part elides from the left first
+        parent = self._path[:len(self._path) - len(self._project)]
+        room = width - len(head) - len(self._project) - 5
+        if len(parent) > room:
+            parent = "…" + parent[-max(room - 1, 0):] if room > 4 else ""
+        line = f"[b]{head}[/b]  ▸ [dim]{parent}[/dim][b]{self._project}[/b]"
+        if len(head) + len(parent) + len(self._project) + 5 + len(tagline) <= width:
+            line += f"[dim]{tagline}[/dim]"
+        self.update(line)
 
 
 class HexielTUI(App):
@@ -127,15 +364,22 @@ class HexielTUI(App):
         Binding("ctrl+l", "clear_chat", "Clear chat", priority=True),
     ]
     CSS = """
-    #chat { padding: 0 2; }
-    #input-row { height: auto; padding: 0 1; dock: bottom; }
-    #prompt { height: 3; border: round $accent; background: $surface; }
-    StatusLine { dock: bottom; height: 1; color: $text-muted; background: $surface; }
+    Screen { layout: vertical; }
+    /* plain vertical stack (no docking): docked widgets overlap in Textual,
+       which hid the input's bottom border behind the status line */
+    #banner { width: 100%; height: 1; padding: 0 2; background: $surface; }
+    #chat { height: 1fr; padding: 0 2; }
+    #activity { height: 1; padding: 0 2; }
+    #cmd-menu { height: auto; max-height: 12; margin: 0 1; border: round $accent 50%;
+                background: $surface; }
+    #input-row { height: auto; padding: 0 1; }
+    #prompt { width: 1fr; height: 3; border: round $accent; background: $surface; }
+    StatusLine { width: 100%; height: 1; padding: 0 2; color: $text-muted; background: $surface; }
     .user-msg { color: $accent; margin: 1 0 0 0; }
     .assistant-msg { margin: 0 0 0 0; }
     ToolLine { color: $secondary-lighten-2; background: transparent; }
     .note { color: $text-muted; text-style: italic; }
-    #approve-box { width: 80; margin: 1 4; margin-top: 1; padding: 1 2;
+    #approve-box { width: 100%; max-width: 90; margin: 1 2; margin-top: 1; padding: 1 2;
                    border: heavy $accent; background: $surface; }
     #approve-args { height: auto; max-height: 12; padding: 1 0; color: $text; }
     #approve-buttons { height: auto; padding: 1 0 0 0; align: center middle; }
@@ -150,23 +394,24 @@ class HexielTUI(App):
         self._stream_wid = None
         self._stream_text = ""
         self._last_flush = 0.0
-        self._think_wid = None      # live "thinking…" line for reasoning models
-        self._think_chars = 0
-        self._think_flush = 0.0
+        self._think_chars = 0       # reasoning chars this step (summarized in chat)
         self._tool_widgets: dict[str, ToolLine] = {}
 
     # ---------------------------------------------------------------- layout
 
     def compose(self) -> ComposeResult:
-        yield Label("[b]hexiel[/b] — your codebase's guardian angel", id="banner")
+        yield Banner(self.session.cwd)
         with VerticalScroll(id="chat"):
             pass
+        yield ActivityLine()
+        yield CommandMenu()
         with Horizontal(id="input-row"):
-            yield Input(placeholder="Ask hexiel…  (/help for commands)", id="prompt")
+            yield PromptInput(placeholder="Ask hexiel…  (type / for commands)", id="prompt")
         yield StatusLine(self.session)
 
     def on_mount(self) -> None:
         self.status = self.query_one(StatusLine)
+        self.activity = self.query_one(ActivityLine)
         self.status.refresh_text()
         self.query_one("#prompt", Input).focus()
         self.set_interval(1.0, self._tick)
@@ -208,11 +453,52 @@ class HexielTUI(App):
 
     # ---------------------------------------------------------------- input
 
+    def on_input_changed(self, event: Input.Changed) -> None:
+        from .config import load_config
+        text = event.value
+        if not text.startswith("/"):
+            self.query_one(CommandMenu).hide()
+            return
+        try:
+            profiles = load_config().models if text.startswith("/model ") else {}
+        except SystemExit:
+            profiles = {}
+        self.query_one(CommandMenu).show_for(text, self.skills, profiles,
+                                             self.session.model_config.name)
+
+    def accept_menu(self, run: bool) -> bool:
+        """Apply the highlighted menu entry. Returns True when it consumed the key."""
+        menu = self.query_one(CommandMenu)
+        picked = menu.selected()
+        if not picked:
+            return False
+        kind, value = picked
+        prompt = self.query_one("#prompt", Input)
+        takes_arg = kind == "skill" or any(n == value and a for n, a, _ in COMMANDS)
+        if kind == "model":
+            line, run_now = f"/model {value}", run
+        elif takes_arg or not run:
+            line, run_now = f"/{value} ", False
+        else:
+            line, run_now = f"/{value}", True
+        if run_now:
+            menu.hide()
+            prompt.value = ""
+            self.submit_text(line)
+        else:
+            prompt.value = line
+            prompt.cursor_position = len(line)
+        return True
+
     def on_input_submitted(self, event: Input.Submitted) -> None:
-        text = event.value.strip()
+        event.input.value = ""
+        self.query_one(CommandMenu).hide()
+        self.submit_text(event.value)
+
+    def submit_text(self, text: str) -> None:
+        text = text.strip()
         if not text:
             return
-        event.input.value = ""
         text = self.maybe_command(text)
         if not text:
             return
@@ -242,8 +528,11 @@ class HexielTUI(App):
         return None
 
     def cmd_help(self, arg: str) -> None:
-        self.add_note("/help /clear /compact /model <name> /models /auto /memory /skills "
-                      "/ship [title] /heal /setup-gitlab /quit — plus any skill name, e.g. /review")
+        lines = [f"/{n} {a}".ljust(22) + d for n, a, d in COMMANDS]
+        lines.append("/<skill> <request>".ljust(22) + "run any installed skill (/skills lists them)")
+        lines.append("")
+        lines.append("Attach a screenshot by typing its path, e.g. @shot.png — Ctrl+C stops a turn.")
+        self.add_note("\n".join(line.replace("[", "\\[") for line in lines))
 
     def cmd_clear(self, arg: str) -> None:
         self.session.messages = []
@@ -300,6 +589,7 @@ class HexielTUI(App):
             self.add_note("hexiel is still working — Ctrl+C to cancel")
             return
         self._thread = TurnThread(self, prompt)
+        self.activity.start()
         self._thread.start()
         self._refresh_status()
 
@@ -311,6 +601,7 @@ class HexielTUI(App):
                 self._push(("turn_end", {"error": repr(exc)}))
                 return
             self._push(("turn_end", ))
+        self.activity.start()
         threading.Thread(target=bg, daemon=True).start()
 
     def _push(self, event) -> None:
@@ -321,21 +612,25 @@ class HexielTUI(App):
     def handle_event(self, event, *payload) -> None:
         chat = self.query_one("#chat", VerticalScroll)
         if event == "thinking":
-            # reasoning models can think for minutes; show progress, not a frozen screen
+            # reasoning models can think for minutes; the activity line shows progress
             self._think_chars += len(payload[0])
-            if self._think_wid is None:
-                self._think_wid = Static("💭 thinking…", classes="note")
-                chat.mount(self._think_wid)
-            now = time.time()
-            if now - self._think_flush > 0.5:
-                self._think_wid.update(f"💭 thinking… ~{self._think_chars // 4} tokens")
-                self._think_flush = now
-            chat.scroll_end(animate=False)
+            self.activity.add_chars(len(payload[0]))
+            self.activity.phase("thinking")
             return
-        if self._think_wid is not None and event in ("text", "tool_call", "turn_end"):
-            self._think_wid.update(f"💭 thought for ~{self._think_chars // 4} tokens")
-            self._think_wid = None
+        if self._think_chars and event in ("text", "tool_call", "turn_end"):
+            chat.mount(Static(f"✓ thought for ~{self._think_chars // 4} tokens", classes="note"))
             self._think_chars = 0
+        if event == "text":
+            self.activity.add_chars(len(payload[0]))
+            self.activity.phase("writing")
+        elif event == "tool_call":
+            self.activity.phase("tool", payload[0].get("name", ""))
+        elif event in ("tool_result", "compact_end"):
+            self.activity.phase("waiting")
+        elif event == "compact_start":
+            self.activity.phase("compacting")
+        elif event == "turn_end":
+            self.activity.stop()
         if event == "text":
             delta = payload[0]
             self._stream_text += delta
@@ -481,11 +776,13 @@ class HexielTUI(App):
         holder = {"event": threading.Event(), "result": "no"}
 
         def show() -> None:
+            self.activity.phase("approval")
             preview = json.dumps(args, indent=2)[:1400]
             self.push_screen(ApproveScreen(tool_name, preview),
                              callback=lambda verdict: _collect(verdict))
 
         def _collect(verdict) -> None:
+            self.activity.phase("waiting")
             holder["result"] = verdict or "no"
             holder["event"].set()
 

@@ -372,7 +372,7 @@ class Session:
         try:
             sessions.mkdir(parents=True, exist_ok=True)
             payload = {
-                "id": self.id, "created": self.created,
+                "id": self.id, "created": self.created, "cwd": self.cwd,
                 "model": self.model_config.name, "messages": self.messages[-400:],
             }
             (sessions / f"{self.id}.json").write_text(json.dumps(payload))
@@ -380,12 +380,22 @@ class Session:
             pass
 
     @classmethod
-    def resume_latest(cls) -> dict | None:
+    def resume_latest(cls, cwd: str | None = None) -> dict | None:
+        """Most recent session — for `cwd`'s project when given, so `hexiel -c`
+        in one repo never resumes a conversation from another."""
         try:
             sessions = sorted((home_data_dir() / "sessions").glob("*.json"),
-                              key=lambda p: p.stat().st_mtime)
-            if not sessions:
-                return None
-            return json.loads(sessions[-1].read_text())
-        except (OSError, json.JSONDecodeError, IndexError):
+                              key=lambda p: p.stat().st_mtime, reverse=True)
+        except OSError:
             return None
+        legacy = None   # sessions saved before cwd was recorded
+        for path in sessions:
+            try:
+                data = json.loads(path.read_text())
+            except (OSError, json.JSONDecodeError):
+                continue
+            if cwd is None or data.get("cwd") == cwd:
+                return data
+            if legacy is None and "cwd" not in data:
+                legacy = data
+        return legacy

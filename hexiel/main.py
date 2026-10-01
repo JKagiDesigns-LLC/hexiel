@@ -176,7 +176,7 @@ def main() -> None:
         wizard(cwd)
         return
 
-    resumed = Session.resume_latest() if args.continue_ else None
+    resumed = Session.resume_latest(cwd) if args.continue_ else None
     session = build_session(cwd, args.model, resumed)
     memory_mod.ensure_dirs(cwd)
     if args.yes:

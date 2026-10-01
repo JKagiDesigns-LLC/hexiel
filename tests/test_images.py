@@ -61,3 +61,17 @@ def test_stale_images_are_elided(tmp_path):
     assert s._elide_stale_tools() >= 1
     assert "images" not in s.messages[0] and "image elided" in s.messages[0]["content"]
     assert s.messages[4].get("images")             # current turn keeps its image
+
+
+def test_resume_latest_is_per_project(tmp_path):
+    from hexiel.config import ModelConfig, Settings
+    from hexiel.session import Session
+    mc = ModelConfig(name="t", provider="openai", model="m", base_url="http://x")
+    a, b = tmp_path / "proj-a", tmp_path / "proj-b"
+    for cwd, text in ((a, "in A"), (b, "in B")):
+        s = Session(mc, Settings(), str(cwd), [], "sys")
+        s.messages = [{"role": "user", "content": text}]
+        s.save()
+    assert Session.resume_latest(str(a))["messages"][0]["content"] == "in A"
+    assert Session.resume_latest(str(b))["messages"][0]["content"] == "in B"
+    assert Session.resume_latest(str(tmp_path / "elsewhere")) is None

@@ -86,6 +86,54 @@ def load_configs(cwd: str, config_mcp: dict | None = None) -> list[ServerConfig]
     return [s for s in servers.values() if s.enabled and (s.command or s.url)]
 
 
+# ---------------------------------------------------------------- presets
+
+# official servers, one command to add (/mcp add <name>) — entries use Claude Code's .mcp.json shape
+PRESETS = {
+    "filesystem": ("Files outside the project (read/write a folder you choose)",
+                   {"command": "npx", "args": ["-y", "@modelcontextprotocol/server-filesystem", "."]},
+                   "Edit the last argument to point at the folder you want to expose."),
+    "playwright": ("Browser automation (Microsoft Playwright): open pages, click, fill forms",
+                   {"command": "npx", "args": ["-y", "@playwright/mcp@latest"],
+                    # the core browsing set: ~1/3 of the full server's prompt cost
+                    "tools": ["browser_navigate", "browser_navigate_back", "browser_snapshot",
+                              "browser_click", "browser_type", "browser_fill_form", "browser_press_key",
+                              "browser_select_option", "browser_wait_for", "browser_tabs", "browser_close"]},
+                   "Text accessibility snapshots, so it works with text-only models. Limited to the core "
+                   "browsing tools to keep prompts lean — delete the `tools` list in .mcp.json for all 25."),
+    "firebase": ("Firebase: Firestore, Auth, Hosting, Remote Config …",
+                 {"command": "npx", "args": ["-y", "firebase-tools@latest", "mcp"]},
+                 "Sign in once first: npx -y firebase-tools@latest login"),
+    "supabase": ("Supabase: Postgres database, auth, storage (read-only by default)",
+                 {"command": "npx", "args": ["-y", "@supabase/mcp-server-supabase@latest", "--read-only",
+                                             "--access-token=${SUPABASE_ACCESS_TOKEN}"]},
+                 "Set SUPABASE_ACCESS_TOKEN (Supabase dashboard → Account → Access tokens); "
+                 "remove --read-only to allow writes."),
+    "github": ("GitHub: issues, pull requests, code search",
+               {"type": "http", "url": "https://api.githubcopilot.com/mcp/",
+                "headers": {"Authorization": "Bearer ${GITHUB_TOKEN}"}},
+               "Set GITHUB_TOKEN to a GitHub personal access token."),
+    "notion": ("Notion: search and edit pages and databases",
+               {"command": "npx", "args": ["-y", "@notionhq/notion-mcp-server"],
+                "env": {"NOTION_TOKEN": "${NOTION_TOKEN}"}},
+               "Create an internal integration at notion.so/my-integrations, share pages with it, "
+               "and set NOTION_TOKEN."),
+}
+
+
+def add_preset(name: str, cwd: str) -> tuple[ServerConfig, str]:
+    """Write a preset into <project>/.mcp.json (merging) and return its config + note."""
+    label, entry, note = PRESETS[name]
+    path = Path(cwd) / ".mcp.json"
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, ValueError):
+        data = {}
+    data.setdefault("mcpServers", {})[name] = entry
+    path.write_text(json.dumps(data, indent=2) + "\n")
+    return _from_entry(name, entry, str(path)), note
+
+
 # ---------------------------------------------------------------- transports
 
 class _Stdio:

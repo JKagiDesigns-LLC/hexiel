@@ -513,7 +513,7 @@ COMMANDS = [
     ("permissions", "", "show allow / ask / deny rules (incl. this session's 'always')"),
     ("memory", "", "show what hexiel remembers about you and this project"),
     ("skills", "", "list installed skills"),
-    ("mcp", "", "show connected MCP servers and their tools"),
+    ("mcp", "[add name]", "MCP servers: status, or add firebase/supabase/notion/github/playwright/filesystem"),
     ("ship", "[title]", "propose your changes as a GitLab merge request"),
     ("heal", "[what broke]", "fix a hexiel bug itself, review the diff, share it or keep it"),
     ("setup-gitlab", "<token>", "save a GitLab access token"),
@@ -1121,6 +1121,24 @@ class HexielTUI(App):
 
     def cmd_mcp(self, arg: str) -> None:
         from . import mcp_client
+        if arg.startswith("add"):
+            name = arg[3:].strip().lower()
+            if name not in mcp_client.PRESETS:
+                self.add_note("MCP presets: " + ", ".join(f"{k} ({v[0]})" for k, v in mcp_client.PRESETS.items())
+                              + " — /mcp add <name>")
+                return
+            cfg, note = mcp_client.add_preset(name, self.session.cwd)
+            self.add_note(f"added '{name}' to {self.session.cwd}/.mcp.json — starting it… ({note})")
+
+            def work() -> None:
+                started = mcp_client.start_servers([cfg])
+                if started and not started[0].error:
+                    self.session.mcp_servers.extend(started)
+                    self.session.tools.extend(mcp_client.tool_defs(started))
+                self.call_from_thread(self.add_note, "\n".join(
+                    line.replace("[", "\\[") for line in mcp_client.status_lines(started)))
+            threading.Thread(target=work, daemon=True).start()
+            return
         servers = getattr(self.session, "mcp_servers", [])
         if not servers:
             self.add_note("no MCP servers configured — add them to <project>/.mcp.json "

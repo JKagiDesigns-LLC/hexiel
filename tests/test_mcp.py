@@ -91,3 +91,12 @@ def test_allowlist_and_failed_server(tmp_path):
     status = "\n".join(M.status_lines(servers))
     assert "✓ tiny" in status and "allowlisted" in status and "✗ gone" in status
     servers[0].close()
+
+
+def test_add_preset_merges_into_mcp_json(tmp_path):
+    (tmp_path / ".mcp.json").write_text(json.dumps({"mcpServers": {"mine": {"command": "x"}}}))
+    cfg, note = M.add_preset("supabase", str(tmp_path))
+    data = json.loads((tmp_path / ".mcp.json").read_text())
+    assert set(data["mcpServers"]) == {"mine", "supabase"} and "SUPABASE_ACCESS_TOKEN" in note
+    cfg, _ = M.add_preset("playwright", str(tmp_path))
+    assert cfg.tools and "browser_navigate" in cfg.tools          # lean allowlist by default

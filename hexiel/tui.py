@@ -415,11 +415,20 @@ class CommandMenu(OptionList):
     def show_for(self, text: str, skills, profiles: dict, current: str) -> None:
         rows: list[tuple[str, str, str]] = []      # (kind, value, label)
         if text.startswith("/model "):
+            from .presets import PRESETS
             q = text[len("/model "):].strip().lower()
-            for name, cfg in profiles.items():
-                if q in name.lower() or q in cfg.model.lower():
-                    mark = " [green]● current[/]" if name == current else ""
-                    rows.append(("model", name, f"[b]{name:<18}[/b] [dim]{cfg.model}[/dim]{mark}"))
+            adding = q.startswith("add")
+            q = q[3:].strip() if adding else q
+            if not adding:
+                for name, cfg in profiles.items():
+                    if q in name.lower() or q in cfg.model.lower():
+                        mark = " [green]● current[/]" if name == current else ""
+                        rows.append(("model", name, f"[b]{name:<18}[/b] [dim]{cfg.model}[/dim]{mark}"))
+            for group, name, label, fields, _ in PRESETS:
+                if name in profiles or not (q in name or q in label.lower()):
+                    continue
+                need = f"  [dim]needs ${fields['api_key_env']}[/dim]" if fields.get("api_key_env") else ""
+                rows.append(("preset", name, f"[b]+ {name:<16}[/b] [dim]add preset ·[/dim] {label}{need}"))
         elif text.startswith("/") and " " not in text:
             q = text[1:].lower()
             cmds = [(n, a, d) for n, a, d in COMMANDS if n.startswith(q)]
@@ -754,6 +763,8 @@ class HexielTUI(App):
         takes_arg = kind == "skill" or any(n == value and a for n, a, _ in COMMANDS)
         if kind == "model":
             line, run_now = f"/model {value}", run
+        elif kind == "preset":
+            line, run_now = f"/model add {value}", run
         elif takes_arg or not run:
             line, run_now = f"/{value} ", False
         else:
@@ -828,7 +839,11 @@ class HexielTUI(App):
         cfg = load_config()
         if not arg:
             names = ", ".join(cfg.models)
-            self.add_note(f"models: {names} — /model <name> to switch, /models for live inventory")
+            self.add_note(f"models: {names} — /model <name> to switch, /model add <preset> "
+                          "for a ready-made profile (hexiel --presets lists them)")
+            return
+        if arg.startswith("add"):
+            self._add_preset(arg[3:].strip())
             return
         if arg in cfg.models:
             from . import settings_edit
@@ -896,6 +911,29 @@ class HexielTUI(App):
 
     def cmd_config(self, arg: str) -> None:
         self.push_screen(ConfigScreen(self.session))
+
+    def _add_preset(self, name: str) -> None:
+        from . import presets, settings_edit
+        if name not in presets.BY_NAME:
+            self.add_note("unknown preset — choose one of: " + ", ".join(presets.BY_NAME))
+            return
+        fields = presets.as_profile(name)
+        try:
+            self.add_note(settings_edit.add_profile(name, fields))
+        except ValueError as exc:
+            self.add_note(str(exc))
+            return
+        note = presets.BY_NAME[name][4]
+        key = fields.get("api_key_env")
+        if key and not os.environ.get(key):
+            note += f"  ⚠ set {key} first (e.g. in ~/.bashrc), then restart hexiel"
+        self.add_note(note)
+
+        def done(scope) -> None:
+            if scope:
+                self.add_note(settings_edit.apply(self.session, "profile", name, scope))
+                self._refresh_status()
+        self.push_screen(ScopeScreen(f"Switch to {name} ({fields['model']})"), callback=done)
 
     def cmd_auto(self, arg: str) -> None:
         self.session.auto_approve = not self.session.auto_approve

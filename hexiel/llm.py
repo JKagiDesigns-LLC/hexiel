@@ -127,7 +127,7 @@ class AnthropicProvider:
 
     def stream(self, messages: list[dict], system: str, tools: list[dict], *,
                model: str, max_output_tokens: int, extra_body: dict,
-               timeout: float) -> Iterator[tuple]:
+               timeout: float, **_openai_only) -> Iterator[tuple]:
         body = {
             "model": model,
             "max_tokens": max_output_tokens,
@@ -185,9 +185,14 @@ class OpenAICompatProvider:
         self.base_url = base_url.rstrip("/")
 
     @classmethod
-    def _convert_messages(cls, messages: list[dict]) -> list[dict]:
+    def _convert_messages(cls, messages: list[dict], echo_reasoning: bool = False) -> list[dict]:
         converted = []
         for msg in messages:
+            if echo_reasoning and msg["role"] == "assistant" and msg.get("reasoning"):
+                # providers like DeepSeek/Together/Kimi require prior reasoning on tool turns
+                converted.extend(cls._convert_messages([{k: v for k, v in msg.items() if k != "reasoning"}]))
+                converted[-1]["reasoning_content"] = msg["reasoning"]
+                continue
             if msg["role"] == "tool":
                 converted.append({
                     "role": "tool",
@@ -235,12 +240,18 @@ class OpenAICompatProvider:
 
     def stream(self, messages: list[dict], system: str, tools: list[dict], *,
                model: str, max_output_tokens: int, extra_body: dict,
-               timeout: float) -> Iterator[tuple]:
+               timeout: float, echo_reasoning: bool = False,
+               max_tokens_param: str = "") -> Iterator[tuple]:
+        if not max_tokens_param:   # OpenAI's newer models reject max_tokens
+            host = self.base_url.lower()
+            openai_style = "api.openai.com" in host or ".openai.azure.com" in host or ".azure.com/openai" in host
+            max_tokens_param = "max_completion_tokens" if openai_style else "max_tokens"
         base = {
             "model": model,
-            "messages": [{"role": "system", "content": system}] + self._convert_messages(messages),
+            "messages": [{"role": "system", "content": system}]
+                        + self._convert_messages(messages, echo_reasoning),
             "stream": True,
-            "max_tokens": max_output_tokens,
+            max_tokens_param: max_output_tokens,
             **extra_body,
         }
         if tools:

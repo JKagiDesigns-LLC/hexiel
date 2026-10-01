@@ -136,6 +136,8 @@ class ModelConfig:
     context_window: int = 200_000
     max_output_tokens: int = 16_384
     extra_body: dict = field(default_factory=dict)
+    echo_reasoning: bool = False     # send reasoning back as reasoning_content (DeepSeek, Together, Kimi)
+    max_tokens_param: str = ""       # "" = auto (max_completion_tokens for OpenAI/Azure, else max_tokens)
 
 
 @dataclass

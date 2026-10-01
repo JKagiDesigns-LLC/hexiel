@@ -101,3 +101,14 @@ def test_web_history_order(tmp_path):
         {"role": "tool", "tool_call_id": "c1", "content": "hit"},
     ]
     assert [i["t"] for i in WebState(app.session).render_history()] == ["assistant", "tool"]
+
+
+def test_model_menu_offers_presets(tmp_path):
+    async def go():
+        app = make_app(tmp_path)
+        async with app.run_test(size=(120, 30)) as pilot:
+            await pilot.press(*"/model add son")
+            await pilot.pause()
+            return [(k, v) for k, v in app.query_one(CommandMenu)._items]
+    items = run(go())
+    assert ("preset", "sonnet") in items

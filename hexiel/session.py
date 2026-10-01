@@ -154,6 +154,8 @@ class Session:
         try:
             if turn["item"] is None and turn["tools"] >= todo_mod.AUTO_MIN_TOOLS:
                 turn["item"] = todo_mod.auto_track(self.cwd, user_text)
+            if turn["item"] is None:
+                return      # a quick question must not overwrite an ongoing task's checkpoint
             said = " ".join((assistant.get("content") or "").split())[:90]
             args = call.get("arguments") or {}
             first = next((str(v) for v in args.values() if v), "")[:60]
@@ -175,12 +177,15 @@ class Session:
     def _stream_assistant(self, provider, tool_defs) -> dict:
         """Stream one assistant response; returns the finalized message dict."""
         final = None
+        reasoning: list[str] = []
         try:
             stream = provider.stream(self.messages, self.system_prompt, tool_defs,
                                      model=self.model_config.model,
                                      max_output_tokens=self.model_config.max_output_tokens,
                                      extra_body=self.model_config.extra_body,
-                                     timeout=self.settings.request_timeout)
+                                     timeout=self.settings.request_timeout,
+                                     echo_reasoning=self.model_config.echo_reasoning,
+                                     max_tokens_param=self.model_config.max_tokens_param)
             for event, *payload in stream:
                 if self._stop.is_set():
                     break
@@ -188,6 +193,8 @@ class Session:
                     self.on_event("text", payload[0])
                 elif event == "thinking":
                     self.on_event("thinking", payload[0])
+                    if self.model_config.echo_reasoning:
+                        reasoning.append(payload[0])
                 elif event == "assistant":
                     final = payload[0]
                 elif event == "done":
@@ -198,7 +205,10 @@ class Session:
                         self.on_event("usage", usage)
         except llm.ProviderError as exc:
             self._provider_error = str(exc)
-        return final if final is not None else {"role": "assistant", "content": ""}
+        final = final if final is not None else {"role": "assistant", "content": ""}
+        if reasoning:
+            final["reasoning"] = "".join(reasoning)
+        return final
 
     # ---------------------------------------------------------------- tool execution
 
@@ -313,6 +323,8 @@ class Session:
             if msg.get("role") == "tool" and msg.get("content"):
                 kind_guess = len(msg["content"])
                 msg["content"] = f"[prior tool output elided: ~{kind_guess} chars]"
+                elided += 1
+            if msg.pop("reasoning", None):          # stale reasoning is never needed again
                 elided += 1
             # old images would otherwise be re-sent on every request
             if msg.pop("images", None):

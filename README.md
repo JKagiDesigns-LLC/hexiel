@@ -116,6 +116,13 @@ and sessions. Local-only by default; `--host 0.0.0.0` prints a loud warning
 
 ## Models
 
+**Fastest start:** `/model add <preset>` in the terminal UI — presets for Claude
+(`sonnet`, `opus`, `haiku`), OpenAI (`gpt`), Gemini (`gemini`), xAI (`grok`),
+DeepSeek, Kimi, GLM, Mistral, Groq, Together, Fireworks, OpenRouter, Azure,
+Bedrock, and local Ollama / LM Studio / vLLM / llama.cpp. `hexiel --presets`
+lists them; **[docs/MODELS.md](docs/MODELS.md)** has copy-paste config for each,
+including provider quirks hexiel handles for you.
+
 Profiles live in `~/.config/hexiel/config.toml` (written on first run). Switch
 with `/model NAME`, `hexiel -m NAME`, or the settings table.
 
@@ -149,8 +156,7 @@ an Intel iGPU at ~12 tokens/s. Hybrid "thinking" models should run with
 `edit` · `glob` · `grep` · `list` · `map` (cached project tree) · `file_info` ·
 `powershell` · `test` (your detected runner) · `container` (docker/podman +
 compose) · `view_image` / `image_edit` · `web_search` / `web_fetch` (no API key
-needed) · `memory` · `todo` · `gitlab_mr` · `skill` — plus any OpenWebUI plugin
-in `plugins/`.
+needed) · `memory` · `todo` · `gitlab_mr` · `skill` — plus any MCP server's tools and any OpenWebUI plugin in `plugins/`.
 
 ### Context discipline
 - **Auto-compaction, Claude-Code style:** at 82% of the context window, older
@@ -189,13 +195,49 @@ in `plugins/`.
 - Skills are `SKILL.md` folders from `~/.local/share/hexiel/skills/`, the
   project, **and `~/.claude/skills/`** — Claude Code skills work unchanged.
 
-### Self-healing
-Exceptions and provider errors are recorded to `.hexiel/incidents/`. `/heal`
-runs the tests, reproduces, fixes the root cause, re-tests, commits on
-`hexiel-fix/<slug>` and proposes a merge request. It never pushes to your
-default branch and never merges.
+### Self-healing — fix hexiel, then share the fix with everyone
+Crashes and provider errors are recorded to `.hexiel/incidents/`. Run `/heal`
+(or `/heal <what went wrong>` for a bug you noticed) and hexiel:
 
-### GitLab collaboration (`/ship`, `/heal`, `gitlab_mr`)
+1. makes an **isolated copy of its own source** at the version you're running
+   (a git worktree — or, for `pip` installs, a clone of the release tag) under
+   `~/.local/share/hexiel/heal/`. Your project and your install are untouched;
+2. reproduces the bug, fixes the root cause and adds a test, running the suite there;
+3. opens a **lazygit-style review**: changed files on the left with checkboxes,
+   a colour diff on the right (`space` include/exclude, `a` all/none);
+4. you choose:
+   - **Send to hexiel (and keep)** — commits only the files you ticked and opens a
+     merge request to the official repo (via a fork if you're not a maintainer), so
+     every hexiel user gets the fix once it's reviewed. Needs a free GitLab account
+     (`/setup-gitlab <token>`).
+   - **Keep just for me** — applies the ticked files to your hexiel.
+   - **Discard**, or **decide later** with `/heal review`.
+
+### MCP servers
+hexiel runs [Model Context Protocol](https://modelcontextprotocol.io) servers —
+local (stdio) and remote (streamable HTTP). It reads **Claude Code's `.mcp.json`**
+from your project (and `~/.config/hexiel/mcp.json`), so existing setups just work:
+
+```json
+{ "mcpServers": {
+    "files":  { "command": "npx", "args": ["-y", "@modelcontextprotocol/server-filesystem", "."] },
+    "remote": { "type": "http", "url": "https://example.com/mcp",
+                "headers": { "Authorization": "Bearer ${MY_TOKEN}" } } } }
+```
+
+or in `config.toml`, with an optional allowlist to keep prompts small on modest hardware:
+
+```toml
+[mcp.servers.files]
+command = "npx"
+args = ["-y", "@modelcontextprotocol/server-filesystem", "."]
+tools = ["read_file", "list_directory"]     # expose only these
+```
+
+Tools appear as `mcp__<server>__<tool>`; read-only tools skip the approval prompt.
+`/mcp` shows each server's status, tool count and schema-token cost.
+
+### GitLab merge requests for your own projects (`/ship`, `gitlab_mr`)
 - **Owner flow:** turn uncommitted work into a merge request (branch → commit →
   push → MR), approving each step.
 - **Contributor flow:** hexiel forks the repo, pushes to *your* fork and opens
@@ -216,8 +258,8 @@ Fork → branch → merge request; the maintainer reviews and approves. hexiel c
 do the whole flow for you (`/ship`). See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ```bash
-.venv/bin/pytest                    # 62 tests: tools, providers, compaction, TUI,
-                                    # settings editor, updater, web UI, plugins
+.venv/bin/pytest                    # 73 tests: tools, providers, compaction, TUI, MCP,
+                                    # self-heal, settings, updater, web UI, plugins
 .venv/bin/python scripts/screenshots.py   # regenerate these screenshots
 ```
 

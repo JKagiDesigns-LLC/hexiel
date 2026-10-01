@@ -96,3 +96,24 @@ def test_backup_written_once(session):
     SE.apply(session, "model.max_output_tokens", 8192, "permanent")
     backup = config_mod.CONFIG_FILE.with_name("config.toml.bak")
     assert backup.read_text() == CFG
+
+
+def test_every_preset_is_a_valid_profile():
+    from hexiel import presets
+    from hexiel.config import ModelConfig
+    for name in presets.BY_NAME:
+        parsed = tomllib.loads(presets.toml_block(name))["models"][name]
+        mc = ModelConfig(name=name, **parsed)          # every key is a real field
+        assert mc.model and mc.provider in ("openai", "anthropic")
+        assert mc.provider == "anthropic" or mc.base_url.startswith("http")
+        assert 0 < mc.max_output_tokens < mc.context_window
+
+
+def test_add_preset_profile(session):
+    from hexiel import presets
+    msg = SE.add_profile("deepseek", presets.as_profile("deepseek"))
+    assert "added profile 'deepseek'" in msg
+    prof = config_mod.load_config().models["deepseek"]
+    assert prof.model == "deepseek-v4-pro" and prof.echo_reasoning is True
+    with pytest.raises(ValueError):
+        SE.add_profile("deepseek", presets.as_profile("deepseek"))

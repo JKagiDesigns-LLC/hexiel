@@ -154,6 +154,15 @@ def apply(session, key: str, value, scope: str) -> str:
     return f"{label} → {value} (saved to {config_mod.CONFIG_FILE})"
 
 
+def add_profile(name: str, fields: dict) -> str:
+    """Append a [models.<name>] profile to config.toml (refuses to overwrite)."""
+    if name in config_mod.load_config().models:
+        raise ValueError(f"a profile named '{name}' already exists")
+    for key, value in fields.items():
+        _write(f"models.{name}", key, value)
+    return f"added profile '{name}' to {config_mod.CONFIG_FILE}"
+
+
 # ---------------------------------------------------------------- TOML line editing
 
 def toml_literal(value) -> str:

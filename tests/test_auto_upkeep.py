@@ -92,3 +92,12 @@ def test_project_docs_any_case_and_todo_pointer(tmp_path):
     docs = _project_docs(str(tmp_path))
     assert "always run the e2e suite" in docs and "agents.md" in docs
     assert "TODO.md" in docs and "(2 lines)" in docs
+
+
+def test_quick_question_keeps_existing_checkpoint(tmp_path, monkeypatch):
+    todo_mod.auto_track(str(tmp_path), "long running migration")
+    todo_mod.auto_checkpoint(str(tmp_path), "halfway through step 3")
+    steps = [{"role": "assistant", "content": "x", "tool_calls": [call(1)]},
+             {"role": "assistant", "content": "it's in README"}]
+    fake_session(tmp_path, monkeypatch, steps).run_turn("where is the README?")
+    assert todo_mod.read_todos(str(tmp_path))[1] == "halfway through step 3"

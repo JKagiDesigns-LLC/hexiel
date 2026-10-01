@@ -35,6 +35,8 @@ def parse_args() -> argparse.Namespace:
                     help="run the browser web UI instead of the TUI")
     ap.add_argument("--host", default="127.0.0.1", help="web UI bind host (default: 127.0.0.1)")
     ap.add_argument("--port", type=int, default=8777, help="web UI port (default: 8777)")
+    ap.add_argument("--presets", action="store_true",
+                    help="list ready-made model profiles for the major providers")
     ap.add_argument("--doctor", action="store_true",
                     help="run environment preflight checks and exit")
     ap.add_argument("--setup", action="store_true", help="first-run guided wizard")
@@ -172,6 +174,10 @@ def main() -> None:
     cwd = str(Path(args.path).resolve())
     os.chdir(cwd)
 
+    if args.presets:
+        from .presets import listing
+        print(listing())
+        return
     if args.doctor:
         from .doctor import doctor_main
         raise SystemExit(doctor_main(cwd))

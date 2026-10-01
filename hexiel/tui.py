@@ -214,18 +214,103 @@ class ConfigScreen(ModalScreen):
         self.dismiss(None)
 
 
+class ReviewScreen(ModalScreen):
+    """lazygit-style review of a self-heal fix: tick the files to include, read
+    each diff, then send the fix to hexiel, keep it locally, or discard it."""
+
+    BINDINGS = [("space", "toggle", "Include/exclude file"), ("a", "toggle_all", "All/none"),
+                ("s", "pick('send')", "Send to hexiel"), ("k", "pick('keep')", "Keep just for me"),
+                ("d", "pick('discard')", "Discard"), ("escape", "pick('later')", "Decide later")]
+
+    ICON = {"modified": "[yellow]M[/]", "added": "[green]A[/]", "deleted": "[red]D[/]"}
+
+    def __init__(self, changes, summary: str) -> None:
+        super().__init__()
+        self.changes = changes
+        self._summary = summary
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="review-box"):
+            yield Label("[b]Review the self-heal fix[/b]  [dim]space include/exclude · a all/none · "
+                        "↑/↓ files · s send · k keep · d discard · esc later[/dim]")
+            yield Static(self._summary, id="review-summary", classes="note")
+            with Horizontal(id="review-panes"):
+                yield OptionList(id="review-files")
+                with VerticalScroll(id="review-diff"):
+                    yield Static("", id="review-diff-body")
+            yield Static("", id="review-count", classes="note")
+            with Horizontal(id="review-buttons"):
+                yield Button("Send to hexiel (and keep)  \\[s]", variant="primary", id="review-send")
+                yield Button("Keep just for me  \\[k]", id="review-keep")
+                yield Button("Discard  \\[d]", variant="error", id="review-discard")
+                yield Button("Decide later  \\[esc]", id="review-later")
+
+    def on_mount(self) -> None:
+        self._render_files(0)
+        self.query_one("#review-files").focus()
+
+    def _render_files(self, highlight: int) -> None:
+        files = self.query_one("#review-files", OptionList)
+        files.clear_options()
+        files.add_options([Option(f"{'☑' if c.selected else '☐'} {self.ICON.get(c.status, '?')} "
+                                  f"{c.path.replace('[', chr(92) + '[')}  "
+                                  f"[green]+{c.added}[/] [red]−{c.removed}[/]") for c in self.changes])
+        files.highlighted = highlight
+        n = sum(c.selected for c in self.changes)
+        self.query_one("#review-count").update(f"{n} of {len(self.changes)} file(s) included")
+        self._show_diff(highlight)
+
+    def _show_diff(self, index: int | None) -> None:
+        from rich.syntax import Syntax
+        if index is None or not (0 <= index < len(self.changes)):
+            return
+        diff = self.changes[index].diff or "(binary or empty change)"
+        self.query_one("#review-diff-body").update(
+            Syntax(diff, "diff", theme="monokai", background_color="default", word_wrap=True))
+
+    def on_option_list_option_highlighted(self, event) -> None:
+        if event.option_list.id == "review-files":
+            self._show_diff(event.option_index)
+
+    def on_option_list_option_selected(self, event) -> None:
+        self.action_toggle()
+
+    def action_toggle(self) -> None:
+        index = self.query_one("#review-files", OptionList).highlighted
+        if index is not None:
+            self.changes[index].selected = not self.changes[index].selected
+            self._render_files(index)
+
+    def action_toggle_all(self) -> None:
+        target = not all(c.selected for c in self.changes)
+        for c in self.changes:
+            c.selected = target
+        self._render_files(self.query_one("#review-files", OptionList).highlighted or 0)
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        self.action_pick(event.button.id.removeprefix("review-"))
+
+    def action_pick(self, choice: str) -> None:
+        chosen = [c for c in self.changes if c.selected]
+        if choice in ("send", "keep") and not chosen:
+            self.query_one("#review-count").update("[red]select at least one file (space)[/]")
+            return
+        self.dismiss((choice, chosen))
+
+
 class RestartScreen(ModalScreen):
     """After an update: restart now (resumes this conversation) or later."""
 
     BINDINGS = [("r", "pick('restart')", "Restart"), ("escape", "pick('')", "Later")]
 
-    def __init__(self, version: str) -> None:
+    def __init__(self, version: str, headline: str = "") -> None:
         super().__init__()
         self._version = version
+        self._headline = headline or f"hexiel {version} installed"
 
     def compose(self) -> ComposeResult:
         with Vertical(id="scope-box"):
-            yield Label(f"[b]hexiel {self._version} installed[/b]")
+            yield Label(f"[b]{self._headline}[/b]")
             yield Static("Restart now to use it? Your conversation is saved and resumes "
                          "automatically.", classes="note")
             with Horizontal(id="scope-buttons"):
@@ -310,7 +395,7 @@ COMMANDS = [
     ("memory", "", "show what hexiel remembers about you and this project"),
     ("skills", "", "list installed skills"),
     ("ship", "[title]", "propose your changes as a GitLab merge request"),
-    ("heal", "", "fix recorded hexiel incidents and propose the fix"),
+    ("heal", "[what broke]", "fix a hexiel bug itself, review the diff, share it or keep it"),
     ("setup-gitlab", "<token>", "save a GitLab access token"),
     ("update", "", "install the newest hexiel release and restart"),
     ("exit", "", "quit hexiel"),
@@ -490,9 +575,16 @@ class Banner(Static):
         super().__init__("", id="banner")
         from . import __version__
         self._version = __version__
+        self._mode = ""
+        self.retarget(cwd)
+
+    def retarget(self, cwd: str, mode: str = "") -> None:
         home = str(Path.home())
         self._path = "~" + cwd[len(home):] if cwd == home or cwd.startswith(home + "/") else cwd
         self._project = Path(cwd).name or cwd
+        self._mode = mode
+        if self.is_mounted:
+            self.refresh_text()
 
     def on_mount(self) -> None:
         self.refresh_text()
@@ -502,7 +594,7 @@ class Banner(Static):
 
     def refresh_text(self) -> None:
         width = max(self.size.width - 4, 20) if self.size.width else 200
-        head = f"hexiel v{self._version}"
+        head = f"hexiel v{self._version}" + (f"  {self._mode}" if self._mode else "")
         tagline = " — your codebase's guardian angel"
         # "~/code/" dim + "myproj" bold; the parent part elides from the left first
         parent = self._path[:len(self._path) - len(self._project)]
@@ -548,6 +640,13 @@ class HexielTUI(App):
     #config-table { height: auto; max-height: 16; }
     #config-options { height: auto; max-height: 10; border: round $accent; }
     #config-help { height: auto; padding: 1 0 0 0; }
+    ReviewScreen { align: center middle; }
+    #review-box { width: 96%; height: 92%; padding: 1 2; border: heavy $accent; background: $surface; }
+    #review-panes { height: 1fr; }
+    #review-files { width: 38%; height: 100%; border: round $accent 50%; }
+    #review-diff { width: 1fr; height: 100%; border: round $accent 50%; padding: 0 1; }
+    #review-buttons { height: auto; padding: 1 0 0 0; }
+    #review-buttons Button { margin: 0 1 0 0; }
     #approve-box { width: 100%; max-width: 90; margin: 1 2; margin-top: 1; padding: 1 2;
                    border: heavy $accent; background: $surface; }
     #approve-args { height: auto; max-height: 12; padding: 1 0; color: $text; }
@@ -565,6 +664,8 @@ class HexielTUI(App):
         self._last_flush = 0.0
         self._think_chars = 0       # reasoning chars this step (summarized in chat)
         self._tool_widgets: dict[str, ToolLine] = {}
+        self._heal = None           # active self-heal: original session, workspace, incidents
+        self._heal_pending = None   # a reviewed-later fix waiting for /heal review
 
     # ---------------------------------------------------------------- layout
 
@@ -776,12 +877,12 @@ class HexielTUI(App):
         threading.Thread(target=lambda: (work(), self.call_from_thread(self.activity.stop)),
                          daemon=True).start()
 
-    def _offer_restart(self, version: str) -> None:
+    def _offer_restart(self, version: str, headline: str = "") -> None:
         def done(choice) -> None:
             if choice == "restart":
                 self.session.save()
                 self.exit(result="restart")
-        self.push_screen(RestartScreen(version), callback=done)
+        self.push_screen(RestartScreen(version, headline), callback=done)
 
     def cmd_config(self, arg: str) -> None:
         self.push_screen(ConfigScreen(self.session))
@@ -854,6 +955,8 @@ class HexielTUI(App):
             self.activity.phase("compacting")
         elif event == "turn_end":
             self.activity.stop()
+            if self._heal:                      # the heal turn finished: review the fix
+                self.call_after_refresh(self._heal_review)
         if event == "text":
             delta = payload[0]
             self._stream_text += delta
@@ -986,13 +1089,139 @@ class HexielTUI(App):
         threading.Thread(target=work, daemon=True).start()
 
     def cmd_heal(self, arg: str) -> None:
-        from .heal import heal_prompt
+        """/heal [what went wrong] — fix hexiel itself in an isolated copy of its
+        source, then review the diff and send the fix upstream or keep it."""
         from . import heal as heal_mod
+        if self._thread and self._thread.is_alive():
+            self.add_note("finish or Ctrl+C the current turn first, then /heal")
+            return
+        if arg.strip() == "review":
+            if self._heal_pending:
+                self._heal = self._heal_pending
+                self._heal_pending = None
+                self._heal_review()
+            else:
+                self.add_note("no self-heal fix is waiting for review")
+            return
+        if self._heal:
+            self.add_note("already healing — finish the current fix first")
+            return
         incidents = heal_mod.unhealed(self.session.cwd)
-        text = heal_prompt(self.session.cwd)
-        self.add_note(f"/heal: {len(incidents)} unhealed incident(s) — starting guided fix "
-                      "(every step asks for approval; changes go to a hexiel-fix branch)")
-        self._start_turn(text)
+        self.add_note(f"🔧 self-heal: {len(incidents)} recorded incident(s)"
+                      + (f" + your report" if arg.strip() else "")
+                      + " — preparing an isolated copy of hexiel's source…")
+        original = self.session
+
+        def work() -> None:
+            from . import contribute
+            try:
+                ws = contribute.prepare()
+            except Exception as exc:  # noqa: BLE001 - surface, don't crash
+                self.call_from_thread(self.add_note, f"[red]could not prepare the heal workspace:[/] {exc}")
+                return
+            self.call_from_thread(self._enter_heal, original, ws, incidents, arg.strip())
+        threading.Thread(target=work, daemon=True).start()
+
+    def _enter_heal(self, original, ws, incidents, description: str) -> None:
+        import sys as _sys
+        from .heal import heal_prompt
+        from .main import build_session
+        try:
+            healer = build_session(str(ws.path), original.model_config.name)
+        except Exception:  # noqa: BLE001 - on-the-fly profile: fall back to defaults
+            healer = build_session(str(ws.path), None)
+        healer.model_config = original.model_config
+        healer.auto_approve = original.auto_approve
+        self._heal = {"original": original, "ws": ws, "incidents": incidents, "description": description}
+        self.session = healer
+        self.query_one(Banner).retarget(str(ws.path), "[b yellow]· HEAL MODE[/]")
+        self.add_note(f"🔧 heal mode — working on hexiel's own source in {ws.path}. "
+                      "Your project and your installed hexiel stay untouched until you review the fix.")
+        self._start_turn(heal_prompt(incidents, str(ws.path), description, _sys.executable))
+
+    def _heal_review(self) -> None:
+        from . import contribute
+        heal = self._heal
+        if not heal:
+            return
+
+        def work() -> None:
+            try:
+                found = contribute.changes(heal["ws"])
+            except Exception as exc:  # noqa: BLE001
+                self.call_from_thread(self.add_note, f"[red]could not read the fix:[/] {exc}")
+                return
+            self.call_from_thread(self._show_review, found)
+        threading.Thread(target=work, daemon=True).start()
+
+    def _show_review(self, found) -> None:
+        heal = self._heal
+        if not found:
+            self.add_note("self-heal made no changes — nothing to review; leaving heal mode")
+            from . import contribute
+            contribute.discard(heal["ws"])
+            self._exit_heal()
+            return
+        total_add = sum(c.added for c in found)
+        total_del = sum(c.removed for c in found)
+        summary = (f"{len(found)} file(s) changed, +{total_add} −{total_del}.  Send → a merge request to the "
+                   "official hexiel repo so every user gets the fix (you keep it too).  Keep → applies "
+                   "to your hexiel only.")
+        self.push_screen(ReviewScreen(found, summary), callback=self._heal_decide)
+
+    def _heal_title(self) -> str:
+        heal = self._heal
+        what = heal["description"] or next((str(i.get("detail", "")) for i in heal["incidents"]), "")
+        what = " ".join(what.split())[:70] or "fix recorded incidents"
+        return f"self-heal: {what}"
+
+    def _heal_decide(self, result) -> None:
+        from . import contribute, heal as heal_mod
+        heal = self._heal
+        choice, chosen = result if result else ("later", [])
+        if choice == "later":
+            self._heal_pending = heal
+            self.add_note(f"fix kept for later in {heal['ws'].path} — /heal review to decide")
+            self._exit_heal()
+            return
+        if choice == "discard":
+            contribute.discard(heal["ws"])
+            self.add_note("self-heal fix discarded")
+            self._exit_heal()
+            return
+
+        def work() -> None:
+            applied = contribute.keep(heal["ws"], chosen)
+            msg = f"applied {len(applied)} file(s) to your hexiel"
+            if choice == "send":
+                try:
+                    body = contribute.mr_body(heal["description"], heal["incidents"], chosen)
+                    sent = contribute.send(heal["ws"], chosen, self._heal_title(), body)
+                    msg += (f"; sent to hexiel for review: {sent['mr_url']}  — thank you, "
+                            "everyone benefits once it's merged")
+                except Exception as exc:  # noqa: BLE001 - keep the fix, report the send failure
+                    self.call_from_thread(self.add_note, f"[red]sending failed:[/] {exc}")
+                    self._heal_pending = heal
+                    self.call_from_thread(self.add_note, "the fix is applied locally; /heal review to retry sending")
+                    self.call_from_thread(self._exit_heal)
+                    self.call_from_thread(self._offer_restart, "", "self-heal fix applied")
+                    return
+            heal_mod.mark_healed(heal["original"].cwd)
+            contribute.discard(heal["ws"])
+            self.call_from_thread(self.add_note, msg)
+            self.call_from_thread(self._exit_heal)
+            self.call_from_thread(self._offer_restart, "", "self-heal fix applied")
+        self.activity.start()
+        threading.Thread(target=lambda: (work(), self.call_from_thread(self.activity.stop)),
+                         daemon=True).start()
+
+    def _exit_heal(self) -> None:
+        heal = self._heal
+        self._heal = None
+        if heal:
+            self.session = heal["original"]
+            self.query_one(Banner).retarget(self.session.cwd)
+            self._refresh_status()
 
     def cmd_setup_gitlab(self, arg: str) -> None:
         from .gitlab import save_token

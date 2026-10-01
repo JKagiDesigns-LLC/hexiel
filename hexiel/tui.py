@@ -49,10 +49,11 @@ class ApproveScreen(ModalScreen):
     BINDINGS = [("y", "yes", "Yes"), ("n", "no", "No"), ("a", "always", "Always"),
                 ("escape", "no", "No")]
 
-    def __init__(self, tool_name: str, args_preview: str) -> None:
+    def __init__(self, tool_name: str, args_preview: str, always_rule: str = "") -> None:
         super().__init__()
         self._tool_name = tool_name
         self._args_preview = args_preview
+        self._always_rule = always_rule
         self.result: str | None = None
         self.done = threading.Event()
 
@@ -62,7 +63,8 @@ class ApproveScreen(ModalScreen):
             yield Static(self._args_preview, id="approve-args")
             with Horizontal(id="approve-buttons"):
                 yield Button("Yes  \\[y]", variant="primary", id="btn-yes")
-                yield Button("Always allow  \\[a]", id="btn-always")
+                yield Button(f"Always allow {self._always_rule.replace('[', chr(92) + '[')}  \\[a]"
+                             if self._always_rule else "Always allow  \\[a]", id="btn-always")
                 yield Button("No  \\[n]", variant="error", id="btn-no")
 
     def _finish(self, verdict: str) -> None:
@@ -357,6 +359,8 @@ class StatusLine(Static):
             todo_line = todo_mod.summary_line(self._session.cwd)
             approve = ("[yellow]auto-approve[/]", "auto-approve") if self._session.auto_approve \
                 else ("approving writes", "approving writes")
+            if getattr(self._session, "plan_mode", False):
+                approve = ("[b yellow]PLAN MODE[/]", "PLAN MODE")
             # (markup, plain) segments in priority order; low-priority ones drop
             # first so the line always fits the window instead of running off it
             segments = [
@@ -392,6 +396,8 @@ COMMANDS = [
     ("clear", "", "start a fresh conversation"),
     ("compact", "", "summarize history now to free up context"),
     ("auto", "", "toggle auto-approve for edits and commands"),
+    ("plan", "", "toggle plan mode: investigate and plan, change nothing"),
+    ("permissions", "", "show allow / ask / deny rules (incl. this session's 'always')"),
     ("memory", "", "show what hexiel remembers about you and this project"),
     ("skills", "", "list installed skills"),
     ("mcp", "", "show connected MCP servers and their tools"),
@@ -818,6 +824,7 @@ class HexielTUI(App):
         handler = {
             "help": self.cmd_help, "clear": self.cmd_clear, "compact": self.cmd_compact,
             "config": self.cmd_config, "update": self.cmd_update, "mcp": self.cmd_mcp,
+            "plan": self.cmd_plan, "permissions": self.cmd_permissions,
             "model": self.cmd_model, "models": self.cmd_models, "auto": self.cmd_auto,
             "memory": self.cmd_memory, "skills": self.cmd_skills,
             "ship": self.cmd_ship, "heal": self.cmd_heal,
@@ -916,6 +923,22 @@ class HexielTUI(App):
                 self.session.save()
                 self.exit(result="restart")
         self.push_screen(RestartScreen(version, headline), callback=done)
+
+    def cmd_plan(self, arg: str) -> None:
+        self.session.plan_mode = not self.session.plan_mode
+        if self.session.plan_mode:
+            self.add_note("📝 plan mode ON — hexiel will investigate and propose a plan without "
+                          "changing anything. /plan again to apply it.")
+        else:
+            self.add_note("plan mode OFF — say 'go ahead' (or similar) to carry out the plan")
+        self._refresh_status()
+
+    def cmd_permissions(self, arg: str) -> None:
+        r = self.session.rules
+        lines = [f"{kind}: " + (", ".join(getattr(r, kind)) or "—") for kind in ("deny", "ask", "allow")]
+        lines.append("add rules in config.toml [permissions] or .claude/settings.json — "
+                     "e.g. allow = [\"Bash(git status:*)\"], deny = [\"Read(./.env)\"]")
+        self.add_note("\n".join(line.replace("[", "\\[") for line in lines))
 
     def cmd_mcp(self, arg: str) -> None:
         from . import mcp_client
@@ -1328,8 +1351,9 @@ class HexielTUI(App):
 
         def show() -> None:
             self.activity.phase("approval")
+            from .permissions import always_rule
             preview = json.dumps(args, indent=2)[:1400]
-            self.push_screen(ApproveScreen(tool_name, preview),
+            self.push_screen(ApproveScreen(tool_name, preview, always_rule(tool_name, args or {})),
                              callback=lambda verdict: _collect(verdict))
 
         def _collect(verdict) -> None:

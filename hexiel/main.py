@@ -69,6 +69,8 @@ def build_session(cwd: str, model_name: str | None, resumed: dict | None = None)
         task_state=(todo_mod.summary_line(cwd) if resumed else ""))
     session = Session(model_config, settings, cwd, tools, system)
     session.mcp_servers = mcp_servers
+    from . import permissions
+    session.rules = permissions.load(cwd, config.permissions)
     session.bind_tool_ctx(tool_ctx)
     # gitlab propose steps share the standard approval gate; "no" declines the step
     tool_ctx.on_step = (lambda kind, desc: session.on_approve(f"gitlab:{kind}",

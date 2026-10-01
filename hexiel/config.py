@@ -158,6 +158,7 @@ class Config:
     models: dict[str, ModelConfig]
     settings: Settings
     mcp: dict = field(default_factory=dict)       # raw [mcp] table (servers)
+    permissions: dict = field(default_factory=dict)   # raw [permissions] allow/ask/deny
 
     def model(self, name: str | None = None) -> ModelConfig:
         key = name or self.default_model
@@ -201,4 +202,4 @@ def load_config(model_override: str | None = None) -> Config:
     if default_model not in models:
         models.setdefault(default_model, ModelConfig(name=default_model, provider="openai"))
     return Config(default_model=default_model, models=models, settings=settings,
-                  mcp=raw.get("mcp", {}))
+                  mcp=raw.get("mcp", {}), permissions=raw.get("permissions", {}))

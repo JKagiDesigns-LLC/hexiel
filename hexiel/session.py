@@ -53,6 +53,11 @@ ON_COMPACTION_NOTE = (
 )
 
 
+PLAN_MODE_ALLOWED = {"todo", "memory", "skill"}   # bookkeeping still works in plan mode
+PLAN_MODE_NOTE = ("[plan mode] Investigate with read-only tools and produce a step-by-step plan. "
+                  "Do not try to change files or run commands; the user will approve the plan "
+                  "and turn plan mode off.")
+
 EMPTY_NUDGE = ("(Your previous reply was empty. Continue the task: either call the next tool "
                "or reply to the user with your answer.)")
 
@@ -77,7 +82,10 @@ class Session:
         self.created = time.time()
         self.messages: list[dict] = []
         self.mcp_servers: list = []   # started MCP servers (see mcp_client)
+        self.plan_mode = False          # read-only planning: no writes/commands run
         self._provider_override = None  # set when auto-resume switches to the fallback profile
+        from .permissions import Rules
+        self.rules = Rules()            # allow/ask/deny rules (permissions.py)
         self.last_usage: dict = {}
         self.total_completion_tokens = 0
         self.auto_approve = settings.auto_approve
@@ -108,7 +116,8 @@ class Session:
     def _turn_body(self, user_text: str) -> None:
         from .tools import attach_images
         images, notes = attach_images(user_text, self.cwd)
-        entry = {"role": "user", "content": "\n".join([user_text, *notes])}
+        entry = {"role": "user", "content": "\n".join(
+            [user_text, *notes, *([PLAN_MODE_NOTE] if self.plan_mode else [])])}
         if images:
             entry["images"] = images
         # empty assistant replies teach the model to keep answering with nothing
@@ -300,12 +309,29 @@ class Session:
                                   "content": f"error: unknown tool '{call['name']}'",
                                   "is_error": True})
             return
-        verdict = "yes"
-        skips_approval = getattr(tool, "always_ok", False)
-        if not tool.readonly and not skips_approval and not self.auto_approve:
+        from . import permissions
+        rule = permissions.decide(self.rules, tool.name, call["arguments"], self.cwd)
+        if rule == "deny":
+            self.messages.append({
+                "role": "tool", "tool_call_id": call["id"], "is_error": True,
+                "content": f"Blocked by a permission rule: {call['name']} is denied for this "
+                           "target. Do not retry it; find another approach or ask the user."})
+            self.on_event("tool_result", call, "blocked by a deny rule", True)
+            return
+        if self.plan_mode and not tool.readonly and tool.name not in PLAN_MODE_ALLOWED:
+            self.messages.append({
+                "role": "tool", "tool_call_id": call["id"], "is_error": True,
+                "content": "Plan mode is on: no changes are made. Describe the change you "
+                           "would make instead; the user will turn plan mode off to apply it."})
+            self.on_event("tool_result", call, "skipped — plan mode", True)
+            return
+        skips_approval = getattr(tool, "always_ok", False) or rule == "allow"
+        needs_ask = rule == "ask" or (not tool.readonly and not skips_approval and not self.auto_approve)
+        if needs_ask:
             verdict = self.on_approve(tool.name, call["arguments"])
             if verdict == "always":
-                self.auto_approve = True
+                # scoped: "always" for git status means git status, not every command
+                self.rules.allow.append(permissions.always_rule(tool.name, call["arguments"]))
             elif verdict == "no":
                 self.messages.append({
                     "role": "tool", "tool_call_id": call["id"], "is_error": True,

@@ -8,6 +8,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from . import llm
+from . import todo as todo_mod
 from .config import ModelConfig, Settings, home_data_dir
 from .tools import ToolResult, CACHEABLE_TOOLS
 
@@ -35,6 +36,11 @@ current branch/diff/build status.
 
 ## Next Steps
 What remains, so work can resume straight away.
+
+## Durable Facts
+Bullets of stable facts worth remembering in FUTURE sessions — build/test/run
+commands, project conventions and layout, environment details, the user's stated
+preferences. Not task progress. Omit the section if there are none.
 
 Be exhaustive on specifics (paths, flags, names, numbers) — this is not a chat summary,
 it is the replacement for everything that gets dropped.
@@ -101,6 +107,7 @@ class Session:
             {"name": t.name, "description": t.description, "parameters": t.parameters}
             for t in self.tools
         ]
+        turn = {"tools": 0, "used_todo": False, "item": None, "ok": False}
         try:
             while True:
                 if self._stop.is_set():
@@ -119,6 +126,7 @@ class Session:
                             self.messages.pop()  # drop the empty assistant
                             self.on_event("turn_end", {"error": error})
                             return
+                    turn["ok"] = True
                     self.on_event("turn_end")
                     return
                 for call in calls:
@@ -127,8 +135,41 @@ class Session:
                         self.on_event("turn_end", aborted=True)
                         return
                     self._execute_tool(call)
+                    self._auto_todo_step(user_text, call, assistant, turn)
         finally:
+            self._auto_todo_finish(turn)
             self.save()
+
+    # ---------------------------------------------------------------- automatic todo upkeep
+
+    def _auto_todo_step(self, user_text: str, call: dict, assistant: dict, turn: dict) -> None:
+        """Track multi-step requests and keep the checkpoint fresh — in Python,
+        so it costs no tokens. Skipped when the model manages todo itself."""
+        turn["tools"] += 1
+        if call.get("name") == "todo":
+            turn["used_todo"] = True
+        if turn["used_todo"]:
+            return
+        try:
+            if turn["item"] is None and turn["tools"] >= todo_mod.AUTO_MIN_TOOLS:
+                turn["item"] = todo_mod.auto_track(self.cwd, user_text)
+            said = " ".join((assistant.get("content") or "").split())[:90]
+            args = call.get("arguments") or {}
+            first = next((str(v) for v in args.values() if v), "")[:60]
+            todo_mod.auto_checkpoint(self.cwd, f"{call.get('name')}({first})" + (f" — {said}" if said else ""))
+        except Exception:  # noqa: BLE001 - bookkeeping must never break a turn
+            pass
+
+    def _auto_todo_finish(self, turn: dict) -> None:
+        if not turn.get("item"):
+            return
+        last = next((m.get("content", "") for m in reversed(self.messages)
+                     if m.get("role") == "assistant" and m.get("content")), "")
+        note = ("done: " if turn["ok"] else "interrupted: ") + " ".join(last.split())[:150]
+        try:
+            todo_mod.auto_finish(self.cwd, turn["item"], turn["ok"], note)
+        except Exception:  # noqa: BLE001
+            pass
 
     def _stream_assistant(self, provider, tool_defs) -> dict:
         """Stream one assistant response; returns the finalized message dict."""
@@ -325,6 +366,11 @@ class Session:
             self.compacting = False
             raise
         summary = "".join(out_parts).strip()
+        try:   # durable facts become project memory — no extra model call
+            from . import memory as memory_mod
+            memory_mod.save_auto_facts(self.cwd, memory_mod.parse_durable_facts(summary))
+        except Exception:  # noqa: BLE001
+            pass
         compacted: list[dict] = [{"role": "user", "content":
                                   f"<auto-compaction>\n\n{summary}\n</auto-compaction>\n\n"
                                   + ON_COMPACTION_NOTE}]

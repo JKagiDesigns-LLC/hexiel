@@ -84,3 +84,51 @@ def ensure_dirs(cwd: str) -> None:
             directory.mkdir(parents=True, exist_ok=True)
         except OSError:
             pass
+
+
+AUTO_FACTS = "auto-facts.md"
+AUTO_FACTS_CAP = 60
+
+
+def save_auto_facts(cwd: str, facts: list[str]) -> int:
+    """Merge durable facts (from compaction) into the project memory file
+    auto-facts.md, skipping duplicates; returns how many were new."""
+    facts = [" ".join(f.split()).strip(" -*") for f in facts]
+    facts = [f for f in facts if 8 <= len(f) <= 300]
+    if not facts:
+        return 0
+    directory = project_memory_dir(cwd)
+    path = directory / AUTO_FACTS
+    existing: list[str] = []
+    try:
+        if path.exists():
+            existing = [ln[2:].strip() for ln in path.read_text().splitlines() if ln.startswith("- ")]
+    except OSError:
+        return 0
+    seen = {e.lower() for e in existing}
+    new = [f for f in facts if f.lower() not in seen and not seen.add(f.lower())]
+    if not new:
+        return 0
+    merged = (existing + new)[-AUTO_FACTS_CAP:]
+    try:
+        directory.mkdir(parents=True, exist_ok=True)
+        path.write_text("---\nname: auto-facts\n"
+                        "description: durable project facts captured automatically when context is compacted\n"
+                        "type: project\n---\n\n" + "\n".join(f"- {f}" for f in merged) + "\n")
+        index = directory / "MEMORY.md"
+        line = f"- [Auto-captured facts]({AUTO_FACTS}) — build/test commands, conventions, preferences"
+        current = index.read_text() if index.exists() else ""
+        if AUTO_FACTS not in current:
+            index.write_text(current + ("" if current.endswith("\n") or not current else "\n") + line + "\n")
+    except OSError:
+        return 0
+    return len(new)
+
+
+def parse_durable_facts(summary: str) -> list[str]:
+    """Bullets under a '## Durable Facts' heading of a compaction summary."""
+    m = re.search(r"^##\s*Durable Facts\s*\n(.*?)(?=^##\s|\Z)", summary, re.S | re.M)
+    if not m:
+        return []
+    return [ln.strip()[2:] for ln in m.group(1).splitlines() if ln.strip().startswith(("- ", "* "))]
+

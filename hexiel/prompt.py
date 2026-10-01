@@ -133,17 +133,42 @@ def _git_state(cwd: str) -> str:
         return "not a git repository"
 
 
+PROJECT_DOC_NAMES = ("hexiel.md", "agents.md", "claude.md")
+PROJECT_DOC_CAP = 16_000      # chars; longer files are referenced, not inlined whole
+
+
+def _find_case_insensitive(cwd: str, names: tuple[str, ...]) -> Path | None:
+    """First file in `cwd` matching one of `names` in any letter case
+    (agents.md / AGENTS.md / Agents.md), in `names` priority order."""
+    try:
+        present = {p.name.lower(): p for p in Path(cwd).iterdir() if p.is_file()}
+    except OSError:
+        return None
+    return next((present[n] for n in names if n in present), None)
+
+
 def _project_docs(cwd: str) -> str:
     parts: list[str] = []
-    for name in ("HEXIEL.md", "AGENTS.md", "CLAUDE.md"):
-        path = Path(cwd) / name
-        if path.is_file():
-            try:
-                text = path.read_text()
-            except OSError:
-                continue
-            parts.append(f"## {name}\n\n{text.strip()}")
-            break  # first match wins; don't stack all three
+    path = _find_case_insensitive(cwd, PROJECT_DOC_NAMES)   # first match wins
+    if path is not None:
+        try:
+            text = path.read_text().strip()
+        except OSError:
+            text = ""
+        if len(text) > PROJECT_DOC_CAP:
+            text = (text[:PROJECT_DOC_CAP] + f"\n\n[… {path.name} continues — "
+                    f"read the rest with the read tool from line {text[:PROJECT_DOC_CAP].count(chr(10)) + 1}]")
+        if text:
+            parts.append(f"## {path.name} (project instructions — follow them)\n\n{text}")
+    todo = _find_case_insensitive(cwd, ("todo.md",))
+    if todo is not None:
+        try:
+            n = len(todo.read_text().splitlines())
+        except OSError:
+            n = 0
+        parts.append(f"## Project todo\n\nThis project keeps its own task list at `{todo.name}` "
+                     f"({n} lines). Read it when asked to continue or pick the next task; "
+                     "keep it updated as you finish items.")
     fallback = Path.home() / ".config" / "hexiel" / "HEXIEL.md"
     if not parts and fallback.is_file():
         try:

@@ -181,3 +181,48 @@ def _write(cwd: str, title: str, left_off: str, items: list[TodoItem]) -> None:
 
 ACTIONS = {"create": action_create, "add": action_add, "update": action_update,
            "left_off": action_left_off, "list": action_list}
+
+
+# ---------------------------------------------------------------- automatic upkeep
+# Done in Python by the harness, so it costs no model tokens: the checkpoint
+# stays accurate even when the model forgets, and a crash mid-task always
+# leaves a true "where we left off".
+
+AUTO_MIN_TOOLS = 3   # a request becomes a tracked task once it needs this many tool calls
+
+
+def _request_title(request: str) -> str:
+    first = " ".join(request.strip().split("\n")[0].split())
+    return first if len(first) <= 80 else first[:79].rstrip() + "…"
+
+
+def auto_track(cwd: str, request: str) -> str | None:
+    """Make sure the current request is a tracked, in-progress task; returns
+    the item text (None if nothing could be written)."""
+    text = _request_title(request)
+    if not text:
+        return None
+    title, left_off, items = read_todos(cwd)
+    if not any(i.text == text for i in items):
+        for other in items:
+            if other.state == "~":
+                other.state = " "
+        items.append(TodoItem(state="~", text=text))
+    _write(cwd, title or text, left_off or "starting", items)
+    return text
+
+
+def auto_checkpoint(cwd: str, note: str) -> None:
+    """Refresh the where-we-left-off line (only when a todo list exists)."""
+    title, _, items = read_todos(cwd)
+    if items:
+        _write(cwd, title, " ".join(note.split())[:200], items)
+
+
+def auto_finish(cwd: str, item_text: str, ok: bool, note: str) -> None:
+    title, _, items = read_todos(cwd)
+    for item in items:
+        if item.text == item_text:
+            item.state = "x" if ok else "~"
+    _write(cwd, title, " ".join(note.split())[:200], items)
+

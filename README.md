@@ -159,14 +159,21 @@ in `plugins/`.
 | Skills | one-line index; full instructions load only when used |
 | Reasoning, planning, writing code | the model — spend tokens there, nowhere else |
 
-### todo.md progress tracking
-Multi-step work is tracked in `<project>/.hexiel/todo.md` (`- [ ]` queued,
-one `- [~]` in progress, `- [x]` done) with a *where we left off* line. If
-hexiel or your laptop dies mid-task, `hexiel -c` picks up from the checkpoint.
-
-### Memory & skills
-- `~/.local/share/hexiel/memory/` (global) and `<project>/.hexiel/memory/`
-  (project): markdown notes indexed by `MEMORY.md`, read and written by hexiel.
+### Project instructions, todo and memory — maintained automatically
+- **Project instructions:** `AGENTS.md` / `CLAUDE.md` / `HEXIEL.md` (any letter
+  case) at the project root are loaded into every session; a root `todo.md` is
+  pointed out so the model reads it when you say "continue".
+- **todo.md:** multi-step work is tracked in `<project>/.hexiel/todo.md` (`- [ ]`
+  queued, one `- [~]` in progress, `- [x]` done). When a request takes three or
+  more tool calls and the model hasn't planned it itself, hexiel logs it as a
+  task, refreshes the *where we left off* line after every step and ticks it off
+  when the turn completes — in Python, at zero token cost. If hexiel or your
+  laptop dies mid-task, `hexiel -c` resumes from an accurate checkpoint.
+- **Memory:** `~/.local/share/hexiel/memory/` (global) and
+  `<project>/.hexiel/memory/` (project), markdown notes indexed by `MEMORY.md`.
+  The model saves what it learns; and every auto-compaction also extracts
+  *durable facts* (build/test commands, conventions, your preferences) into
+  `auto-facts.md` — deduplicated, no extra model call.
 - Skills are `SKILL.md` folders from `~/.local/share/hexiel/skills/`, the
   project, **and `~/.claude/skills/`** — Claude Code skills work unchanged.
 
@@ -197,7 +204,7 @@ Fork → branch → merge request; the maintainer reviews and approves. hexiel c
 do the whole flow for you (`/ship`). See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ```bash
-.venv/bin/pytest                    # 56 tests: tools, providers, compaction, TUI,
+.venv/bin/pytest                    # 62 tests: tools, providers, compaction, TUI,
                                     # settings editor, updater, web UI, plugins
 .venv/bin/python scripts/screenshots.py   # regenerate these screenshots
 ```

@@ -56,6 +56,27 @@ os.chdir(PROJECT)
 sys.path.insert(0, str(REPO))
 
 from hexiel import skills as skills_mod          # noqa: E402
+from hexiel import model_catalog as catalog     # noqa: E402
+
+
+def _demo_discover(cfg, on_result):
+    """A fixed, generic provider list for the picker screenshot (no real accounts)."""
+    E, F = catalog.Endpoint, catalog.Found
+    local = E("Ollama @ homeserver", "openai", "http://homeserver:11434/v1")
+    on_result(local, [F(local, "qwen3.6:35b-a3b-coding", "local", "23 GB local"),
+                      F(local, "gpt-oss:20b", "", "14 GB local")], "")
+    cloud = E("Ollama @ localhost", "openai", "http://localhost:11434/v1")
+    on_result(cloud, [F(cloud, "kimi-k3:cloud", "", "Ollama Cloud"), F(cloud, "glm-5.3:cloud", "", "Ollama Cloud")], "")
+    ant = E("Anthropic", "anthropic", "https://api.anthropic.com")
+    on_result(ant, [F(ant, "claude-opus-5-5", "", "Claude Opus 5.5"), F(ant, "claude-sonnet-5-5", "sonnet", "Claude Sonnet 5.5"),
+                    F(ant, "claude-haiku-4-5", "", "Claude Haiku 4.5")], "")
+    orr = E("OpenRouter", "openai", "https://openrouter.ai/api/v1")
+    on_result(orr, [F(orr, "openai/gpt-6-astra", "", "1050k ctx"), F(orr, "google/gemini-3.8-flash", "", "1048k ctx"),
+                    F(orr, "deepseek/deepseek-v4-pro", "", "1000k ctx")], "")
+
+
+catalog.discover = _demo_discover
+catalog.endpoints = lambda cfg: [1, 2, 3, 4]
 from hexiel.main import build_session            # noqa: E402
 
 CONVERSATION = [
@@ -132,7 +153,12 @@ async def tui_shots(tmp: Path) -> None:
     async def nothing(app, pilot):
         await pilot.pause(0.2)
 
+    async def picker(app, pilot):
+        await pilot.press("ctrl+p")
+        await pilot.pause(0.6)
+
     await capture("tui-welcome", nothing, size=(100, 22), conversation=False)
+    await capture("tui-picker", picker, size=(110, 32), conversation=False)
     await capture("tui", main_view)
     await capture("tui-menu", menu)
     await capture("tui-config", config)
@@ -145,6 +171,7 @@ def web_shots() -> None:
     time.sleep(2)
     chromium(f"http://127.0.0.1:{port}/", OUT / "web.png")
     chromium(f"http://127.0.0.1:{port}/#settings", OUT / "web-settings.png")
+    chromium(f"http://127.0.0.1:{port}/#models", OUT / "web-picker.png")
 
 
 if __name__ == "__main__":

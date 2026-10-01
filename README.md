@@ -89,6 +89,8 @@ hexiel -m sonnet          # pick a model profile for this run
 
 | | |
 |---|---|
+| <img src="https://gitlab.com/jkagidesigns1/public/applications/hexiel/-/raw/main/docs/screenshots/tui-picker.png" alt="live model picker"> | <img src="https://gitlab.com/jkagidesigns1/public/applications/hexiel/-/raw/main/docs/screenshots/web-picker.png" alt="live model picker in the browser"> |
+| **`Ctrl+P` / `/model`** lists every model you can use *right now* — local Ollama, Ollama Cloud, Claude, OpenRouter… — queried live each time, never stale. | The same live picker in the browser UI. |
 | <img src="https://gitlab.com/jkagidesigns1/public/applications/hexiel/-/raw/main/docs/screenshots/tui-menu.png" alt="slash command menu"> | <img src="https://gitlab.com/jkagidesigns1/public/applications/hexiel/-/raw/main/docs/screenshots/tui-config.png" alt="settings editor"> |
 | **Type `/`** for the command menu — every command and skill with what it does; ↑/↓, Tab to complete, Enter to run. `/model ` lists your profiles. | **`/config`** shows every setting in a table. Pick a row, pick a value, then choose **this session** or **save permanently** (one line of `config.toml` changes; comments are kept). |
 

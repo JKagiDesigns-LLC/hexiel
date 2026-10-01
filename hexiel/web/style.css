@@ -175,6 +175,15 @@ body {
 }
 #send:disabled { opacity: .4; cursor: default; }
 #send.stop { background: var(--err); }
+#composer { position: relative; }
+#slash-menu { position: absolute; bottom: 100%; left: 50%; transform: translateX(-50%); width: min(820px, 94%);
+              max-height: 320px; overflow-y: auto; background: var(--bg-panel); border: 1px solid var(--border);
+              border-radius: 10px; padding: 4px; box-shadow: 0 -10px 30px rgba(0,0,0,.4); z-index: 40; }
+#slash-menu .row { display: flex; gap: 10px; padding: 6px 10px; border-radius: 6px; cursor: pointer; font-size: 13.5px; }
+#slash-menu .row.sel, #slash-menu .row:hover { background: var(--bg-hover); }
+#slash-menu .name { font-weight: 600; white-space: nowrap; }
+#slash-menu .args { color: var(--text-dim); white-space: nowrap; }
+#slash-menu .desc { color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 #hint { max-width: 860px; margin: 4px auto 0; color: var(--text-dim); font-size: 11.5px; }
 
 /* approval modal */

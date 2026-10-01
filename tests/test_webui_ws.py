@@ -24,11 +24,11 @@ aiohttp = pytest.importorskip("aiohttp")
 
 @pytest.fixture()
 def ws_app(monkeypatch):
-    cfg = load_config()
+    from hexiel.config import ModelConfig, Settings
     tools = build_tools(Toolchain())
     ctx = ToolContext(cwd=str(Path(__file__).parent), chain=Toolchain())
-    session = Session(cfg.models["glm-flash"], cfg.settings,
-                      cwd=str(Path(__file__).parent), tools=tools, system_prompt="t")
+    session = Session(ModelConfig(name="t", provider="openai", model="m", base_url="http://127.0.0.1:9/v1"),
+                      Settings(), cwd=str(Path(__file__).parent), tools=tools, system_prompt="t")
     session.bind_tool_ctx(ctx)
 
     # canned turn: stream text deltas from a worker thread, then end the turn
@@ -78,3 +78,38 @@ import asyncio  # noqa: E402
 
 def test_ws_roundtrip(ws_app):
     asyncio.run(_roundtrip(ws_app, aiohttp))
+
+
+async def _slash(ws_app, aiohttp):
+    app, session = ws_app
+    from aiohttp import web
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "127.0.0.1", 0)
+    await site.start()
+    port = site._server.sockets[0].getsockname()[1]
+    notes = []
+    try:
+        async with aiohttp.ClientSession() as client:
+            async with client.ws_connect(f"http://127.0.0.1:{port}/ws") as ws:
+                await asyncio.wait_for(ws.receive_str(), 5)                  # history hello
+                for cmd in ("/plan", "/usage", "/undo"):
+                    await ws.send_str(json.dumps({"t": "send", "text": cmd}))
+                    while True:
+                        data = json.loads(await asyncio.wait_for(ws.receive_str(), 5))
+                        assert data["t"] != "text", "slash command reached the model"
+                        if data["t"] == "note":
+                            notes.append(data["text"])
+                            break
+            async with client.get(f"http://127.0.0.1:{port}/api/commands") as resp:
+                names = [c["name"] for c in (await resp.json())["commands"]]
+    finally:
+        await runner.cleanup()
+    return notes, names, session
+
+
+def test_web_slash_commands(ws_app):
+    notes, names, session = asyncio.run(_slash(ws_app, aiohttp))
+    assert "plan mode ON" in notes[0] and session.plan_mode
+    assert "request(s)" in notes[1] and "nothing to undo" in notes[2]
+    assert {"model", "undo", "plan", "usage"} <= set(names)

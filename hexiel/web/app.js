@@ -419,9 +419,53 @@ $("#compact-btn").addEventListener("click", async () => {
 
 // composer
 const input = $("#input");
+
+// ---------------------------------------------------------------- slash menu
+let slashCommands = [], slashItems = [], slashSel = 0;
+fetch("/api/commands").then(r => r.json()).then(d => {
+  slashCommands = d.commands || [];
+  if (location.hash === "#slash") { input.value = "/u"; renderSlash(); }      // demo / screenshots
+}).catch(() => {});
+const CLIENT_COMMANDS = { model: () => openPicker(), config: () => $("#settings-btn").click(),
+                          update: () => { const b = $("#update-btn"); b.style.display ? checkUpdate() : b.click(); } };
+
+function renderSlash() {
+  const text = input.value;
+  const menu = $("#slash-menu");
+  if (!text.startsWith("/") || text.includes(" ") || text.includes("\n")) { menu.hidden = true; slashItems = []; return; }
+  const q = text.slice(1).toLowerCase();
+  slashItems = slashCommands.filter(c => c.name.startsWith(q))
+    .concat(q.length >= 2 ? slashCommands.filter(c => !c.name.startsWith(q) && c.name.includes(q)) : []);
+  if (!slashItems.length) { menu.hidden = true; return; }
+  slashSel = Math.min(slashSel, slashItems.length - 1);
+  menu.innerHTML = slashItems.map((c, i) => `<div class="row${i === slashSel ? " sel" : ""}" data-i="${i}">` +
+    `<span class="name">/${esc(c.name)}</span><span class="args">${esc(c.args || "")}</span>` +
+    `<span class="desc">${esc(c.desc || "")}</span></div>`).join("");
+  $$("#slash-menu .row").forEach(el => el.addEventListener("mousedown", (ev) => { ev.preventDefault(); pickSlash(+el.dataset.i, true); }));
+  menu.hidden = false;
+}
+
+function pickSlash(i, run) {
+  const c = slashItems[i];
+  if (!c) return;
+  $("#slash-menu").hidden = true;
+  if (CLIENT_COMMANDS[c.name]) { input.value = ""; CLIENT_COMMANDS[c.name](); return; }
+  if (c.args || !run) { input.value = `/${c.name} `; input.focus(); return; }
+  input.value = `/${c.name}`;
+  submit();
+}
+
 input.addEventListener("keydown", (ev) => {
+  if (!$("#slash-menu").hidden && slashItems.length) {
+    if (ev.key === "ArrowDown") { slashSel = (slashSel + 1) % slashItems.length; renderSlash(); ev.preventDefault(); return; }
+    if (ev.key === "ArrowUp") { slashSel = (slashSel - 1 + slashItems.length) % slashItems.length; renderSlash(); ev.preventDefault(); return; }
+    if (ev.key === "Tab") { pickSlash(slashSel, false); ev.preventDefault(); return; }
+    if (ev.key === "Enter" && !ev.shiftKey) { pickSlash(slashSel, true); ev.preventDefault(); return; }
+    if (ev.key === "Escape") { $("#slash-menu").hidden = true; return; }
+  }
   if (ev.key === "Enter" && !ev.shiftKey) { ev.preventDefault(); submit(); }
 });
+input.addEventListener("input", () => { slashSel = 0; renderSlash(); });
 input.addEventListener("input", () => {
   input.style.height = "auto";
   input.style.height = Math.min(input.scrollHeight, 200) + "px";

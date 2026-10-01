@@ -496,30 +496,7 @@ class StatusLine(Static):
         self.refresh_text()
 
 
-# slash commands: (name, argument hint, what it does) — drives /help and the menu
-COMMANDS = [
-    ("help", "", "list commands and skills"),
-    ("config", "", "view and change settings (session or permanent)"),
-    ("model", "[name]", "pick from every model available right now (Ctrl+P), or switch by name"),
-    ("models", "", "list models available on the Ollama server"),
-    ("clear", "", "start a fresh conversation"),
-    ("compact", "", "summarize history now to free up context"),
-    ("auto", "", "toggle auto-approve for edits and commands"),
-    ("plan", "", "toggle plan mode: investigate and plan, change nothing"),
-    ("undo", "", "revert the file changes hexiel made in its last turn"),
-    ("jobs", "", "scheduled jobs (ask hexiel to schedule something to create one)"),
-    ("inbox", "", "results from scheduled jobs"),
-    ("usage", "", "tokens used this session (in / cached / out)"),
-    ("permissions", "", "show allow / ask / deny rules (incl. this session's 'always')"),
-    ("memory", "", "show what hexiel remembers about you and this project"),
-    ("skills", "", "list installed skills"),
-    ("mcp", "[add name]", "MCP servers: status, or add firebase/supabase/notion/github/playwright/filesystem"),
-    ("ship", "[title]", "propose your changes as a GitLab merge request"),
-    ("heal", "[what broke]", "fix a hexiel bug itself, review the diff, share it or keep it"),
-    ("setup-gitlab", "<token>", "save a GitLab access token"),
-    ("update", "", "install the newest hexiel release and restart"),
-    ("exit", "", "quit hexiel"),
-]
+from .commands import BUILTIN as COMMANDS  # noqa: E402 - shared with the web UI
 
 
 class CommandMenu(OptionList):

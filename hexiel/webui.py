@@ -232,9 +232,74 @@ def make_app(session: Session) -> web.Application:
             state.clients.pop(ws, None)
         return ws
 
+    def web_command(text: str) -> str | None:
+        """Slash commands typed in the browser. Returns a note to show, or None
+        when the text should go to the model (skills / custom commands render to
+        a prompt and are returned via the 'prompt:' prefix)."""
+        from . import commands as commands_mod, jobs as jobs_mod
+        cmd, _, arg = text[1:].partition(" ")
+        cmd, arg = cmd.lower(), arg.strip()
+        if cmd == "help":
+            return "\n".join(f"/{n} {a}".ljust(24) + d for n, a, d in commands_mod.BUILTIN)
+        if cmd == "undo":
+            restored = session.undo()
+            return ("↶ " + "\n".join(restored)) if restored else "nothing to undo"
+        if cmd == "plan":
+            session.plan_mode = not session.plan_mode
+            return "📝 plan mode ON — investigate and plan, change nothing" if session.plan_mode else "plan mode OFF"
+        if cmd == "usage":
+            t = session.usage_totals
+            return (f"{t['requests']} request(s) · input {t['prompt_tokens']:,} ({t['cached_tokens']:,} cached) · "
+                    f"output {t['completion_tokens']:,} tokens")
+        if cmd == "permissions":
+            r = session.rules
+            return "\n".join(f"{k}: " + (", ".join(getattr(r, k)) or "—") for k in ("deny", "ask", "allow"))
+        if cmd == "jobs":
+            return "\n".join(jobs_mod.describe(j) for j in jobs_mod.load()) or "no scheduled jobs"
+        if cmd == "inbox":
+            box = jobs_mod.inbox_dir()
+            files = sorted(box.glob("*.md"), reverse=True)[:3] if box.exists() else []
+            return "\n\n".join(f.read_text()[:3000] for f in files) or "the inbox is empty"
+        if cmd == "mcp":
+            from . import mcp_client
+            if arg.startswith("add"):
+                name = arg[3:].strip().lower()
+                if name not in mcp_client.PRESETS:
+                    return "MCP presets: " + ", ".join(mcp_client.PRESETS)
+                cfg, note = mcp_client.add_preset(name, session.cwd)
+                started = mcp_client.start_servers([cfg])
+                if started and not started[0].error:
+                    session.mcp_servers.extend(started)
+                    session.tools.extend(mcp_client.tool_defs(started))
+                return "\n".join(mcp_client.status_lines(started)) + f"\n{note}"
+            return "\n".join(mcp_client.status_lines(session.mcp_servers)) or "no MCP servers — /mcp add <preset>"
+        if cmd == "clear":
+            session.messages = []
+            session.last_usage = {}
+            return "conversation cleared"
+        if cmd in ("heal", "ship"):
+            return f"/{cmd} uses the terminal UI's review screen — run it there (hexiel)"
+        custom = commands_mod.discover(session.cwd)
+        if cmd in custom:
+            return "prompt:" + custom[cmd].render(arg)
+        if cmd in {s.name.lower() for s in skills_mod.discover(session.cwd)}:
+            return (f'prompt:Use the "{cmd}" skill for this request: {arg or text}\n'
+                    "(invoke it with the skill tool and follow its instructions)")
+        if cmd in {n for n, _, _ in commands_mod.BUILTIN}:
+            return f"/{cmd} isn't available in the browser yet — use the terminal UI"
+        return f"unknown command /{cmd} — /help lists them"
+
     def handle_ws_message(data: dict) -> None:
         if data.get("t") == "send":
             text = str(data.get("text", "")).strip()
+            if text.startswith("/") and not state.busy:
+                reply = web_command(text)
+                if reply and not reply.startswith("prompt:"):
+                    state.broadcast({"t": "note", "text": reply})
+                    state.broadcast({"t": "status", "status": status_state(session)})
+                    return
+                if reply:
+                    text = reply[len("prompt:"):]
             with state.lock:
                 if not text or state.busy:
                     if text:
@@ -258,16 +323,29 @@ def make_app(session: Session) -> web.Application:
                 holder["verdict"] = data.get("verdict", "no")
                 holder["event"].set()
 
+    async def api_commands(request):
+        from . import commands as commands_mod
+        items = [{"name": n, "args": a, "desc": d} for n, a, d in commands_mod.BUILTIN]
+        items += [{"name": c.name, "args": c.argument_hint, "desc": c.description[:80]}
+                  for c in commands_mod.discover(session.cwd).values()]
+        items += [{"name": s.name, "args": "<request>", "desc": "skill: " + (s.description or "")[:70]}
+                  for s in skills_mod.discover(session.cwd)]
+        return _json_response({"commands": items})
+
     async def api_state(request):
         cfg = load_config()
         chain = detect_toolchain(session.cwd)
         sessions = []
         try:
             paths = sorted((home_data_dir() / "sessions").glob("*.json"),
-                           key=lambda p: p.stat().st_mtime, reverse=True)[:12]
+                           key=lambda p: p.stat().st_mtime, reverse=True)[:200]
             for p in paths:
+                if len(sessions) >= 12:
+                    break
                 try:
                     raw = json.loads(p.read_text())
+                    if raw.get("cwd") != session.cwd:      # this project's sessions only
+                        continue
                     preview = next((m.get("content", "")[:60] for m in raw.get("messages", [])
                                     if m.get("role") == "user"
                                     and not m.get("content", "").startswith("<auto-compaction>")), "")
@@ -493,6 +571,7 @@ def make_app(session: Session) -> web.Application:
     app.router.add_get("/api/state", api_state)
     app.router.add_post("/api/model", api_model)
     app.router.add_post("/api/settings", api_settings)
+    app.router.add_get("/api/commands", api_commands)
     app.router.add_get("/api/models/live", api_models_live)
     app.router.add_post("/api/models/select", api_models_select)
     app.router.add_get("/api/update", api_update_get)

@@ -75,6 +75,13 @@ api_key_env = "ANTHROPIC_API_KEY"
 context_window = 200000
 max_output_tokens = 16384
 
+[models.anthropic-sonnet]
+provider = "anthropic"
+model = "claude-sonnet-5-5"
+api_key_env = "ANTHROPIC_API_KEY"
+context_window = 200000
+max_output_tokens = 16384
+
 # ---- more big-model presets (fill in the key env var / base_url you have) ----
 
 [models.openai]

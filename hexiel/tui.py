@@ -506,6 +506,8 @@ COMMANDS = [
     ("compact", "", "summarize history now to free up context"),
     ("auto", "", "toggle auto-approve for edits and commands"),
     ("plan", "", "toggle plan mode: investigate and plan, change nothing"),
+    ("undo", "", "revert the file changes hexiel made in its last turn"),
+    ("usage", "", "tokens used this session (in / cached / out)"),
     ("permissions", "", "show allow / ask / deny rules (incl. this session's 'always')"),
     ("memory", "", "show what hexiel remembers about you and this project"),
     ("skills", "", "list installed skills"),
@@ -527,7 +529,7 @@ class CommandMenu(OptionList):
         self.can_focus = False
         self._items: list[tuple[str, str]] = []   # (kind, value) parallel to options
 
-    def show_for(self, text: str, skills, profiles: dict, current: str) -> None:
+    def show_for(self, text: str, skills, profiles: dict, current: str, custom: dict | None = None) -> None:
         rows: list[tuple[str, str, str]] = []      # (kind, value, label)
         if text.startswith("/model "):
             from .presets import PRESETS
@@ -552,6 +554,11 @@ class CommandMenu(OptionList):
             for n, a, d in cmds:
                 pad = " " * max(22 - len(f"/{n} {a}"), 2)
                 rows.append(("cmd", n, f"[b]/{n}[/b] [dim]{a}[/dim]{pad}{d}"))
+            for name, cmd in (custom or {}).items():
+                if name.startswith(q) or (fuzzy and q in name):
+                    pad = " " * max(22 - len(f"/{name} {cmd.argument_hint}"), 2)
+                    desc = cmd.description.replace("[", "(")[:70]
+                    rows.append(("custom", name, f"[b]/{name}[/b] [dim]{cmd.argument_hint.replace('[', '(')}[/dim]{pad}{desc}"))
             for sk in skills:
                 if sk.name.lower().startswith(q) or (fuzzy and q in sk.name.lower()):
                     desc = sk.description.replace("[", "(").splitlines()[0][:70] if sk.description else ""
@@ -885,8 +892,10 @@ class HexielTUI(App):
             profiles = load_config().models if text.startswith("/model ") else {}
         except SystemExit:
             profiles = {}
+        from . import commands as commands_mod
         self.query_one(CommandMenu).show_for(text, self.skills, profiles,
-                                             self.session.model_config.name)
+                                             self.session.model_config.name,
+                                             commands_mod.discover(self.session.cwd))
 
     def accept_menu(self, run: bool) -> bool:
         """Apply the highlighted menu entry. Returns True when it consumed the key."""
@@ -896,7 +905,7 @@ class HexielTUI(App):
             return False
         kind, value = picked
         prompt = self.query_one("#prompt", Input)
-        takes_arg = kind == "skill" or any(n == value and a for n, a, _ in COMMANDS)
+        takes_arg = kind in ("skill", "custom") or any(n == value and a for n, a, _ in COMMANDS)
         if kind == "model":
             line, run_now = f"/model {value}", run
         elif kind == "preset":
@@ -938,12 +947,17 @@ class HexielTUI(App):
             "help": self.cmd_help, "clear": self.cmd_clear, "compact": self.cmd_compact,
             "config": self.cmd_config, "update": self.cmd_update, "mcp": self.cmd_mcp,
             "plan": self.cmd_plan, "permissions": self.cmd_permissions,
+            "undo": self.cmd_undo, "usage": self.cmd_usage,
             "model": self.cmd_model, "models": self.cmd_models, "auto": self.cmd_auto,
             "memory": self.cmd_memory, "skills": self.cmd_skills,
             "ship": self.cmd_ship, "heal": self.cmd_heal,
             "setup-gitlab": self.cmd_setup_gitlab,
             "exit": self.cmd_exit, "quit": self.cmd_exit,
         }.get(cmd)
+        from . import commands as commands_mod
+        custom = commands_mod.discover(self.session.cwd)
+        if cmd in custom and not handler:
+            return custom[cmd].render(arg)
         if cmd in self.slash_skills:
             return f'Use the "{cmd}" skill for this request: {arg or text}\n' \
                    "(invoke it with the skill tool and follow its instructions)"
@@ -1034,6 +1048,25 @@ class HexielTUI(App):
                 self.session.save()
                 self.exit(result="restart")
         self.push_screen(RestartScreen(version, headline), callback=done)
+
+    def cmd_undo(self, arg: str) -> None:
+        if self._thread and self._thread.is_alive():
+            self.add_note("finish or Ctrl+C the current turn first, then /undo")
+            return
+        restored = self.session.undo()
+        if not restored:
+            self.add_note("nothing to undo — no file changes recorded this session")
+            return
+        self.add_note("↶ undid the last turn's file changes:\n" + "\n".join(restored)
+                      + "\n(changes made by shell commands aren't tracked)")
+
+    def cmd_usage(self, arg: str) -> None:
+        t = self.session.usage_totals
+        fresh = t["prompt_tokens"] - t["cached_tokens"]
+        share = 100 * t["cached_tokens"] // max(t["prompt_tokens"], 1)
+        self.add_note(f"this session: {t['requests']} request(s) · input {t['prompt_tokens']:,} tokens "
+                      f"({t['cached_tokens']:,} from cache = {share}%, {fresh:,} fresh) · "
+                      f"output {t['completion_tokens']:,} tokens · model {self.session.model_config.model}")
 
     def cmd_plan(self, arg: str) -> None:
         self.session.plan_mode = not self.session.plan_mode
@@ -1207,7 +1240,10 @@ class HexielTUI(App):
         elif event == "compact_start":
             self.activity.phase("compacting")
         elif event == "turn_end":
+            elapsed = time.time() - getattr(self.activity, "_started", time.time())
             self.activity.stop()
+            if elapsed > 30:
+                self.notify_user("hexiel finished", f"done after {int(elapsed)}s")
             if self._heal:                      # the heal turn finished: review the fix
                 self.call_after_refresh(self._heal_review)
         if event == "text":
@@ -1293,6 +1329,30 @@ class HexielTUI(App):
         if self._stream_wid is not None:
             self._stream_wid.update(self._stream_text)
         self._refresh_status()
+
+    def on_app_focus(self, event) -> None:
+        self._terminal_focused = True
+
+    def on_app_blur(self, event) -> None:
+        self._terminal_focused = False
+
+    def notify_user(self, title: str, body: str) -> None:
+        """Terminal bell + desktop notification, only when you're not looking at
+        hexiel (terminals that don't report focus: always)."""
+        if not getattr(self.session.settings, "notify", True) or getattr(self, "_terminal_focused", False):
+            return
+        self.bell()
+        import shutil
+        import subprocess
+        try:
+            if shutil.which("notify-send"):
+                subprocess.Popen(["notify-send", "-a", "hexiel", title, body],
+                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            elif shutil.which("osascript"):
+                subprocess.Popen(["osascript", "-e", f'display notification "{body}" with title "{title}"'],
+                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except OSError:
+            pass
 
     def _refresh_status(self) -> None:
         self.query_one(StatusLine).refresh_text()
@@ -1492,6 +1552,7 @@ class HexielTUI(App):
 
         def show() -> None:
             self.activity.phase("approval")
+            self.notify_user("hexiel needs your approval", f"allow {tool_name}?")
             from .permissions import always_rule
             preview = json.dumps(args, indent=2)[:1400]
             self.push_screen(ApproveScreen(tool_name, preview, always_rule(tool_name, args or {})),

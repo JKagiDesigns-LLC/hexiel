@@ -53,6 +53,7 @@ ON_COMPACTION_NOTE = (
 )
 
 
+FILE_TOOLS = {"write", "edit", "image_edit"}      # snapshotted before they run (/undo)
 PLAN_MODE_ALLOWED = {"todo", "memory", "skill"}   # bookkeeping still works in plan mode
 PLAN_MODE_NOTE = ("[plan mode] Investigate with read-only tools and produce a step-by-step plan. "
                   "Do not try to change files or run commands; the user will approve the plan "
@@ -83,6 +84,9 @@ class Session:
         self.messages: list[dict] = []
         self.mcp_servers: list = []   # started MCP servers (see mcp_client)
         self.plan_mode = False          # read-only planning: no writes/commands run
+        self.checkpoints: list[list] = []   # per turn: [(path, original bytes | None)] for /undo
+        self.usage_totals = {"requests": 0, "prompt_tokens": 0, "cached_tokens": 0,
+                             "completion_tokens": 0}
         self._provider_override = None  # set when auto-resume switches to the fallback profile
         from .permissions import Rules
         self.rules = Rules()            # allow/ask/deny rules (permissions.py)
@@ -120,6 +124,7 @@ class Session:
             [user_text, *notes, *([PLAN_MODE_NOTE] if self.plan_mode else [])])}
         if images:
             entry["images"] = images
+        self.checkpoints.append([])        # file snapshots taken during this turn
         # empty assistant replies teach the model to keep answering with nothing
         self.messages = [m for m in self.messages if not _is_empty_reply(m)]
         self.messages.append(entry)
@@ -287,6 +292,11 @@ class Session:
                     usage = payload[0]
                     if usage:
                         self.last_usage = usage
+                        t = self.usage_totals
+                        t["requests"] += 1
+                        t["prompt_tokens"] += usage.get("prompt_tokens", 0)
+                        t["cached_tokens"] += usage.get("cached_tokens", 0)
+                        t["completion_tokens"] += usage.get("completion_tokens", 0)
                         self.total_completion_tokens += usage.get("completion_tokens", 0)
                         self.on_event("usage", usage)
         except llm.RateLimitError:
@@ -350,6 +360,7 @@ class Session:
                 self.messages.append(entry)
                 self.on_event("tool_result", call, entry["content"], False, 0.0)
                 return
+        self._snapshot(tool.name, call["arguments"])
         started = time.time()
         try:
             result = tool.run(call["arguments"], self.tool_ctx)
@@ -374,6 +385,44 @@ class Session:
             self.tool_ctx.result_cache[cache_key] = result
         self.on_event("tool_result", call, result.text, result.is_error,
                       time.time() - started)
+
+    # ---------------------------------------------------------------- checkpoints / undo
+
+    def _snapshot(self, tool_name: str, args: dict) -> None:
+        """Remember a file's content before a file tool changes it (for /undo)."""
+        if tool_name not in FILE_TOOLS or not self.checkpoints or self.tool_ctx is None:
+            return
+        from .tools import _resolve_path
+        raw = args.get("out") if tool_name == "image_edit" and args.get("out") else args.get("path")
+        if not raw:
+            return
+        try:
+            path = _resolve_path(raw, self.tool_ctx)
+            if any(p == path for p, _ in self.checkpoints[-1]):
+                return                       # keep the oldest state from this turn
+            original = path.read_bytes() if path.is_file() else None
+        except OSError:
+            return
+        self.checkpoints[-1].append((path, original))
+
+    def undo(self) -> list[str]:
+        """Revert the most recent turn that changed files; returns what was restored."""
+        while self.checkpoints and not self.checkpoints[-1]:
+            self.checkpoints.pop()
+        if not self.checkpoints:
+            return []
+        restored = []
+        for path, original in reversed(self.checkpoints.pop()):
+            try:
+                if original is None:
+                    path.unlink(missing_ok=True)
+                    restored.append(f"removed {path}")
+                else:
+                    path.write_bytes(original)
+                    restored.append(f"restored {path}")
+            except OSError as exc:
+                restored.append(f"could not restore {path}: {exc}")
+        return restored
 
     def _append_tool_results(self, remaining: list[dict]) -> None:
         for call in remaining:

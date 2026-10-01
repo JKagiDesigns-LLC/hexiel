@@ -216,6 +216,115 @@ class ConfigScreen(ModalScreen):
         self.dismiss(None)
 
 
+class ModelPicker(ModalScreen):
+    """Searchable list of every model reachable *right now* — each provider is
+    queried live when the picker opens, results fill in as they answer."""
+
+    BINDINGS = [("escape", "close", "Close"), ("down", "focus_list", "List")]
+
+    def __init__(self, current: str) -> None:
+        super().__init__()
+        self._pk_current = current
+        self._pk_groups: dict[str, list] = {}       # endpoint label -> Found list
+        self._pk_errors: dict[str, str] = {}
+        self._pk_pending = 0
+        self._pk_rows: list = []                    # Found | None (header rows)
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="picker-box"):
+            yield Label("[b]Switch model[/b]  [dim]type to search · ↑/↓ · Enter to choose · Esc to close[/dim]")
+            yield Input(placeholder="search models, e.g. sonnet, qwen, gemini…", id="picker-search")
+            yield OptionList(id="picker-list")
+            yield Static("", id="picker-status", classes="note")
+
+    def on_mount(self) -> None:
+        from .config import load_config
+        from . import model_catalog
+        self.query_one("#picker-search").focus()
+        cfg = load_config()
+        eps = model_catalog.endpoints(cfg)
+        self._pk_pending = len(eps)
+        self._pk_status()
+
+        def work() -> None:
+            model_catalog.discover(cfg, lambda ep, found, err: self.app.call_from_thread(
+                self._pk_arrived, ep, found, err))
+        threading.Thread(target=work, daemon=True).start()
+
+    def _pk_arrived(self, ep, found, err) -> None:
+        self._pk_pending -= 1
+        if err:
+            self._pk_errors[ep.label] = err
+        else:
+            self._pk_groups[ep.label] = found
+        self._pk_status()
+        self._pk_render()
+
+    def _pk_status(self) -> None:
+        n = sum(len(v) for v in self._pk_groups.values())
+        bits = [f"{n} model(s) available now"]
+        if self._pk_pending:
+            bits.append(f"checking {self._pk_pending} provider(s)…")
+        for label, err in self._pk_errors.items():
+            bits.append(f"[red]✗ {label}: {err.replace('[', chr(92) + '[')}[/]")
+        self.query_one("#picker-status").update("  ·  ".join(bits))
+
+    def on_input_changed(self, event: Input.Changed) -> None:
+        self._pk_render()
+
+    @staticmethod
+    def _fuzzy(query: str, text: str) -> bool:
+        it = iter(text.lower())
+        return all(ch in it for ch in query.lower().replace(" ", ""))
+
+    def _pk_render(self) -> None:
+        query = self.query_one("#picker-search", Input).value.strip()
+        lst = self.query_one("#picker-list", OptionList)
+        lst.clear_options()
+        self._pk_rows = []
+        options = []
+        def order(label):          # current model's provider first, then local servers
+            group = self._pk_groups[label]
+            has_current = any(f.profile == self._pk_current for f in group)
+            return (not has_current, "Ollama" not in label, label)
+        for label in sorted(self._pk_groups, key=order):
+            matches = [f for f in self._pk_groups[label]
+                       if not query or self._fuzzy(query, f"{f.model} {label} {f.profile}")]
+            if not matches:
+                continue
+            options.append(Option(f"[b]{label}[/b]", disabled=True))
+            self._pk_rows.append(None)
+            for f in sorted(matches, key=lambda f: (not f.profile, f.model)):
+                mark = " [green]● current[/]" if f.profile and f.profile == self._pk_current else ""
+                prof = f"  [dim]profile {f.profile}[/dim]" if f.profile else ""
+                detail = f"  [dim]{f.detail}[/dim]" if f.detail else ""
+                options.append(Option(f"   {f.model.replace('[', chr(92) + '[')}{detail}{prof}{mark}"))
+                self._pk_rows.append(f)
+        lst.add_options(options)
+        first = next((i for i, r in enumerate(self._pk_rows) if r is not None), None)
+        if first is not None:
+            lst.highlighted = first
+
+    def action_focus_list(self) -> None:
+        self.query_one("#picker-list").focus()
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        event.stop()
+        lst = self.query_one("#picker-list", OptionList)
+        if lst.highlighted is not None:
+            self._pk_choose(lst.highlighted)
+
+    def on_option_list_option_selected(self, event) -> None:
+        self._pk_choose(event.option_index)
+
+    def _pk_choose(self, index: int) -> None:
+        if 0 <= index < len(self._pk_rows) and self._pk_rows[index] is not None:
+            self.dismiss(self._pk_rows[index])
+
+    def action_close(self) -> None:
+        self.dismiss(None)
+
+
 class ReviewScreen(ModalScreen):
     """lazygit-style review of a self-heal fix: tick the files to include, read
     each diff, then send the fix to hexiel, keep it locally, or discard it."""
@@ -391,7 +500,7 @@ class StatusLine(Static):
 COMMANDS = [
     ("help", "", "list commands and skills"),
     ("config", "", "view and change settings (session or permanent)"),
-    ("model", "<name>", "switch model profile (e.g. gmktec, anthropic-sonnet)"),
+    ("model", "[name]", "pick from every model available right now (Ctrl+P), or switch by name"),
     ("models", "", "list models available on the Ollama server"),
     ("clear", "", "start a fresh conversation"),
     ("compact", "", "summarize history now to free up context"),
@@ -645,6 +754,7 @@ class HexielTUI(App):
     BINDINGS = [
         Binding("ctrl+c", "cancel", "Cancel turn / quit", priority=True),
         Binding("ctrl+l", "clear_chat", "Clear chat", priority=True),
+        Binding("ctrl+p", "pick_model", "Switch model", priority=True),
     ]
     CSS = """
     Screen { layout: vertical; }
@@ -667,7 +777,10 @@ class HexielTUI(App):
                  border: heavy $accent; background: $surface; }
     #scope-buttons { height: auto; padding: 1 0 0 0; }
     #scope-buttons Button { margin: 0 1 0 0; }
-    ScopeScreen, ConfigScreen, RestartScreen { align: center middle; }
+    ScopeScreen, ConfigScreen, RestartScreen, ModelPicker { align: center middle; }
+    #picker-box { width: 100%; max-width: 100; height: 80%; padding: 1 2; border: heavy $accent; background: $surface; }
+    #picker-list { height: 1fr; border: round $accent 50%; }
+    #picker-status { height: auto; padding: 1 0 0 0; }
     #config-box { width: 100%; max-width: 110; height: auto; max-height: 90%; padding: 1 2;
                   border: heavy $accent; background: $surface; }
     #config-table { height: auto; max-height: 16; }
@@ -862,9 +975,7 @@ class HexielTUI(App):
         from .config import load_config, ModelConfig
         cfg = load_config()
         if not arg:
-            names = ", ".join(cfg.models)
-            self.add_note(f"models: {names} — /model <name> to switch, /model add <preset> "
-                          "for a ready-made profile (hexiel --presets lists them)")
+            self.action_pick_model()
             return
         if arg.startswith("add"):
             self._add_preset(arg[3:].strip())
@@ -951,6 +1062,36 @@ class HexielTUI(App):
 
     def cmd_config(self, arg: str) -> None:
         self.push_screen(ConfigScreen(self.session))
+
+    def action_pick_model(self) -> None:
+        """Ctrl+P or /model: live, searchable list of every reachable model."""
+        from . import model_catalog, settings_edit
+
+        def chosen(found) -> None:
+            if found is None:
+                return
+            name, fields = model_catalog.profile_for(found)
+
+            def scoped(scope) -> None:
+                if not scope:
+                    return
+                if fields:                      # new model: give it a profile first
+                    from .config import ModelConfig
+                    if scope == "permanent":
+                        try:
+                            settings_edit.add_profile(name, fields)
+                        except ValueError:
+                            pass                # a profile by that name exists: just switch
+                        self.add_note(settings_edit.apply(self.session, "profile", name, scope))
+                    else:
+                        self.session.model_config = ModelConfig(name=name, **fields)
+                        self.add_note(f"Model → {found.model} (this session only)")
+                else:
+                    self.add_note(settings_edit.apply(self.session, "profile", name, scope))
+                self._refresh_status()
+            self.push_screen(ScopeScreen(f"Switch to {found.model} ({found.endpoint.label})"),
+                             callback=scoped)
+        self.push_screen(ModelPicker(self.session.model_config.name), callback=chosen)
 
     def _add_preset(self, name: str) -> None:
         from . import presets, settings_edit

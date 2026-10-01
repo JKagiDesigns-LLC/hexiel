@@ -112,3 +112,34 @@ def test_model_menu_offers_presets(tmp_path):
             return [(k, v) for k, v in app.query_one(CommandMenu)._items]
     items = run(go())
     assert ("preset", "sonnet") in items
+
+
+def test_model_picker_lists_live_results(tmp_path, monkeypatch):
+    from hexiel import model_catalog as M
+    from hexiel.tui import ModelPicker
+    ep_a = M.Endpoint("Ollama @ box", "openai", "http://box:11434/v1")
+    ep_b = M.Endpoint("Anthropic", "anthropic", "https://api.anthropic.com")
+
+    def fake_discover(cfg, on_result):
+        on_result(ep_b, [M.Found(ep_b, "claude-sonnet-5-5"), M.Found(ep_b, "claude-opus-5-5")], "")
+        on_result(ep_a, [M.Found(ep_a, "qwen3.6:35b-a3b-coding", profile="t")], "")
+        on_result(M.Endpoint("Groq", "openai", "https://api.groq.com/openai/v1"), [], "HTTP 401")
+    monkeypatch.setattr(M, "discover", fake_discover)
+    monkeypatch.setattr(M, "endpoints", lambda cfg: [1, 2, 3])
+
+    async def go():
+        app = make_app(tmp_path)
+        async with app.run_test(size=(110, 34)) as pilot:
+            await pilot.press("ctrl+p")
+            await pilot.pause(0.3)
+            pk = app.screen
+            first_group = [r.model for r in pk._pk_rows if r is not None][0]
+            await pilot.press(*"opus")
+            await pilot.pause(0.2)
+            filtered = [r.model for r in pk._pk_rows if r is not None]
+            status = str(pk.query_one("#picker-status").render())
+            return isinstance(pk, ModelPicker), first_group, filtered, status
+    is_picker, first, filtered, status = run(go())
+    assert is_picker and first == "qwen3.6:35b-a3b-coding"        # current model's group first
+    assert filtered == ["claude-opus-5-5"]
+    assert "3 model(s)" in status and "Groq" in status and "401" in status

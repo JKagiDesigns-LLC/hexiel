@@ -118,6 +118,23 @@ hexiel -m sonnet          # pick a model profile for this run
 | **Instant checks** | Every write/edit is syntax-checked locally (Python, JSON, TOML, shell, JS) in the same step |
 | **Also** | `/usage` (tokens in/cached/out), desktop notifications when you're needed, opt-in git `auto_commit`, Claude prompt caching, a guard that stops runaway model output |
 
+### For analysts, researchers and small businesses
+
+No code needed — just ask:
+
+| Ask | What hexiel does (locally, cheaply) |
+|---|---|
+| *"Which region beat its target? sales.csv vs targets.xlsx"* | Reads a compact **schema card** of each file (not the file), answers with **SQL** (DuckDB) across CSV / Excel / Parquet / JSON — only the aggregated result reaches the model |
+| *"Keep a list of my customers and invoices"* | Creates and updates a **local SQLite database** (`.hexiel/data.db`) — no setup |
+| *"Add an 'actual' column to Q3 in budget.xlsx"* | Edits **Excel** cells, ranges and sheets, keeping your formatting |
+| *"Chart revenue by month"* | An interactive **HTML chart** you can open in any browser |
+| *"Every Monday at 8am, summarise last week's sales and flag anything odd"* | A **scheduled job** that runs even when hexiel is closed (systemd/cron, launchd, Windows Task Scheduler); results land in `/inbox` with a desktop notification |
+| *"Connect my Firebase project"* | `/mcp add firebase` — also `supabase`, `notion`, `github`, `playwright` (browser automation), `filesystem` |
+
+Data and scheduling tools load **only when needed** (automatically when a project
+contains data files, or on request), so coding sessions don't pay for them in
+every prompt.
+
 ### Browser UI
 
 `hexiel --serve` runs the same agent in a browser: streamed markdown, tool-call
@@ -273,7 +290,7 @@ Fork → branch → merge request; the maintainer reviews and approves. hexiel c
 do the whole flow for you (`/ship`). See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ```bash
-.venv/bin/pytest                    # 97 tests: tools, providers, compaction, TUI, MCP,
+.venv/bin/pytest                    # 110 tests: tools, providers, compaction, TUI, MCP,
                                     # self-heal, settings, updater, web UI, plugins
 .venv/bin/python scripts/screenshots.py   # regenerate these screenshots
 ```

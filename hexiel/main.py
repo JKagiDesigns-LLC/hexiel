@@ -71,6 +71,17 @@ def build_session(cwd: str, model_name: str | None, resumed: dict | None = None)
     session.mcp_servers = mcp_servers
     from . import permissions
     session.rules = permissions.load(cwd, config.permissions)
+    from .tools import ToolDef
+    session.tools.append(ToolDef(
+        "task", "Delegate a self-contained investigation (e.g. 'find where X is configured and how "
+        "it is used', 'research Y on the web') to a subagent with its own context and read-only "
+        "tools. Only its final answer is returned — use it for searches that would otherwise "
+        "flood this conversation with file contents.",
+        {"type": "object", "properties": {
+            "description": {"type": "string", "description": "3-6 word label"},
+            "prompt": {"type": "string", "description": "the full task, with everything it needs"}},
+         "required": ["prompt"]},
+        readonly=True, run=lambda args, ctx: session.run_subagent(args)))
     session.bind_tool_ctx(tool_ctx)
     # gitlab propose steps share the standard approval gate; "no" declines the step
     tool_ctx.on_step = (lambda kind, desc: session.on_approve(f"gitlab:{kind}",

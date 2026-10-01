@@ -104,3 +104,20 @@ def test_syntax_check_after_write(tmp_path):
     assert "syntax check failed" in s.messages[-1]["content"] and "line 1" in s.messages[-1]["content"]
     s._execute_tool({"id": "3", "name": "write", "arguments": {"path": "c.json", "content": "{\"a\": }"}})
     assert "syntax check failed" in s.messages[-1]["content"]
+
+
+def test_subagent_returns_only_its_answer(tmp_path, monkeypatch):
+    s = session(tmp_path)
+    (tmp_path / "big.txt").write_text("needle at line 3\n" * 200)
+    replies = iter([
+        {"role": "assistant", "content": "", "tool_calls": [{"id": "r1", "name": "read", "arguments": {"path": "big.txt"}}]},
+        {"role": "assistant", "content": "The needle is in big.txt, line 3."}])
+    from hexiel.session import Session as S
+    monkeypatch.setattr(S, "_stream_assistant", lambda self, provider, defs: next(replies))
+    monkeypatch.setattr("hexiel.llm.make_provider", lambda *a, **k: None)
+    events = []
+    s.on_event = lambda e, *p, **k: events.append(e)
+    result = s.run_subagent({"description": "find needle", "prompt": "where is the needle?"})
+    assert "big.txt, line 3" in result.text and "1 tool call" in result.text
+    assert "needle at line 3\nneedle" not in result.text            # raw file content stays in the helper
+    assert s.messages == [] and "subagent" in events

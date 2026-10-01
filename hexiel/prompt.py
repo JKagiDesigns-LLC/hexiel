@@ -97,6 +97,9 @@ explanations.
   output (head/tail, specific files) rather than re-running variants.
 - Tool calls cost context: when a tool result turns out unnecessary or huge,
   note that and move on rather than re-running variants.
+- For open-ended searches ("where/how is X done across the codebase", web research
+  with several sources), use the `task` tool: a subagent digs through the material
+  in its own context and returns only the answer, keeping this conversation small.
 - Every tool call is a full model round-trip, which is slow on modest
   hardware. Batch work into ONE `python` script whenever you would otherwise
   chain several calls: read many files, grep across them, parse logs/JSON/XML,

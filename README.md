@@ -103,6 +103,21 @@ hexiel -m sonnet          # pick a model profile for this run
   the web UI's update button) installs it and restarts, resuming your conversation.
   It refuses to update a checkout with uncommitted changes.
 
+### Control, safety and flow
+
+| | |
+|---|---|
+| **Model picker** (`Ctrl+P` / `/model`) | Every model reachable *right now* — local Ollama, Ollama Cloud, Anthropic, OpenAI, OpenRouter… queried live each time, searchable |
+| **Auto-resume** | Hit a rate or usage limit? hexiel counts down to the reset and continues the same turn; with `fallback_profile` it switches to e.g. your local model instead |
+| **Permission rules** | Claude Code syntax — `Bash(git status:*)`, `Read(./.env)`, `Edit(src/**)`, `WebFetch(domain:…)`; deny > ask > allow; reads `.claude/settings.json`. "Always" answers are scoped to that kind of call |
+| **Plan mode** (`/plan`) | Investigate and propose a plan; nothing is changed until you turn it off |
+| **Undo** (`/undo`) | Reverts the files hexiel changed in its last turn, turn by turn |
+| **Hooks** | Claude Code compatible (`PreToolUse`, `PostToolUse`, `UserPromptSubmit`, `Stop`, `SessionStart`); exit 2 blocks |
+| **Custom commands** | Markdown prompts in `.hexiel/commands/` or `.claude/commands/` become `/name` (with `$ARGUMENTS`) |
+| **Subagents** (`task` tool) | Searches and research run in a helper's own context; only the answer comes back — optionally on a cheaper/local `subagent_profile` |
+| **Instant checks** | Every write/edit is syntax-checked locally (Python, JSON, TOML, shell, JS) in the same step |
+| **Also** | `/usage` (tokens in/cached/out), desktop notifications when you're needed, opt-in git `auto_commit`, Claude prompt caching, a guard that stops runaway model output |
+
 ### Browser UI
 
 `hexiel --serve` runs the same agent in a browser: streamed markdown, tool-call
@@ -258,7 +273,7 @@ Fork → branch → merge request; the maintainer reviews and approves. hexiel c
 do the whole flow for you (`/ship`). See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ```bash
-.venv/bin/pytest                    # 73 tests: tools, providers, compaction, TUI, MCP,
+.venv/bin/pytest                    # 97 tests: tools, providers, compaction, TUI, MCP,
                                     # self-heal, settings, updater, web UI, plugins
 .venv/bin/python scripts/screenshots.py   # regenerate these screenshots
 ```

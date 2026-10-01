@@ -37,6 +37,8 @@ FIELDS = [
      "options": [True, False], "help": "wait out provider rate/usage limits and continue automatically"},
     {"key": "settings.fallback_profile", "label": "Fallback model", "kind": "choice",
      "help": "profile to switch to when a limit won't reset soon (e.g. your local model); empty = none"},
+    {"key": "settings.subagent_profile", "label": "Subagent model", "kind": "choice",
+     "help": "profile for `task` subagents — e.g. a cheaper or local model; empty = current model"},
     {"key": "settings.auto_commit", "label": "Git auto-commit", "kind": "bool",
      "options": [False, True], "help": "commit the files hexiel changed after each finished turn"},
     {"key": "settings.notify", "label": "Notifications", "kind": "bool",
@@ -79,7 +81,7 @@ def options_for(session, key: str) -> list | None:
     field = FIELD_BY_KEY[key]
     if key == "profile":
         return list(config_mod.load_config().models)
-    if key == "settings.fallback_profile":
+    if key in ("settings.fallback_profile", "settings.subagent_profile"):
         return [""] + [n for n in config_mod.load_config().models if n != session.model_config.name]
     if key == "model.model":
         mc = session.model_config

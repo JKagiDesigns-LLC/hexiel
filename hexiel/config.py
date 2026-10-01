@@ -152,6 +152,7 @@ class Settings:
     fallback_profile: str = ""        # switch here when a limit won't reset soon (e.g. a local model)
     notify: bool = True               # desktop notification when approval is needed / long turns finish
     auto_commit: bool = False         # git-commit the files hexiel changed after each finished turn
+    subagent_profile: str = ""        # model profile for `task` subagents ("" = the current model)
 
 
 @dataclass
@@ -200,6 +201,7 @@ def load_config(model_override: str | None = None) -> Config:
         fallback_profile=str(settings_raw.get("fallback_profile", "")),
         notify=bool(settings_raw.get("notify", True)),
         auto_commit=bool(settings_raw.get("auto_commit", False)),
+        subagent_profile=str(settings_raw.get("subagent_profile", "")),
     )
 
     default_model = model_override or raw.get("default", next(iter(models), "default"))

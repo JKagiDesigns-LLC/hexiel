@@ -1214,6 +1214,9 @@ class HexielTUI(App):
         if event == "empty_retry":
             self.add_note("the model returned an empty reply — nudging it to continue")
             return
+        if event == "subagent":
+            self.activity.phase("tool", payload[1] if len(payload) > 1 else "task")
+            return
         if event == "auto_commit":
             self.add_note(f"✓ committed {payload[0]} file(s): hexiel: {payload[1]}")
             return

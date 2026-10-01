@@ -65,6 +65,13 @@ def _degenerate(tail: str) -> bool:
     return bool(_re.search(r"(.{1,8}?)\1{39,}$", tail, _re.S)) and len(set(tail[-200:])) <= 8
 
 
+SUBAGENT_SYSTEM = (
+    "You are a focused research subagent working for a coding agent. Investigate the task with "
+    "the read-only tools available (search, read, map, web), then reply with a concise, factual "
+    "answer: findings, exact file paths and line numbers, and anything uncertain. Do not ask "
+    "questions back; you cannot modify anything.")
+SUBAGENT_LIMIT = "\n\n(Keep your final answer under ~400 words; include paths and line numbers.)"
+
 FILE_TOOLS = {"write", "edit", "image_edit"}      # snapshotted before they run (/undo)
 PLAN_MODE_ALLOWED = {"todo", "memory", "skill"}   # bookkeeping still works in plan mode
 PLAN_MODE_NOTE = ("[plan mode] Investigate with read-only tools and produce a step-by-step plan. "
@@ -449,6 +456,43 @@ class Session:
             self.tool_ctx.result_cache[cache_key] = result
         self.on_event("tool_result", call, result.text, result.is_error,
                       time.time() - started)
+
+    # ---------------------------------------------------------------- subagents
+
+    def run_subagent(self, args: dict) -> "ToolResult":
+        """The `task` tool: a helper with its own context and read-only tools does
+        the digging; only its final answer comes back into this conversation."""
+        from .config import load_config
+        prompt = str(args.get("prompt", "")).strip()
+        if not prompt:
+            return ToolResult(text="error: prompt is required", is_error=True)
+        model = self.model_config
+        name = getattr(self.settings, "subagent_profile", "")
+        if name:
+            try:
+                model = load_config().model(name)
+            except (KeyError, SystemExit):
+                pass
+        tools = [t for t in self.tools if t.readonly and t.name != "task"]
+        helper = Session(model, self.settings, self.cwd, tools, SUBAGENT_SYSTEM)
+        helper.bind_tool_ctx(self.tool_ctx)
+        helper.hooks = self.hooks
+        helper.rules = self.rules
+        label = str(args.get("description", "")).strip()[:60] or "subagent"
+        helper.on_event = lambda event, *p, **k: (
+            self.on_event("subagent", label, p[0].get("name", "")) if event == "tool_call" else None)
+        helper.on_approve = lambda *a: "no"
+        helper.save = lambda: None                  # helpers don't create saved sessions
+        helper.run_turn(prompt + SUBAGENT_LIMIT)
+        answer = next((m.get("content", "") for m in reversed(helper.messages)
+                       if m.get("role") == "assistant" and m.get("content")), "")
+        for key in self.usage_totals:
+            self.usage_totals[key] += helper.usage_totals.get(key, 0)
+        steps = sum(1 for m in helper.messages if m.get("role") == "tool")
+        if not answer:
+            return ToolResult(text=f"the subagent finished without an answer after {steps} step(s)",
+                              is_error=True)
+        return ToolResult(text=f"[subagent: {steps} tool call(s), result only]\n{answer[:8000]}")
 
     # ---------------------------------------------------------------- checkpoints / undo
 

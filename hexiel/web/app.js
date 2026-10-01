@@ -2,11 +2,12 @@
 "use strict";
 
 const $ = (sel) => document.querySelector(sel);
+const $$ = (sel) => document.querySelectorAll(sel);
 const esc = (s) => (s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;");
 
 let ws = null;
 let busy = false;
-let live = null;            // {bubble, tools, thinking} during a turn
+let live = null;            // {flow, body, thinking} during a turn
 let wsQueue = [];
 
 // ---------------------------------------------------------------- rendering
@@ -14,19 +15,33 @@ let wsQueue = [];
 function newLive() {
   const wrap = document.createElement("div");
   wrap.className = "msg assistant";
-  wrap.innerHTML = `<div class="bubble"><div class="thinking">thinking…</div><div class="body"></div><div class="tools"></div></div>`;
+  // text segments and tool cards are appended to one flow in the order they
+  // happen, so each step's reply sits below the tool calls that preceded it
+  wrap.innerHTML = `<div class="bubble"><div class="flow"></div><div class="thinking">thinking…</div></div>`;
   $("#chat").appendChild(wrap);
   const live = {
     wrap,
-    bubble: wrap.querySelector(".body"),
+    flow: wrap.querySelector(".flow"),
     thinking: wrap.querySelector(".thinking"),
-    tools: wrap.querySelector(".tools"),
+    body: null,          // current text segment (null = start a new one)
     text: "",
     byId: new Map(),
   };
-  live.bubble.dataset.lang = "";
   $("#chat").scrollTop = $("#chat").scrollHeight;
   return live;
+}
+
+function appendText(delta) {
+  if (!live) live = newLive();
+  if (!live.body) {
+    live.body = document.createElement("div");
+    live.body.className = "body";
+    live.flow.appendChild(live.body);
+    live.text = "";
+  }
+  live.text += delta;
+  live.body.innerHTML = renderMarkdown(live.text);
+  $("#chat").scrollTop = $("#chat").scrollHeight;
 }
 
 function addTool(toolMsg) {
@@ -38,7 +53,8 @@ function addTool(toolMsg) {
     el.classList.toggle("open");
     el.querySelector(".chev").textContent = el.classList.contains("open") ? "▾" : "▸";
   });
-  live.tools.appendChild(el);
+  live.body = null;          // next text starts a new segment below this tool
+  live.flow.appendChild(el);
   live.byId.set(toolMsg.id, el);
   $("#chat").scrollTop = $("#chat").scrollHeight;
   return el;
@@ -94,8 +110,7 @@ function renderHistory(items) {
 
 function finishTurn(data) {
   if (live) {
-    const text = live.bubble.innerHTML;
-    if (live.text.trim()) { live.bubble.innerHTML = renderMarkdown(live.text.trim()); }
+    if (live.body && live.text.trim()) { live.body.innerHTML = renderMarkdown(live.text.trim()); }
     live.thinking.remove();
     // collapse finished tools' previews
     live.wrap.querySelectorAll(".tool.done-ok .preview, .tool.done-err .preview")
@@ -136,12 +151,7 @@ function connect() {
         applyStatus(data.status);
         break;
       case "status": applyStatus(data.status); break;
-      case "text":
-        if (!live) live = newLive();
-        live.text += data.delta;
-        live.bubble.innerHTML = renderMarkdown(live.text) ;
-        $("#chat").scrollTop = $("#chat").scrollHeight;
-        break;
+      case "text": appendText(data.delta); break;
       case "thinking":
         if (!live) live = newLive();
         live.thinking.textContent = "thinking" + "…";
@@ -257,10 +267,86 @@ function renderSidebar(state) {
     (chain.test_runners && chain.test_runners.length ? " · ♪ " + esc(chain.test_runners.join(", ")) : "") + "</div>";
 }
 
-$("#model-select").addEventListener("change", async (ev) => {
-  await fetch("/api/model", { method: "POST", body: JSON.stringify({ name: ev.target.value }),
-                              headers: { "content-type": "application/json" } });
+// ---------------------------------------------------------------- settings
+
+// Ask "this session or permanent?"; resolves to "session" | "permanent" | null.
+function askScope(title) {
+  return new Promise(resolve => {
+    $("#scope-title").textContent = title;
+    $("#scope-back").classList.add("show");
+    const done = (scope) => {
+      $("#scope-back").classList.remove("show");
+      ["#scope-session", "#scope-permanent", "#scope-cancel"].forEach(id => $(id).onclick = null);
+      document.removeEventListener("keydown", onKey, true);
+      resolve(scope);
+    };
+    const onKey = (ev) => {
+      if (ev.key === "Escape") { ev.stopPropagation(); done(null); }
+    };
+    document.addEventListener("keydown", onKey, true);
+    $("#scope-session").onclick = () => done("session");
+    $("#scope-permanent").onclick = () => done("permanent");
+    $("#scope-cancel").onclick = () => done(null);
+  });
+}
+
+async function changeSetting(key, label, value) {
+  const scope = await askScope(`${label} → ${value}`);
+  if (!scope) { loadSettings(); return; }
+  const resp = await (await fetch("/api/config", { method: "POST",
+    body: JSON.stringify({ key, value, scope }), headers: { "content-type": "application/json" } })).json();
+  $("#settings-msg").textContent = resp.error ? "⚠ " + resp.error : "✓ " + resp.message;
+  if (resp.rows) renderSettings(resp.rows);
   refreshState();
+}
+
+function renderSettings(rows) {
+  const fmt = v => (v === null || v === undefined) ? "" : String(v);
+  $("#settings-table tbody").innerHTML = rows.map((r, i) => {
+    const opts = r.options;
+    let cell;
+    if (opts === null || opts === undefined) {
+      cell = `<input data-i="${i}" value="${esc(fmt(r.value))}" placeholder="(empty)">`;
+    } else {
+      const all = opts.map(fmt).includes(fmt(r.value)) ? opts : [r.value, ...opts];
+      cell = `<select data-i="${i}">` + all.map(o =>
+        `<option value="${esc(fmt(o))}"${fmt(o) === fmt(r.value) ? " selected" : ""}>${esc(fmt(o))}</option>`).join("") + "</select>";
+    }
+    const badge = r.session_only ? `<span class="badge session">this session</span>` : `<span class="badge saved">saved</span>`;
+    return `<tr title="${esc(r.help)}"><td class="label">${esc(r.label)}</td><td>${cell}</td>` +
+           `<td class="saved">${esc(fmt(r.saved))}</td><td>${badge}</td></tr>`;
+  }).join("");
+  $$("#settings-table select, #settings-table input").forEach(el => {
+    const r = rows[+el.dataset.i];
+    const fire = () => { if (el.value !== fmt(r.value)) changeSetting(r.key, r.label, el.value); };
+    if (el.tagName === "SELECT") el.addEventListener("change", fire);
+    else el.addEventListener("keydown", ev => { if (ev.key === "Enter") fire(); });
+  });
+}
+
+async function loadSettings() {
+  const data = await (await fetch("/api/config")).json();
+  renderSettings(data.rows || []);
+}
+
+$("#settings-btn").addEventListener("click", () => {
+  $("#settings-msg").textContent = "";
+  $("#settings-back").classList.add("show");
+  loadSettings();
+});
+$("#settings-close").addEventListener("click", () => $("#settings-back").classList.remove("show"));
+document.addEventListener("keydown", ev => {
+  if (ev.key === "Escape" && !$("#scope-back").classList.contains("show")) $("#settings-back").classList.remove("show");
+});
+
+$("#model-select").addEventListener("change", async (ev) => {
+  const name = ev.target.value;
+  const scope = await askScope(`Switch model to ${name}`);
+  if (scope) {
+    await fetch("/api/config", { method: "POST", body: JSON.stringify({ key: "profile", value: name, scope }),
+                                 headers: { "content-type": "application/json" } });
+  }
+  refreshState();   // also snaps the dropdown back when cancelled
 });
 $("#clear-btn").addEventListener("click", async () => {
   if (!confirm("Clear this conversation?")) return;
@@ -301,3 +387,5 @@ $("#send").addEventListener("click", submit);
 connect();
 refreshState();
 setInterval(refreshState, 20000);
+// deep link: /#settings opens the settings panel (bookmarks, screenshots)
+if (location.hash === "#settings") $("#settings-btn").click();

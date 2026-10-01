@@ -60,9 +60,9 @@ class ApproveScreen(ModalScreen):
             yield Label(f"[b]Allow {self._tool_name}?[/b]")
             yield Static(self._args_preview, id="approve-args")
             with Horizontal(id="approve-buttons"):
-                yield Button("Yes  [y]", variant="primary", id="btn-yes")
-                yield Button("Always allow  [a]", id="btn-always")
-                yield Button("No  [n]", variant="error", id="btn-no")
+                yield Button("Yes  \\[y]", variant="primary", id="btn-yes")
+                yield Button("Always allow  \\[a]", id="btn-always")
+                yield Button("No  \\[n]", variant="error", id="btn-no")
 
     def _finish(self, verdict: str) -> None:
         self.result = verdict
@@ -81,6 +81,136 @@ class ApproveScreen(ModalScreen):
 
     def action_always(self) -> None:
         self._finish("always")
+
+
+class ScopeScreen(ModalScreen):
+    """Ask whether a settings change is for this session or permanent."""
+
+    BINDINGS = [("s", "pick('session')", "This session"), ("p", "pick('permanent')", "Save"),
+                ("escape", "pick('')", "Cancel")]
+
+    def __init__(self, summary: str) -> None:
+        super().__init__()
+        self._summary = summary
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="scope-box"):
+            yield Label(f"[b]{self._summary}[/b]")
+            yield Static("Keep this for just this session, or save it to config.toml?",
+                         classes="note")
+            with Horizontal(id="scope-buttons"):
+                yield Button("This session  \\[s]", id="scope-session")
+                yield Button("Save permanently  \\[p]", variant="primary", id="scope-permanent")
+                yield Button("Cancel  \\[esc]", id="scope-cancel")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        self.action_pick(event.button.id.removeprefix("scope-").replace("cancel", ""))
+
+    def action_pick(self, scope: str) -> None:
+        self.dismiss(scope or None)
+
+
+class ConfigScreen(ModalScreen):
+    """/config: table of settings; Enter/click a row to pick a new value."""
+
+    BINDINGS = [("escape", "close", "Close")]
+
+    def __init__(self, session) -> None:
+        super().__init__()
+        self.session = session
+        self._rows: list[dict] = []
+        self._editing: str | None = None
+
+    def compose(self) -> ComposeResult:
+        from textual.widgets import DataTable
+        with Vertical(id="config-box"):
+            yield Label("[b]hexiel settings[/b]  [dim]Enter/click a row to change it · Esc to close[/dim]")
+            yield DataTable(id="config-table", cursor_type="row", zebra_stripes=True)
+            yield OptionList(id="config-options")
+            yield Input(id="config-text", placeholder="type a value and press Enter")
+            yield Static("", id="config-help", classes="note")
+
+    def on_mount(self) -> None:
+        table = self.query_one("#config-table")
+        table.add_columns("Setting", "Value", "Saved in config", "")
+        self.query_one("#config-options").display = False
+        self.query_one("#config-text").display = False
+        self.reload()
+        table.focus()
+
+    def reload(self) -> None:
+        from . import settings_edit
+        table = self.query_one("#config-table")
+        cursor = table.cursor_row
+        table.clear()
+        self._rows = settings_edit.rows(self.session)
+        for r in self._rows:
+            flag = "[yellow]this session[/]" if r["session_only"] else "[dim]saved[/]"
+            table.add_row(r["label"], str(r["value"]), str(r["saved"]), flag, key=r["key"])
+        if self._rows:
+            table.move_cursor(row=min(cursor, len(self._rows) - 1))
+
+    def on_data_table_row_highlighted(self, event) -> None:
+        if 0 <= event.cursor_row < len(self._rows):
+            self.query_one("#config-help").update(self._rows[event.cursor_row]["help"])
+
+    def on_data_table_row_selected(self, event) -> None:
+        from . import settings_edit
+        row = self._rows[event.cursor_row]
+        self._editing = row["key"]
+        options = settings_edit.options_for(self.session, row["key"])
+        if options is None:
+            box = self.query_one("#config-text")
+            box.value = str(row["value"] or "")
+            box.display = True
+            box.focus()
+            return
+        menu = self.query_one("#config-options")
+        menu.clear_options()
+        menu.add_options([Option(("● " if o == row["value"] else "  ") + str(o)) for o in options])
+        menu._values = options
+        menu.highlighted = options.index(row["value"]) if row["value"] in options else 0
+        menu.display = True
+        menu.focus()
+
+    def on_option_list_option_selected(self, event) -> None:
+        menu = self.query_one("#config-options")
+        self._confirm(menu._values[event.option_index])
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        event.stop()
+        self._confirm(event.value)
+
+    def _confirm(self, value) -> None:
+        from . import settings_edit
+        key = self._editing
+        self.query_one("#config-options").display = False
+        self.query_one("#config-text").display = False
+        self.query_one("#config-table").focus()
+        if key is None:
+            return
+        label = settings_edit.FIELD_BY_KEY[key]["label"]
+
+        def done(scope) -> None:
+            if not scope:
+                return
+            try:
+                msg = settings_edit.apply(self.session, key, value, scope)
+            except Exception as exc:  # noqa: BLE001 - show, don't crash the TUI
+                msg = f"[red]could not change {label}: {exc}[/]"
+            self.query_one("#config-help").update(msg)
+            self.reload()
+            self.app._refresh_status()
+
+        self.app.push_screen(ScopeScreen(f"{label} → {value}"), callback=done)
+
+    def action_close(self) -> None:
+        if self.query_one("#config-options").display or self.query_one("#config-text").display:
+            self.query_one("#config-options").display = False
+            self.query_one("#config-text").display = False
+            self.query_one("#config-table").focus()
+            return
+        self.dismiss(None)
 
 
 class ToolLine(Static):
@@ -145,6 +275,7 @@ class StatusLine(Static):
 # slash commands: (name, argument hint, what it does) — drives /help and the menu
 COMMANDS = [
     ("help", "", "list commands and skills"),
+    ("config", "", "view and change settings (session or permanent)"),
     ("model", "<name>", "switch model profile (e.g. gmktec, anthropic-sonnet)"),
     ("models", "", "list models available on the Ollama server"),
     ("clear", "", "start a fresh conversation"),
@@ -379,6 +510,16 @@ class HexielTUI(App):
     .assistant-msg { margin: 0 0 0 0; }
     ToolLine { color: $secondary-lighten-2; background: transparent; }
     .note { color: $text-muted; text-style: italic; }
+    #scope-box { width: 100%; max-width: 80; height: auto; margin: 2 2; padding: 1 2;
+                 border: heavy $accent; background: $surface; }
+    #scope-buttons { height: auto; padding: 1 0 0 0; }
+    #scope-buttons Button { margin: 0 1 0 0; }
+    ScopeScreen, ConfigScreen { align: center middle; }
+    #config-box { width: 100%; max-width: 110; height: auto; max-height: 90%; padding: 1 2;
+                  border: heavy $accent; background: $surface; }
+    #config-table { height: auto; max-height: 16; }
+    #config-options { height: auto; max-height: 10; border: round $accent; }
+    #config-help { height: auto; padding: 1 0 0 0; }
     #approve-box { width: 100%; max-width: 90; margin: 1 2; margin-top: 1; padding: 1 2;
                    border: heavy $accent; background: $surface; }
     #approve-args { height: auto; max-height: 12; padding: 1 0; color: $text; }
@@ -512,6 +653,7 @@ class HexielTUI(App):
         arg = arg.strip()
         handler = {
             "help": self.cmd_help, "clear": self.cmd_clear, "compact": self.cmd_compact,
+            "config": self.cmd_config,
             "model": self.cmd_model, "models": self.cmd_models, "auto": self.cmd_auto,
             "memory": self.cmd_memory, "skills": self.cmd_skills,
             "ship": self.cmd_ship, "heal": self.cmd_heal,
@@ -553,7 +695,15 @@ class HexielTUI(App):
             self.add_note(f"models: {names} — /model <name> to switch, /models for live inventory")
             return
         if arg in cfg.models:
-            self.session.model_config = cfg.models[arg]
+            from . import settings_edit
+
+            def done(scope) -> None:
+                if scope:
+                    self.add_note(settings_edit.apply(self.session, "profile", arg, scope))
+                    self._refresh_status()
+            self.push_screen(ScopeScreen(f"Switch model to {arg} ({cfg.models[arg].model})"),
+                             callback=done)
+            return
         else:
             # on-the-fly profile: inherit the current openai-compatible endpoint
             base = self.session.model_config
@@ -562,6 +712,9 @@ class HexielTUI(App):
                 context_window=base.context_window, max_output_tokens=base.max_output_tokens)
             self.add_note(f"profile '{arg}' created on the fly ({arg} @ {base.base_url})")
         self._refresh_status()
+
+    def cmd_config(self, arg: str) -> None:
+        self.push_screen(ConfigScreen(self.session))
 
     def cmd_auto(self, arg: str) -> None:
         self.session.auto_approve = not self.session.auto_approve
@@ -636,10 +789,13 @@ class HexielTUI(App):
             self._stream_text += delta
             now = time.time()
             if self._stream_wid is None:
-                self._stream_wid = Markdown("")
+                # construct with the text: an update() issued before the mount
+                # completes is silently dropped by Textual
+                self._stream_wid = Markdown(self._stream_text)
                 chat.mount(self._stream_wid)
                 chat.scroll_end(animate=False)
-            if now - self._last_flush > 0.15:
+                self._last_flush = now
+            elif now - self._last_flush > 0.15:
                 self._stream_wid.update(self._stream_text)
                 self._last_flush = now
                 chat.scroll_end(animate=False)
@@ -649,6 +805,9 @@ class HexielTUI(App):
             if error:
                 chat.mount(Static(f"[red]provider error:[/red] {error}", classes="note"))
         elif event == "tool_call":
+            # seal this step's text so the next step's reply renders *below* the
+            # tool calls — chronological order instead of one growing blob on top
+            self.finalize_stream(placeholder=False)
             call = payload[0]
             short = call_short(call)
             wid = ToolLine(classes="tool")
@@ -683,9 +842,13 @@ class HexielTUI(App):
             chat.mount(Static(f"[green]{payload[0]}[/green]", classes="note"))
         chat.scroll_end(animate=False)
 
-    def finalize_stream(self) -> None:
+    def finalize_stream(self, placeholder: bool = True) -> None:
         if self._stream_wid is not None:
-            self._stream_wid.update(self._stream_text or "*(empty response)*")
+            wid, text = self._stream_wid, self._stream_text or ("*(empty response)*" if placeholder else "")
+            if wid.is_mounted:
+                wid.update(text)
+            else:   # still mounting: an immediate update would be dropped
+                self.call_after_refresh(wid.update, text)
             self._stream_wid = None
             self._stream_text = ""
         self.status.refresh_text()

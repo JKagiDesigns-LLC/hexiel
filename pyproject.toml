@@ -1,6 +1,6 @@
 [project]
 name = "hexiel"
-version = "0.2.4"
+version = "0.2.5"
 description = "Hexiel — terminal/agent coding assistant: pluggable providers, file-based memory, skills, auto-compaction, native toolchain integration, self-healing, GitLab MR flow, browser UI, OpenWebUI compatibility"
 requires-python = ">=3.11"
 dependencies = [

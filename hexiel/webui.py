@@ -15,6 +15,7 @@ from pathlib import Path
 from aiohttp import WSMsgType, web
 
 from . import memory as memory_mod
+from . import settings_edit
 from . import skills as skills_mod
 from . import todo as todo_mod
 from .config import load_config, home_data_dir
@@ -290,20 +291,38 @@ def make_app(session: Session) -> web.Application:
     async def api_model(request):
         data = await request.json()
         try:
-            session.model_config = load_config().model(data.get("name", ""))
-        except KeyError as exc:
+            settings_edit.apply(session, "profile", data.get("name", ""), data.get("scope", "session"))
+        except (KeyError, ValueError) as exc:
             return _json_response({"error": str(exc)}, 400)
         state.broadcast({"t": "status", "status": status_state(session)})
         return _json_response({"ok": True})
 
     async def api_settings(request):
+        # legacy session-only toggles; /api/config is the full editor
         data = await request.json()
-        if "auto_approve" in data:
-            session.auto_approve = bool(data["auto_approve"])
-        if "compact_threshold" in data:
-            session.settings.compact_threshold = float(data["compact_threshold"])
+        for key, field in (("auto_approve", "settings.auto_approve"),
+                           ("compact_threshold", "settings.compact_threshold")):
+            if key in data:
+                settings_edit.apply(session, field, data[key], "session")
         state.broadcast({"t": "status", "status": status_state(session)})
         return _json_response({"ok": True})
+
+    async def api_config_get(request):
+        loop = asyncio.get_running_loop()   # options may query the model server
+        rows = await loop.run_in_executor(None, lambda: settings_edit.rows(session, with_options=True))
+        return _json_response({"rows": rows})
+
+    async def api_config_set(request):
+        data = await request.json()
+        try:
+            msg = settings_edit.apply(session, data.get("key", ""), data.get("value"),
+                                      data.get("scope", "session"))
+        except (KeyError, ValueError, AssertionError, SystemExit) as exc:
+            return _json_response({"error": str(exc)}, 400)
+        state.broadcast({"t": "status", "status": status_state(session)})
+        loop = asyncio.get_running_loop()
+        rows = await loop.run_in_executor(None, lambda: settings_edit.rows(session, with_options=True))
+        return _json_response({"ok": True, "message": msg, "rows": rows})
 
     async def api_approve(request):
         data = await request.json()
@@ -397,6 +416,8 @@ def make_app(session: Session) -> web.Application:
     app.router.add_get("/api/state", api_state)
     app.router.add_post("/api/model", api_model)
     app.router.add_post("/api/settings", api_settings)
+    app.router.add_get("/api/config", api_config_get)
+    app.router.add_post("/api/config", api_config_set)
     app.router.add_post("/api/approve", api_approve)
     app.router.add_post("/api/clear", api_clear)
     app.router.add_post("/api/compact", api_compact)

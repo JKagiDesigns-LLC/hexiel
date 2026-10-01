@@ -1,0 +1,249 @@
+"""Read and change hexiel settings at runtime — for this session only, or
+permanently in config.toml. Shared by the TUI (/config) and the web UI.
+
+Permanent edits rewrite single lines of config.toml (never the whole file),
+so comments and layout survive; every edit is re-parsed and verified before
+it is written."""
+
+import dataclasses
+import json
+import re
+import shutil
+
+from . import config as config_mod
+
+# Editable fields. `options` is a list of choices, or None for free text.
+FIELDS = [
+    {"key": "profile", "label": "Model profile", "kind": "choice",
+     "help": "which [models.*] profile is used (permanent = the startup default)"},
+    {"key": "model.model", "label": "Model", "kind": "choice",
+     "help": "model id for the current profile (live list from its server)"},
+    {"key": "model.reasoning", "label": "Thinking", "kind": "choice",
+     "options": ["none", "low", "medium", "high", "model default"],
+     "help": "reasoning_effort sent to the server — 'none' is fastest on slow hardware"},
+    {"key": "model.context_window", "label": "Context window", "kind": "number",
+     "options": [32768, 65536, 131072, 200000, 262144],
+     "help": "tokens before auto-compaction; keep in sync with the server's limit"},
+    {"key": "model.max_output_tokens", "label": "Max output", "kind": "number",
+     "options": [4096, 8192, 16384, 32768], "help": "longest single reply"},
+    {"key": "settings.auto_approve", "label": "Auto-approve", "kind": "bool",
+     "options": [False, True], "help": "run edits and commands without asking"},
+    {"key": "settings.compact_threshold", "label": "Compact at", "kind": "number",
+     "options": [0.7, 0.75, 0.8, 0.82, 0.85, 0.9],
+     "help": "share of the context window that triggers auto-compaction"},
+    {"key": "settings.request_timeout", "label": "Request timeout", "kind": "number",
+     "options": [300, 600, 900, 1800, 3600], "help": "seconds per model request"},
+    {"key": "settings.search_backend", "label": "Web search", "kind": "choice",
+     "options": ["duckduckgo", "searxng"], "help": "search engine for the web_search tool"},
+    {"key": "settings.searxng_url", "label": "SearXNG URL", "kind": "text", "options": None,
+     "help": "e.g. http://localhost:8888 (when web search = searxng)"},
+]
+FIELD_BY_KEY = {f["key"]: f for f in FIELDS}
+
+
+# ---------------------------------------------------------------- reading
+
+def _live_value(session, key: str):
+    mc, st = session.model_config, session.settings
+    if key == "profile":
+        return mc.name
+    if key == "model.reasoning":
+        return (mc.extra_body or {}).get("reasoning_effort", "model default")
+    if key.startswith("model."):
+        return getattr(mc, key.split(".", 1)[1])
+    if key == "settings.auto_approve":
+        return bool(session.auto_approve)
+    return getattr(st, key.split(".", 1)[1])
+
+
+def _saved_value(cfg, key: str, profile: str):
+    if key == "profile":
+        return cfg.default_model
+    mc = cfg.models.get(profile)
+    if key == "model.reasoning":
+        return (mc.extra_body or {}).get("reasoning_effort", "model default") if mc else None
+    if key.startswith("model."):
+        return getattr(mc, key.split(".", 1)[1]) if mc else None
+    return getattr(cfg.settings, key.split(".", 1)[1])
+
+
+def options_for(session, key: str) -> list | None:
+    field = FIELD_BY_KEY[key]
+    if key == "profile":
+        return list(config_mod.load_config().models)
+    if key == "model.model":
+        mc = session.model_config
+        found = config_mod.list_ollama_models(mc.base_url) if mc.base_url else []
+        return sorted(set(found) | {mc.model})
+    return field.get("options")
+
+
+def rows(session, with_options: bool = False) -> list[dict]:
+    """One row per editable field: live value, saved value, and whether the
+    live value is a session-only change."""
+    cfg = config_mod.load_config()
+    out = []
+    for f in FIELDS:
+        live = _live_value(session, f["key"])
+        saved = _saved_value(cfg, f["key"], session.model_config.name)
+        row = {"key": f["key"], "label": f["label"], "kind": f["kind"], "help": f["help"],
+               "value": live, "saved": saved, "session_only": live != saved}
+        if with_options:
+            row["options"] = options_for(session, f["key"])
+        out.append(row)
+    return out
+
+
+# ---------------------------------------------------------------- coercion
+
+def coerce(key: str, value):
+    kind = FIELD_BY_KEY[key]["kind"]
+    if kind == "bool":
+        if isinstance(value, str):
+            return value.strip().lower() in ("true", "yes", "on", "1")
+        return bool(value)
+    if kind == "number":
+        num = float(value)
+        return int(num) if key != "settings.compact_threshold" else num
+    return str(value).strip()
+
+
+# ---------------------------------------------------------------- applying
+
+def apply(session, key: str, value, scope: str) -> str:
+    """Change `key` to `value`. scope: "session" (this run only) or "permanent"
+    (also written to config.toml). Returns a human-readable confirmation."""
+    if key not in FIELD_BY_KEY:
+        raise KeyError(f"unknown setting {key}")
+    if scope not in ("session", "permanent"):
+        raise ValueError("scope must be 'session' or 'permanent'")
+    value = coerce(key, value)
+    profile = session.model_config.name
+
+    # 1. live session
+    if key == "profile":
+        session.model_config = config_mod.load_config().model(value)
+    elif key == "model.reasoning":
+        extra = dict(session.model_config.extra_body or {})
+        if value == "model default":
+            extra.pop("reasoning_effort", None)
+        else:
+            extra["reasoning_effort"] = value
+        session.model_config = dataclasses.replace(session.model_config, extra_body=extra)
+    elif key.startswith("model."):
+        session.model_config = dataclasses.replace(session.model_config,
+                                                   **{key.split(".", 1)[1]: value})
+    else:
+        setattr(session.settings, key.split(".", 1)[1], value)
+        if key == "settings.auto_approve":
+            session.auto_approve = value
+
+    # 2. config file
+    label = FIELD_BY_KEY[key]["label"]
+    if scope == "session":
+        return f"{label} → {value} (this session only)"
+    if key == "profile":
+        _write(None, "default", value)
+    elif key == "model.reasoning":
+        extra = dict(session.model_config.extra_body or {})
+        _write(f"models.{profile}", "extra_body", extra if extra else None)
+    elif key.startswith("model."):
+        _write(f"models.{profile}", key.split(".", 1)[1], value)
+    else:
+        _write("settings", key.split(".", 1)[1], value)
+    return f"{label} → {value} (saved to {config_mod.CONFIG_FILE})"
+
+
+# ---------------------------------------------------------------- TOML line editing
+
+def toml_literal(value) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (int, float)):
+        return repr(value)
+    if isinstance(value, dict):
+        return "{ " + ", ".join(f"{k} = {toml_literal(v)}" for k, v in value.items()) + " }"
+    return json.dumps(str(value))   # TOML basic string == JSON string for plain text
+
+
+_HEADER = re.compile(r"^\s*\[([^\[\]]+)\]\s*(#.*)?$")
+
+
+def _split_comment(rest: str) -> tuple[str, str]:
+    """Split `value  # comment` respecting quotes and inline tables."""
+    quote, depth = None, 0
+    for i, ch in enumerate(rest):
+        if quote:
+            if ch == quote and rest[i - 1] != "\\":
+                quote = None
+        elif ch in "\"'":
+            quote = ch
+        elif ch in "{[":
+            depth += 1
+        elif ch in "}]":
+            depth -= 1
+        elif ch == "#" and depth == 0:
+            return rest[:i], rest[i:]
+    return rest, ""
+
+
+def set_toml_value(text: str, section: str | None, key: str, value) -> str:
+    """Return `text` with `key` in `[section]` (None = top level) set to `value`;
+    value None removes the key. Only the one affected line changes."""
+    lines = text.splitlines(keepends=True)
+    start, end = 0, len(lines)            # line range of the target section body
+    if section is not None:
+        start = None
+        for i, line in enumerate(lines):
+            m = _HEADER.match(line)
+            if m and m.group(1).strip().replace('"', "") == section:
+                start = i + 1
+                break
+        if start is None:                 # section missing: append it
+            if value is None:
+                return text
+            sep = "" if text.endswith("\n") or not text else "\n"
+            return text + f"{sep}\n[{section}]\n{key} = {toml_literal(value)}\n"
+    for i in range(start, len(lines)):
+        if _HEADER.match(lines[i]):
+            end = i
+            break
+    key_re = re.compile(rf"^(\s*){re.escape(key)}(\s*=\s*)(.*?)(\r?\n)?$")
+    for i in range(start, end):
+        m = key_re.match(lines[i])
+        if m:
+            if value is None:
+                del lines[i]
+                return "".join(lines)
+            _, comment = _split_comment(m.group(3))
+            tail = f"   {comment.strip()}" if comment.strip() else ""
+            lines[i] = f"{m.group(1)}{key}{m.group(2)}{toml_literal(value)}{tail}{m.group(4) or chr(10)}"
+            return "".join(lines)
+    if value is None:
+        return text
+    # key missing: insert after the section's last non-blank line
+    insert_at = end
+    while insert_at > start and not lines[insert_at - 1].strip():
+        insert_at -= 1
+    lines.insert(insert_at, f"{key} = {toml_literal(value)}\n")
+    return "".join(lines)
+
+
+def _write(section: str | None, key: str, value) -> None:
+    import tomllib
+    path = config_mod.CONFIG_FILE
+    old = path.read_text() if path.exists() else ""
+    new = set_toml_value(old, section, key, value)
+    # verify before touching the file: must parse and read back the new value
+    parsed = tomllib.loads(new)
+    node = parsed
+    for part in (section.split(".") if section else []):
+        node = node.get(part, {})
+    if value is None:
+        assert key not in node, f"failed to remove {key}"
+    else:
+        assert node.get(key) == value, f"verify failed for {key}: {node.get(key)!r} != {value!r}"
+    backup = path.with_name(path.name + ".bak")
+    if path.exists() and not backup.exists():
+        shutil.copy2(path, backup)   # one-time safety copy of the hand-written original
+    path.write_text(new)

@@ -24,6 +24,7 @@
       <select id="model-select"></select>
       <button id="compact-btn" title="Summarize history now (replaces tokens)">Compact</button>
       <button id="clear-btn" title="Start a fresh conversation">Clear</button>
+      <button id="settings-btn" title="View and change settings">⚙ Settings</button>
       <div class="spacer"></div>
       <div id="todo-badge" class="dim"></div>
       <div id="ctx-label"></div>
@@ -49,6 +50,30 @@
         <button class="yes" id="approve-yes">Approve (y)</button>
         <button class="always" id="approve-always">Always for this session</button>
         <button class="no" id="approve-no">Deny (n)</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal-back" id="settings-back">
+    <div class="panel" id="settings-box">
+      <div class="panel-head"><h4>hexiel settings</h4><button id="settings-close" title="Close (Esc)">✕</button></div>
+      <div class="dim" style="margin-bottom:8px">Change a value, then choose whether it applies to this session only or is saved to config.toml.</div>
+      <table id="settings-table">
+        <thead><tr><th>Setting</th><th>Value</th><th>Saved in config</th><th></th></tr></thead>
+        <tbody></tbody>
+      </table>
+      <div class="dim" id="settings-msg"></div>
+    </div>
+  </div>
+
+  <div class="modal-back" id="scope-back">
+    <div class="panel" id="scope-box">
+      <h4 id="scope-title"></h4>
+      <div class="dim">Keep this for just this session, or save it to config.toml?</div>
+      <div class="row">
+        <button id="scope-session">This session</button>
+        <button class="yes" id="scope-permanent">Save permanently</button>
+        <button id="scope-cancel">Cancel</button>
       </div>
     </div>
   </div>

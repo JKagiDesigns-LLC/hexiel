@@ -8,6 +8,7 @@ import shlex
 import shutil
 import struct
 import subprocess
+import sys
 from dataclasses import dataclass, field
 from html.parser import HTMLParser
 from pathlib import Path
@@ -140,6 +141,39 @@ def _run_bash(args: dict, ctx: ToolContext) -> ToolResult:
             "error: neither bash nor PowerShell is available — install PowerShell "
             "with `winget install Microsoft.PowerShell`", True)
     return _run_shell(args, ctx, ["/bin/bash", "-lc", args.get("command", "")], "/bin/bash")
+
+
+def _python_argv(ctx: ToolContext) -> str:
+    """The project's own venv python when there is one (its packages import),
+    else the interpreter hexiel itself runs on."""
+    for sub in (".venv", "venv"):
+        for rel in ("bin/python", "Scripts/python.exe"):
+            cand = Path(ctx.cwd) / sub / rel
+            if cand.is_file():
+                return str(cand)
+    return sys.executable
+
+
+def _run_python(args: dict, ctx: ToolContext) -> ToolResult:
+    """Run a Python script locally. The cheap way for a model on slow hardware
+    to do many steps at once: one script that reads/greps/parses/computes and
+    prints only the result replaces a chain of tool calls, each of which would
+    cost a full model round-trip."""
+    import tempfile
+    code = args.get("code", "")
+    if not code.strip():
+        return text_result("error: code is required", True)
+    fd, script = tempfile.mkstemp(prefix="hexiel-py-", suffix=".py")
+    try:
+        with os.fdopen(fd, "w") as fh:
+            fh.write(code)
+        return _run_shell({"command": "python", "timeout": args.get("timeout")}, ctx,
+                          [_python_argv(ctx), script], "python")
+    finally:
+        try:
+            os.unlink(script)
+        except OSError:
+            pass
 
 
 # ---------------------------------------------------------------- read / write / edit
@@ -809,6 +843,13 @@ def build_tools(chain: Toolchain) -> list[ToolDef]:
                 "On Windows this falls back to PowerShell when bash is absent.",
                 obj(command={"type": "string"}, timeout={"type": "number"}),
                 run=_run_bash),
+        ToolDef("python", "Run a Python 3 script in the project directory (project venv if "
+                "present) and get its stdout/stderr. Prefer ONE script over many tool "
+                "calls: read several files, search, parse logs/JSON/XML, count, diff, "
+                "transform, compute — then print only the lines you actually need.",
+                obj(code={"type": "string", "description": "complete Python script"},
+                    timeout={"type": "number"}),
+                run=_run_python),
         ToolDef("powershell", "Run a PowerShell command (pwsh) in the project directory — "
                 "Windows-native paths, registry, services, WMI, etc. Use instead of "
                 "bash for Windows-specific operations.",

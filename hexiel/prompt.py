@@ -97,6 +97,11 @@ explanations.
   output (head/tail, specific files) rather than re-running variants.
 - Tool calls cost context: when a tool result turns out unnecessary or huge,
   note that and move on rather than re-running variants.
+- Every tool call is a full model round-trip, which is slow on modest
+  hardware. Batch work into ONE `python` script whenever you would otherwise
+  chain several calls: read many files, grep across them, parse logs/JSON/XML,
+  count, compare, compute — and print only the lines you need. Let Python do
+  the bookkeeping; spend your effort on the reasoning.
 - If you intend to call several independent tools, make all the calls in one turn.
 - When the user corrects an approach or confirms a preference, that is guidance
   for how to work: save it to memory (see Memory).

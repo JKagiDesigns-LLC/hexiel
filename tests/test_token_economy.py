@@ -85,3 +85,24 @@ def test_compact_elides_stale_tools_without_summarizing(tmp_path):
     # no summarized compaction happened — elision alone sufficed
     assert events == ["compact_end"]
     assert session.messages[2]["content"] == "[prior tool output elided: ~20000 chars]"
+
+def test_python_tool_batches_locally(tmp_path):
+    from hexiel.tools import _run_python
+    (tmp_path / "a.log").write_text("ok\nERROR one\nok\n")
+    (tmp_path / "b.log").write_text("ERROR two\nERROR three\n")
+    code = ("import glob\n"
+            "n = sum(open(f).read().count('ERROR') for f in glob.glob('*.log'))\n"
+            "print('errors:', n)\n")
+    r = _run_python({"code": code}, ToolContext(cwd=str(tmp_path), chain=Toolchain()))
+    assert not r.is_error and r.text.strip() == "errors: 3"
+    bad = _run_python({"code": "raise SystemExit('boom')"}, ToolContext(cwd=str(tmp_path), chain=Toolchain()))
+    assert bad.is_error and "boom" in bad.text
+
+
+def test_skills_index_is_compact():
+    from hexiel.skills import Skill, prompt_section, short_description
+    long = "Use this skill when the user wants X, e.g. a report. " + "Lots more detail. " * 50
+    assert short_description(long).startswith("Use this skill when the user wants X, e.g. a report")
+    assert len(short_description(long)) <= 90
+    sk = [Skill(name=f"s{i}", description=long, path=Path(f"/x/s{i}/SKILL.md"), body="") for i in range(15)]
+    assert len(prompt_section(sk)) < 15 * 110 + 200     # was ~15 × 1000+ chars

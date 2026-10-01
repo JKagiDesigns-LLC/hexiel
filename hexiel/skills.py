@@ -85,10 +85,19 @@ def command_names(skills: list[Skill]) -> set[str]:
     return {skill.name for skill in skills}
 
 
+def short_description(text: str, limit: int = 90) -> str:
+    """First sentence of a skill description, capped — enough to pick a skill."""
+    flat = " ".join((text or "").split()).strip('"\' ')
+    first = re.split(r"\.\s+(?=[A-Z(])", flat)[0].rstrip(".")   # not at "e.g. x"
+    return first if len(first) <= limit else first[:limit - 1].rstrip() + "…"
+
+
 def prompt_section(skills: list[Skill]) -> str:
+    """Compact index: one short line per skill. The full instructions are
+    loaded on demand by the `skill` tool, so they cost nothing until used
+    (full descriptions were ~3k tokens on *every* request)."""
     if not skills:
         return "No skills are installed."
-    lines = [f"- **{s.name}**: {s.description} ({s.path})" for s in skills]
-    commands = ", ".join(f"/{s.name}" for s in skills)
-    return ("Available skills:\n" + "\n".join(lines) +
-            f"\nInvoke a skill with the `skill` tool, or its slash command: {commands}.")
+    lines = [f"- {s.name}: {short_description(s.description)}" for s in skills]
+    return ("Skills (call the `skill` tool with a name to load its full instructions; "
+            "users may also type /name):\n" + "\n".join(lines))

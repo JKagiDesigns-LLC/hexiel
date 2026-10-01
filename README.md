@@ -129,6 +129,8 @@ No code needed — just ask:
 | *"Add an 'actual' column to Q3 in budget.xlsx"* | Edits **Excel** cells, ranges and sheets, keeping your formatting |
 | *"Chart revenue by month"* | An interactive **HTML chart** you can open in any browser |
 | *"Every Monday at 8am, summarise last week's sales and flag anything odd"* | A **scheduled job** that runs even when hexiel is closed (systemd/cron, launchd, Windows Task Scheduler); results land in `/inbox` with a desktop notification |
+| *"What do these papers say about irrigation? Cite pages."* | Indexes your PDFs / Word / Markdown once, then answers from the best passages with **[file p.N] citations** — keyword + (optional, local) semantic search, never whole documents in the prompt |
+| *"Research the state of IndexNow adoption"* | **Deep research**: plans sub-questions, then searches and reads many pages **in parallel** in Python and hands the model one cited evidence pack |
 | *"Connect my Firebase project"* | `/mcp add firebase` — also `supabase`, `notion`, `github`, `playwright` (browser automation), `filesystem` |
 
 Data and scheduling tools load **only when needed** (automatically when a project
@@ -137,7 +139,7 @@ every prompt.
 
 ### Browser UI
 
-`hexiel --serve` runs the same agent in a browser: streamed markdown, tool-call
+`hexiel --serve` runs the same agent in a browser (with the same `/` command menu and live model picker): streamed markdown, tool-call
 cards, approval dialogs, model picker, ⚙ settings, context gauge, todo, memory
 and sessions. Local-only by default; `--host 0.0.0.0` prints a loud warning
 (anyone who can reach the port can run commands on your machine).
@@ -290,7 +292,7 @@ Fork → branch → merge request; the maintainer reviews and approves. hexiel c
 do the whole flow for you (`/ship`). See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ```bash
-.venv/bin/pytest                    # 110 tests: tools, providers, compaction, TUI, MCP,
+.venv/bin/pytest                    # 116 tests: tools, providers, compaction, TUI, MCP,
                                     # self-heal, settings, updater, web UI, plugins
 .venv/bin/python scripts/screenshots.py   # regenerate these screenshots
 ```

@@ -82,6 +82,11 @@ def run_checks(cwd: str) -> dict:
             f"{model_cfg.provider} API key", present, model_cfg.api_key_env,
             fix=f"export {model_cfg.api_key_env}=sk-… (or put it in shell profile)")
 
+    # loaded Ollama models: context the server really gives, and GPU vs CPU
+    if model_cfg and ":11434" in (model_cfg.base_url or ""):
+        for ok, label, detail, fix in ollama_runtime_checks(model_cfg):
+            results[f"runtime:{label}"] = _check(label, ok, detail, fix=fix)
+
     # toolchain
     from .tooling import detect_toolchain
     chain = detect_toolchain(cwd)
@@ -134,6 +139,35 @@ def run_checks(cwd: str) -> dict:
                                   else f"{len(incidents)} unhealed — run /heal in a session")
 
     return results
+
+
+def ollama_runtime_checks(model_cfg) -> list[tuple[bool, str, str, str]]:
+    """What the Ollama server is actually doing with the configured model."""
+    import httpx
+    native = model_cfg.base_url.rstrip("/")
+    native = native[:-3] if native.endswith("/v1") else native
+    try:
+        loaded = httpx.get(f"{native}/api/ps", timeout=5).json().get("models", [])
+    except (httpx.HTTPError, ValueError):
+        return []
+    entry = next((m for m in loaded if m.get("name") == model_cfg.model or m.get("model") == model_cfg.model), None)
+    if entry is None:
+        return [(True, "model loaded on server", f"{model_cfg.model} not loaded yet — first request loads it "
+                 "(slow once); set OLLAMA_KEEP_ALIVE=-1 on the server to keep it loaded", "")]
+    checks = []
+    ctx = entry.get("context_length") or 0
+    if ctx:
+        ok = model_cfg.context_window <= ctx
+        checks.append((ok, "context window vs server", f"profile {model_cfg.context_window:,} / server {ctx:,} tokens",
+                       "" if ok else f"set context_window = {ctx} for this profile (or raise "
+                       f"OLLAMA_CONTEXT_LENGTH on the server) — otherwise long chats get silently truncated"))
+    size, vram = entry.get("size") or 0, entry.get("size_vram") or 0
+    if size:
+        gpu = 100 * vram // size
+        checks.append((gpu >= 95, "model on GPU", f"{gpu}% of {size / 1e9:.0f} GB in GPU memory",
+                       "" if gpu >= 95 else "part of the model runs on the CPU (much slower): use a smaller "
+                       "model/quantization or lower OLLAMA_CONTEXT_LENGTH"))
+    return checks
 
 
 def wizard(cwd: str) -> None:

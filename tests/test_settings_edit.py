@@ -117,3 +117,18 @@ def test_add_preset_profile(session):
     assert prof.model == "deepseek-v4-pro" and prof.echo_reasoning is True
     with pytest.raises(ValueError):
         SE.add_profile("deepseek", presets.as_profile("deepseek"))
+
+
+def test_ollama_runtime_checks(monkeypatch):
+    from hexiel import doctor
+    from hexiel.config import ModelConfig
+
+    class R:
+        def __init__(self, data): self._d = data
+        def json(self): return self._d
+    ps = {"models": [{"name": "qwen", "context_length": 32768, "size": 20_000_000_000, "size_vram": 12_000_000_000}]}
+    monkeypatch.setattr("httpx.get", lambda url, timeout=5: R(ps))
+    mc = ModelConfig(name="x", provider="openai", base_url="http://box:11434/v1", model="qwen", context_window=65536)
+    checks = {label: (ok, fix) for ok, label, detail, fix in doctor.ollama_runtime_checks(mc)}
+    assert checks["context window vs server"][0] is False and "32768" in checks["context window vs server"][1]
+    assert checks["model on GPU"][0] is False

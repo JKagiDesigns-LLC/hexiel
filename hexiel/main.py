@@ -191,7 +191,38 @@ def repl_event(event, *payload) -> None:
                   f"{stats.get('after', 0) // 1000}k tokens]")
 
 
+def jobs_cli(argv: list[str]) -> int:
+    """hexiel jobs list | run <id> | remove <id> | tick | install"""
+    from . import jobs
+    cmd = argv[0] if argv else "list"
+    if cmd == "tick":
+        jobs.tick()
+        return 0
+    if cmd == "install":
+        print(jobs.install())
+        return 0
+    if cmd == "run" and len(argv) > 1:
+        job = next((j for j in jobs.load() if argv[1] in (j["id"], j["name"])), None)
+        if not job:
+            print("no such job")
+            return 1
+        ok, answer = jobs.run_job(job)
+        print(answer)
+        print(f"\n(delivered to {jobs.deliver(job, ok, answer)})")
+        return 0 if ok else 1
+    if cmd == "remove" and len(argv) > 1:
+        print("removed" if jobs.remove(argv[1]) else "no such job")
+        return 0
+    items = jobs.load()
+    print("\n".join(jobs.describe(j) for j in items) or "no scheduled jobs — ask hexiel to schedule one")
+    print(f"\nscheduler {'installed' if jobs.installed() else 'not installed (hexiel jobs install)'}"
+          f" · inbox: {jobs.inbox_dir()}")
+    return 0
+
+
 def main() -> None:
+    if len(sys.argv) > 1 and sys.argv[1] == "jobs":
+        raise SystemExit(jobs_cli(sys.argv[2:]))
     args = parse_args()
     cwd = str(Path(args.path).resolve())
     os.chdir(cwd)

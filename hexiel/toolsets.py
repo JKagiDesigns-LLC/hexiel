@@ -10,6 +10,7 @@ from pathlib import Path
 GROUPS = {
     "data": "spreadsheets & data: CSV/Excel/Parquet analysis with SQL, local SQLite databases, "
             "Excel read/write, charts",
+    "schedule": "scheduled/recurring jobs (cron-like, runs even when hexiel is closed)",
 }
 DATA_EXTS = {".csv", ".tsv", ".xlsx", ".xlsm", ".xls", ".parquet", ".db", ".sqlite", ".sqlite3"}
 SKIP = {".git", "node_modules", ".venv", "venv", "__pycache__", "dist", "build", ".hexiel"}
@@ -19,7 +20,42 @@ def _group_tools(group: str) -> list:
     if group == "data":
         from .datatools import data_tools
         return data_tools()
+    if group == "schedule":
+        return [_schedule_tool()]
     return []
+
+
+def _schedule_tool():
+    from . import jobs
+    from .tools import ToolDef, text_result
+
+    def run(args, ctx):
+        action = args.get("action", "list")
+        if action == "list":
+            items = jobs.load()
+            return text_result("\n".join(jobs.describe(j) for j in items) or "no scheduled jobs")
+        if action == "remove":
+            return text_result("removed" if jobs.remove(str(args.get("id", ""))) else "no such job", False)
+        try:
+            job = jobs.add(args.get("name", ""), args.get("schedule", ""), args.get("prompt", ""),
+                           ctx.cwd, args.get("model", ""), args.get("access", "readonly"))
+        except ValueError as exc:
+            return text_result(f"error: {exc}", True)
+        note = "" if jobs.installed() else f"\nscheduler: {jobs.install()}"
+        return text_result(f"scheduled job {job['id']} '{job['name']}' [{job['schedule']}] in {ctx.cwd} "
+                           f"({job['access']} access); results go to the hexiel inbox (/inbox){note}")
+    return ToolDef(
+        "schedule", "Create, list or remove recurring jobs that run hexiel headless on a schedule, "
+        "even when hexiel is closed (results arrive in the inbox with a desktop notification). "
+        "schedule is a 5-field cron expression in local time (e.g. '0 8 * * 1' = Mondays 08:00, "
+        "'*/30 9-17 * * 1-5' = every 30 min in work hours). prompt must be self-contained. "
+        "access: readonly (default) or full (may edit files / run commands).",
+        {"type": "object", "properties": {
+            "action": {"type": "string", "enum": ["add", "list", "remove"]},
+            "name": {"type": "string"}, "schedule": {"type": "string"}, "prompt": {"type": "string"},
+            "access": {"type": "string", "enum": ["readonly", "full"]}, "model": {"type": "string"},
+            "id": {"type": "string"}}, "required": ["action"]},
+        run=run)
 
 
 def _looks_like(group: str, cwd: str) -> bool:

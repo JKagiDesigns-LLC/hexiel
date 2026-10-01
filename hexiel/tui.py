@@ -507,6 +507,8 @@ COMMANDS = [
     ("auto", "", "toggle auto-approve for edits and commands"),
     ("plan", "", "toggle plan mode: investigate and plan, change nothing"),
     ("undo", "", "revert the file changes hexiel made in its last turn"),
+    ("jobs", "", "scheduled jobs (ask hexiel to schedule something to create one)"),
+    ("inbox", "", "results from scheduled jobs"),
     ("usage", "", "tokens used this session (in / cached / out)"),
     ("permissions", "", "show allow / ask / deny rules (incl. this session's 'always')"),
     ("memory", "", "show what hexiel remembers about you and this project"),
@@ -846,6 +848,7 @@ class HexielTUI(App):
                          "@file.png attaches a screenshot.", classes="note"))
         self.replay_history()
         self._refresh_status()
+        self._inbox_notice()
         if not os.environ.get("HEXIEL_NO_UPDATE_CHECK"):
             threading.Thread(target=self._check_update, daemon=True).start()
 
@@ -947,7 +950,7 @@ class HexielTUI(App):
             "help": self.cmd_help, "clear": self.cmd_clear, "compact": self.cmd_compact,
             "config": self.cmd_config, "update": self.cmd_update, "mcp": self.cmd_mcp,
             "plan": self.cmd_plan, "permissions": self.cmd_permissions,
-            "undo": self.cmd_undo, "usage": self.cmd_usage,
+            "undo": self.cmd_undo, "usage": self.cmd_usage, "jobs": self.cmd_jobs, "inbox": self.cmd_inbox,
             "model": self.cmd_model, "models": self.cmd_models, "auto": self.cmd_auto,
             "memory": self.cmd_memory, "skills": self.cmd_skills,
             "ship": self.cmd_ship, "heal": self.cmd_heal,
@@ -1013,6 +1016,16 @@ class HexielTUI(App):
             self.add_note(f"profile '{arg}' created on the fly ({arg} @ {base.base_url})")
         self._refresh_status()
 
+    def _inbox_notice(self) -> None:
+        from . import jobs
+        box = jobs.inbox_dir()
+        if not box.exists():
+            return
+        seen = (box / ".seen").read_text().strip() if (box / ".seen").exists() else ""
+        new = [f for f in box.glob("*.md") if f.name > seen]
+        if new:
+            self.add_note(f"📬 {len(new)} new scheduled-job result(s) — /inbox to read")
+
     def _check_update(self) -> None:
         from . import updater
         info = updater.check()
@@ -1048,6 +1061,28 @@ class HexielTUI(App):
                 self.session.save()
                 self.exit(result="restart")
         self.push_screen(RestartScreen(version, headline), callback=done)
+
+    def cmd_jobs(self, arg: str) -> None:
+        from . import jobs
+        items = jobs.load()
+        if not items:
+            self.add_note("no scheduled jobs — just ask, e.g. \"every weekday at 8am, summarise "
+                          "reports/sales.csv and flag anything unusual\"")
+            return
+        self.add_note("\n".join(jobs.describe(j).replace("[", "\\[") for j in items)
+                      + f"\nscheduler {'installed' if jobs.installed() else 'not installed yet'}")
+
+    def cmd_inbox(self, arg: str) -> None:
+        from . import jobs
+        files = sorted(jobs.inbox_dir().glob("*.md"), reverse=True)[:5] if jobs.inbox_dir().exists() else []
+        if not files:
+            self.add_note("the inbox is empty — scheduled job results appear here")
+            return
+        (jobs.inbox_dir() / ".seen").write_text(files[0].name)
+        chat = self.query_one("#chat", VerticalScroll)
+        for f in files:
+            chat.mount(Markdown(f.read_text()[:4000]))
+        chat.scroll_end(animate=False)
 
     def cmd_undo(self, arg: str) -> None:
         if self._thread and self._thread.is_alive():

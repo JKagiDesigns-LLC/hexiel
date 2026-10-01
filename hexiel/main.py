@@ -87,7 +87,20 @@ def terminal_approval(tool_name: str, args: dict) -> str:
 
 
 def headless_loop(session: Session, prompts: list[str]) -> None:
-    def on_event(event, *payload) -> None:
+    thinking = {"chars": 0}
+
+    def on_event(event, *payload, **_kw) -> None:
+        if event == "thinking":
+            # progress on stderr so reasoning models don't look hung; stdout stays the answer
+            before = thinking["chars"] // 2000
+            thinking["chars"] += len(payload[0])
+            if thinking["chars"] // 2000 > before or before == 0 and thinking["chars"] == len(payload[0]):
+                sys.stderr.write(f"\r(thinking… ~{thinking['chars'] // 4} tokens)")
+                sys.stderr.flush()
+            return
+        if thinking["chars"] and event in ("text", "tool_call", "turn_end"):
+            sys.stderr.write("\n")
+            thinking["chars"] = 0
         if event == "text":
             sys.stdout.write(payload[0])
             sys.stdout.flush()

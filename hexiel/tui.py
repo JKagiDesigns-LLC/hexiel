@@ -150,6 +150,9 @@ class HexielTUI(App):
         self._stream_wid = None
         self._stream_text = ""
         self._last_flush = 0.0
+        self._think_wid = None      # live "thinking…" line for reasoning models
+        self._think_chars = 0
+        self._think_flush = 0.0
         self._tool_widgets: dict[str, ToolLine] = {}
 
     # ---------------------------------------------------------------- layout
@@ -317,6 +320,22 @@ class HexielTUI(App):
 
     def handle_event(self, event, *payload) -> None:
         chat = self.query_one("#chat", VerticalScroll)
+        if event == "thinking":
+            # reasoning models can think for minutes; show progress, not a frozen screen
+            self._think_chars += len(payload[0])
+            if self._think_wid is None:
+                self._think_wid = Static("💭 thinking…", classes="note")
+                chat.mount(self._think_wid)
+            now = time.time()
+            if now - self._think_flush > 0.5:
+                self._think_wid.update(f"💭 thinking… ~{self._think_chars // 4} tokens")
+                self._think_flush = now
+            chat.scroll_end(animate=False)
+            return
+        if self._think_wid is not None and event in ("text", "tool_call", "turn_end"):
+            self._think_wid.update(f"💭 thought for ~{self._think_chars // 4} tokens")
+            self._think_wid = None
+            self._think_chars = 0
         if event == "text":
             delta = payload[0]
             self._stream_text += delta

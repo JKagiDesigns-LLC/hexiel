@@ -410,6 +410,47 @@ def parse_image_size(data: bytes) -> tuple[int, int, str] | None:
     return None
 
 
+def image_payload(data: bytes) -> tuple[dict, str] | None:
+    """Encode image bytes as a conversation attachment; None if not png/jpeg/gif/webp."""
+    probe = parse_image_size(data)
+    if not probe:
+        return None
+    w, h, fmt = probe
+    tokens = max(w * h // 750, 100)
+    return ({"media_type": f"image/{fmt}", "data": base64.b64encode(data).decode(),
+             "approx_tokens": tokens}, f"{w}x{h} {fmt}, ~{tokens} vision tokens")
+
+
+IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".gif", ".webp")
+_PATH_TOKEN = re.compile(r"""@?(?:"([^"]+)"|'([^']+)'|(\S+))""")
+MAX_ATTACH_BYTES = 20 * 1024 * 1024
+
+
+def attach_images(text: str, cwd: str) -> tuple[list[dict], list[str]]:
+    """Find image paths typed in a user message (`@shot.png`, `~/Pictures/a.jpg`,
+    quoted paths with spaces) and load them locally — the model sees the image
+    directly instead of spending a tool round-trip on view_image.
+    Returns (images, notes) where notes describe each attachment."""
+    images, notes, seen = [], [], set()
+    for m in _PATH_TOKEN.finditer(text):
+        raw = (m.group(1) or m.group(2) or m.group(3) or "").rstrip(",.;:!?)")
+        if not raw.lower().endswith(IMAGE_EXTS):
+            continue
+        path = Path(os.path.expanduser(raw))
+        path = path if path.is_absolute() else Path(cwd) / path
+        try:
+            if path in seen or not path.is_file() or path.stat().st_size > MAX_ATTACH_BYTES:
+                continue
+            payload = image_payload(path.read_bytes())
+        except OSError:
+            continue
+        if payload:
+            seen.add(path)
+            images.append(payload[0])
+            notes.append(f"(attached image: {path} — {payload[1]})")
+    return images, notes
+
+
 def _view_image(args: dict, ctx: ToolContext) -> ToolResult:
     path = _resolve_path(args["path"], ctx)
     try:
@@ -418,13 +459,10 @@ def _view_image(args: dict, ctx: ToolContext) -> ToolResult:
         return text_result(f"error: {exc}", True)
     probe = parse_image_size(data)
     lines = [f"{path}", f"  format: {probe[2] if probe else 'unknown'}"]
-    if probe:
-        w, h, fmt = probe
-        tokens = max(w * h // 750, 100)
-        lines.append(f"  dimensions: {w}x{h} (~{tokens} vision tokens)")
-        image = {"media_type": f"image/{fmt}", "data": base64.b64encode(data).decode(),
-                 "approx_tokens": tokens}
-        return ToolResult(text="\n".join(lines), images=[image])
+    payload = image_payload(data)
+    if payload:
+        lines.append(f"  {payload[1]}")
+        return ToolResult(text="\n".join(lines), images=[payload[0]])
     return ToolResult(text="\n".join(lines) +
                       "\n  (unsupported format; only png/jpeg/gif/webp attach to the conversation)",
                       is_error=True)

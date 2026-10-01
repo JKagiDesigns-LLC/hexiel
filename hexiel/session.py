@@ -89,7 +89,12 @@ class Session:
             raise
 
     def _turn_body(self, user_text: str) -> None:
-        self.messages.append({"role": "user", "content": user_text})
+        from .tools import attach_images
+        images, notes = attach_images(user_text, self.cwd)
+        entry = {"role": "user", "content": "\n".join([user_text, *notes])}
+        if images:
+            entry["images"] = images
+        self.messages.append(entry)
         self.save()
         provider = llm.make_provider(self.model_config, self.settings)
         tool_defs = [
@@ -266,6 +271,10 @@ class Session:
             if msg.get("role") == "tool" and msg.get("content"):
                 kind_guess = len(msg["content"])
                 msg["content"] = f"[prior tool output elided: ~{kind_guess} chars]"
+                elided += 1
+            # old images would otherwise be re-sent on every request
+            if msg.pop("images", None):
+                msg["content"] = (msg.get("content") or "") + "\n[image elided from context]"
                 elided += 1
         return elided
 

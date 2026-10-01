@@ -86,6 +86,18 @@ falls back to it on Windows)
 (DuckDuckGo or SearXNG, no key needed) · `memory` · `todo` · `gitlab_mr` ·
 `skill` — plus any OpenWebUI plugin you drop into `plugins/`.
 
+**Screenshots & images**: type an image path anywhere in your message
+(`what's wrong in @shot.png`, `~/Pictures/error.jpg`, or a quoted path with
+spaces) and hexiel attaches it directly — no tool round-trip. Use a
+vision-capable model (e.g. `qwen3.6:35b-a3b-coding` on Ollama). Old images are
+dropped from context automatically so they aren't re-sent every turn.
+
+**Reasoning models on slow hardware**: hybrid models like Qwen3.6 think by
+default, which can take minutes per step on an iGPU. Turn it off per profile:
+`extra_body = { reasoning_effort = "none" }`. When a model does think, the TUI
+and headless modes show live `thinking… ~N tokens` progress instead of
+looking frozen.
+
 Every non-read-only call asks before running (TUI modal / browser dialog /
 terminal prompt). `/auto` flips to hands-free; per-tool "always" answers stick
 for the session.

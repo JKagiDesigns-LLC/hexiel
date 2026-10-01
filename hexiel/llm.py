@@ -100,6 +100,14 @@ class AnthropicProvider:
                         "input": call["arguments"],
                     })
                 converted.append({"role": "assistant", "content": blocks or [{"type": "text", "text": ""}]})
+            elif msg.get("images"):
+                converted.append({"role": "user", "content": [
+                    *({"type": "image", "source": {"type": "base64",
+                                                   "media_type": img["media_type"],
+                                                   "data": img["data"]}}
+                      for img in msg["images"]),
+                    {"type": "text", "text": msg.get("content", "")},
+                ]})
             else:
                 converted.append({"role": "user", "content": msg.get("content", "")})
         return converted
@@ -214,6 +222,13 @@ class OpenAICompatProvider:
                         for c in msg["tool_calls"]
                     ],
                 })
+            elif msg.get("images"):
+                converted.append({"role": msg["role"], "content": [
+                    {"type": "text", "text": msg.get("content", "")},
+                    *({"type": "image_url", "image_url": {
+                        "url": f"data:{img['media_type']};base64,{img['data']}"}}
+                      for img in msg["images"]),
+                ]})
             else:
                 converted.append({"role": msg["role"], "content": msg.get("content", "")})
         return converted

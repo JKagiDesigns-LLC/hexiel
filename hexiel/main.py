@@ -72,6 +72,8 @@ def build_session(cwd: str, model_name: str | None, resumed: dict | None = None)
     from . import permissions
     session.rules = permissions.load(cwd, config.permissions)
     from .tools import ToolDef
+    from . import toolsets
+    toolsets.install(session, config.settings)
     session.tools.append(ToolDef(
         "task", "Delegate a self-contained investigation (e.g. 'find where X is configured and how "
         "it is used', 'research Y on the web') to a subagent with its own context and read-only "

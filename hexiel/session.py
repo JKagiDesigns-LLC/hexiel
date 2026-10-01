@@ -103,6 +103,7 @@ class Session:
         self.messages: list[dict] = []
         self.mcp_servers: list = []   # started MCP servers (see mcp_client)
         self.plan_mode = False          # read-only planning: no writes/commands run
+        self.loaded_toolsets: set = set()   # optional tool groups in use (toolsets.py)
         self.checkpoints: list[list] = []   # per turn: [(path, original bytes | None)] for /undo
         from . import hooks as hooks_mod
         self.hooks = hooks_mod.load(cwd)     # user commands on agent events (hooks.py)
@@ -171,6 +172,8 @@ class Session:
                     return
                 if self.compaction_needed() and not self.compacting:
                     self.compact(provider)
+                tool_defs = [{"name": t.name, "description": t.description, "parameters": t.parameters}
+                             for t in self.tools]        # load_tools may have added a group
                 self.on_event("request", self.tokens_now())
                 assistant = self._stream_assistant(provider, tool_defs)
                 if _is_empty_reply(assistant) and not getattr(self, "_provider_error", None) \

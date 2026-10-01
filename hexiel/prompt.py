@@ -97,6 +97,10 @@ explanations.
   output (head/tail, specific files) rather than re-running variants.
 - Tool calls cost context: when a tool result turns out unnecessary or huge,
   note that and move on rather than re-running variants.
+- Spreadsheets, CSV/Excel/Parquet data, local databases or charts: call
+  `load_tools` with group "data" first (unless those tools are already listed).
+  Then describe files with `data` action=schema and answer with SQL — never
+  read whole data files.
 - For open-ended searches ("where/how is X done across the codebase", web research
   with several sources), use the `task` tool: a subagent digs through the material
   in its own context and returns only the answer, keeping this conversation small.

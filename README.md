@@ -25,8 +25,28 @@ python -m venv .venv
 .venv/bin/hexiel                 # TUI
 ```
 
-Windows works out of the box: the agent shells through `powershell` (pwsh —
-install it with `winget install Microsoft.PowerShell`), and `bash` falls back
+### Run it from anywhere
+
+hexiel always treats **the directory you launch it from as the project** — it
+detects that tree's toolchain, reads its skills, and keeps its state in a
+`<project>/.hexiel/` folder (todo, memory, incidents, web cache) right there.
+Nothing knows about a fixed install location, so:
+
+```bash
+ln -s "$PWD/.venv/bin/hexiel" ~/.local/bin/hexiel      # on PATH everywhere
+hexiel                                                 # in whatever repo you're in
+```
+
+and a `.bashrc` alias keeps it available even if PATH shifts:
+
+```bash
+# ~/.bashrc
+alias hexiel="$HOME/hexiel/.venv/bin/hexiel"
+alias hexiel-serve="$HOME/hexiel/.venv/bin/hexiel --serve"
+```
+
+Windows notes: `hexiel` works out of the box — it shells through PowerShell
+(pwsh — install with `winget install Microsoft.PowerShell`), and `bash` falls back
 to PowerShell when no bash (WSL/git-bash) is on PATH.
 
 Configure a provider in `~/.config/hexiel/config.toml` (written on first run)

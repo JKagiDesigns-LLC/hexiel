@@ -53,6 +53,18 @@ ON_COMPACTION_NOTE = (
 )
 
 
+DEGENERATE_HELP = (
+    "the model's output degenerated into a repeating pattern, so hexiel stopped it. This is "
+    "usually a model-server problem (e.g. flash attention on some GPUs/iGPUs, or a context "
+    "longer than the server's limit) — try /compact, restarting the model server, or /model")
+
+
+def _degenerate(tail: str) -> bool:
+    """A short unit repeated 40+ times at the end of the output (e.g. '#!#!#!…')."""
+    import re as _re
+    return bool(_re.search(r"(.{1,8}?)\1{39,}$", tail, _re.S)) and len(set(tail[-200:])) <= 8
+
+
 FILE_TOOLS = {"write", "edit", "image_edit"}      # snapshotted before they run (/undo)
 PLAN_MODE_ALLOWED = {"todo", "memory", "skill"}   # bookkeeping still works in plan mode
 PLAN_MODE_NOTE = ("[plan mode] Investigate with read-only tools and produce a step-by-step plan. "
@@ -85,6 +97,8 @@ class Session:
         self.mcp_servers: list = []   # started MCP servers (see mcp_client)
         self.plan_mode = False          # read-only planning: no writes/commands run
         self.checkpoints: list[list] = []   # per turn: [(path, original bytes | None)] for /undo
+        from . import hooks as hooks_mod
+        self.hooks = hooks_mod.load(cwd)     # user commands on agent events (hooks.py)
         self.usage_totals = {"requests": 0, "prompt_tokens": 0, "cached_tokens": 0,
                              "completion_tokens": 0}
         self._provider_override = None  # set when auto-resume switches to the fallback profile
@@ -125,6 +139,13 @@ class Session:
         if images:
             entry["images"] = images
         self.checkpoints.append([])        # file snapshots taken during this turn
+        from . import hooks as hooks_mod
+        for out in hooks_mod.run(self.hooks, "UserPromptSubmit", self.cwd, self.id, prompt=user_text):
+            if out.blocked:
+                self.on_event("turn_end", {"error": f"blocked by a UserPromptSubmit hook: {out.stderr or out.command}"})
+                return
+            if out.code == 0 and out.stdout:
+                entry["content"] += f"\n\n[hook context]\n{out.stdout[:4000]}"
         # empty assistant replies teach the model to keep answering with nothing
         self.messages = [m for m in self.messages if not _is_empty_reply(m)]
         self.messages.append(entry)
@@ -181,7 +202,31 @@ class Session:
                     self._auto_todo_step(user_text, call, assistant, turn)
         finally:
             self._auto_todo_finish(turn)
+            if turn["ok"]:
+                self._auto_commit(user_text)
+            from . import hooks as hooks_mod
+            hooks_mod.run(self.hooks, "Stop", self.cwd, self.id)
             self.save()
+
+    def _auto_commit(self, user_text: str) -> None:
+        """Opt-in (settings.auto_commit): commit exactly the files hexiel changed
+        this turn — never anything else in the working tree."""
+        if not getattr(self.settings, "auto_commit", False) or not self.checkpoints:
+            return
+        import subprocess
+        files = [str(p) for p, _ in self.checkpoints[-1]]
+        if not files:
+            return
+        title = " ".join(user_text.split())[:60] or "changes"
+        try:
+            subprocess.run(["git", "-C", self.cwd, "add", "--", *files], capture_output=True, timeout=30)
+            done = subprocess.run(["git", "-C", self.cwd, "commit", "-q", "-m", f"hexiel: {title}",
+                                   "-m", "\n".join(f"- {Path(f).name}" for f in files), "--", *files],
+                                  capture_output=True, text=True, timeout=30)
+            if done.returncode == 0:
+                self.on_event("auto_commit", len(files), title)
+        except (OSError, subprocess.SubprocessError):
+            pass
 
     # ---------------------------------------------------------------- automatic todo upkeep
 
@@ -269,6 +314,7 @@ class Session:
         """Stream one assistant response; returns the finalized message dict."""
         final = None
         reasoning: list[str] = []
+        streamed: list[str] = []
         try:
             stream = provider.stream(self.messages, self.system_prompt, tool_defs,
                                      model=self.model_config.model,
@@ -282,6 +328,10 @@ class Session:
                     break
                 if event == "text":
                     self.on_event("text", payload[0])
+                    streamed.append(payload[0])
+                    if len(streamed) % 20 == 0 and _degenerate("".join(streamed)[-600:]):
+                        self._provider_error = DEGENERATE_HELP
+                        return {"role": "assistant", "content": ""}
                 elif event == "thinking":
                     self.on_event("thinking", payload[0])
                     if self.model_config.echo_reasoning:
@@ -360,6 +410,15 @@ class Session:
                 self.messages.append(entry)
                 self.on_event("tool_result", call, entry["content"], False, 0.0)
                 return
+        from . import hooks as hooks_mod
+        for out in hooks_mod.run(self.hooks, "PreToolUse", self.cwd, self.id,
+                                 tool=tool.name, tool_input=call["arguments"]):
+            if out.blocked:
+                reason = out.stderr or f"blocked by hook: {out.command}"
+                self.messages.append({"role": "tool", "tool_call_id": call["id"], "is_error": True,
+                                      "content": f"A PreToolUse hook blocked this call: {reason}"})
+                self.on_event("tool_result", call, f"blocked by hook: {reason[:200]}", True)
+                return
         self._snapshot(tool.name, call["arguments"])
         started = time.time()
         try:
@@ -375,6 +434,11 @@ class Session:
             result = ToolResult(text=f"internal error in {tool.name}: {exc!r} "
                                      f"(recorded to {path}); work around it or retry",
                                 is_error=True)
+        for out in hooks_mod.run(self.hooks, "PostToolUse", self.cwd, self.id, tool=tool.name,
+                                 tool_input=call["arguments"], tool_response=result.text):
+            if out.blocked and out.stderr:          # feedback for the model (e.g. lint errors)
+                result = ToolResult(text=f"{result.text}\n\n[PostToolUse hook]\n{out.stderr[:4000]}",
+                                    images=result.images, is_error=result.is_error)
         entry = {"role": "tool", "tool_call_id": call["id"], "content": result.text}
         if result.is_error:
             entry["is_error"] = True

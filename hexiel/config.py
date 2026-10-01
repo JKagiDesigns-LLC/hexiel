@@ -151,6 +151,7 @@ class Settings:
     auto_resume_max_wait: int = 21600 # longest wait (s) before giving up / falling back
     fallback_profile: str = ""        # switch here when a limit won't reset soon (e.g. a local model)
     notify: bool = True               # desktop notification when approval is needed / long turns finish
+    auto_commit: bool = False         # git-commit the files hexiel changed after each finished turn
 
 
 @dataclass
@@ -198,6 +199,7 @@ def load_config(model_override: str | None = None) -> Config:
         auto_resume_max_wait=int(settings_raw.get("auto_resume_max_wait", 21600)),
         fallback_profile=str(settings_raw.get("fallback_profile", "")),
         notify=bool(settings_raw.get("notify", True)),
+        auto_commit=bool(settings_raw.get("auto_commit", False)),
     )
 
     default_model = model_override or raw.get("default", next(iter(models), "default"))

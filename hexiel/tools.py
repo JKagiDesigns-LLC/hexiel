@@ -223,7 +223,38 @@ def _write(args: dict, ctx: ToolContext) -> ToolResult:
     except OSError as exc:
         return text_result(f"error: {exc}", True)
     ctx.read_files.add(str(path))
-    return text_result(f"{'updated' if existed else 'created'} {path} ({content.count(chr(10)) + 1} lines)")
+    return text_result(f"{'updated' if existed else 'created'} {path} ({content.count(chr(10)) + 1} lines)"
+                       + syntax_check(path))
+
+
+def syntax_check(path: Path) -> str:
+    """Instant local syntax check after a write/edit; '' when fine or unknown.
+    Catches broken edits in the same step instead of a later failed run."""
+    suffix = path.suffix.lower()
+    try:
+        if suffix == ".py":
+            compile(path.read_text(), str(path), "exec")
+        elif suffix == ".json":
+            import json as _json
+            _json.loads(path.read_text())
+        elif suffix == ".toml":
+            import tomllib
+            tomllib.loads(path.read_text())
+        elif suffix in (".sh", ".bash") and shutil.which("bash"):
+            proc = subprocess.run(["bash", "-n", str(path)], capture_output=True, text=True, timeout=10)
+            if proc.returncode:
+                return f"\n⚠ syntax check failed: {proc.stderr.strip()[:500]}"
+        elif suffix in (".js", ".mjs", ".cjs") and shutil.which("node"):
+            proc = subprocess.run(["node", "--check", str(path)], capture_output=True, text=True, timeout=15)
+            if proc.returncode:
+                return f"\n⚠ syntax check failed: {proc.stderr.strip()[-500:]}"
+    except SyntaxError as exc:
+        return f"\n⚠ syntax check failed: {exc.msg} (line {exc.lineno}) — fix it now"
+    except ValueError as exc:            # JSON / TOML decode errors
+        return f"\n⚠ syntax check failed: {exc} — fix it now"
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return ""
 
 
 def _edit(args: dict, ctx: ToolContext) -> ToolResult:
@@ -247,7 +278,7 @@ def _edit(args: dict, ctx: ToolContext) -> ToolResult:
     except OSError as exc:
         return text_result(f"error: {exc}", True)
     ctx.read_files.add(str(path))
-    return text_result(f"edited {path}")
+    return text_result(f"edited {path}" + syntax_check(path))
 
 
 # ---------------------------------------------------------------- glob / grep / list / file_info

@@ -1214,6 +1214,9 @@ class HexielTUI(App):
         if event == "empty_retry":
             self.add_note("the model returned an empty reply — nudging it to continue")
             return
+        if event == "auto_commit":
+            self.add_note(f"✓ committed {payload[0]} file(s): hexiel: {payload[1]}")
+            return
         if event == "rate_limited":
             seconds, reason = payload[0], payload[1] if len(payload) > 1 else ""
             self.activity.countdown(seconds)

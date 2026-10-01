@@ -294,6 +294,59 @@ def make_app(session: Session) -> web.Application:
                           "test_runners": [r.label for r in chain.test_runners]},
         })
 
+    catalog: dict[str, object] = {}       # id -> Found, from the latest live discovery
+
+    async def api_models_live(request):
+        """Every model reachable right now (queried fresh, in parallel)."""
+        from . import model_catalog
+        groups, errors = {}, {}
+
+        def collect(ep, found, err):
+            if err:
+                errors[ep.label] = err
+            else:
+                groups[ep.label] = found
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, lambda: model_catalog.discover(load_config(), collect))
+        catalog.clear()
+        out = []
+        current = session.model_config.name
+        for label in sorted(groups, key=lambda l: (not any(f.profile == current for f in groups[l]),
+                                                   "Ollama" not in l, l)):
+            items = []
+            for i, f in enumerate(sorted(groups[label], key=lambda f: (not f.profile, f.model))):
+                key = f"{label}|{f.model}"
+                catalog[key] = f
+                items.append({"id": key, "model": f.model, "profile": f.profile, "detail": f.detail,
+                              "current": bool(f.profile) and f.profile == current})
+            out.append({"label": label, "models": items})
+        return _json_response({"groups": out, "errors": errors})
+
+    async def api_models_select(request):
+        from . import model_catalog
+        from .config import ModelConfig
+        data = await request.json()
+        found = catalog.get(data.get("id", ""))
+        scope = data.get("scope", "session")
+        if found is None:
+            return _json_response({"error": "model list is out of date — reopen the picker"}, 400)
+        name, fields = model_catalog.profile_for(found)
+        try:
+            if fields and scope == "session":
+                session.model_config = ModelConfig(name=name, **fields)
+                msg = f"Model → {found.model} (this session only)"
+            else:
+                if fields:
+                    try:
+                        settings_edit.add_profile(name, fields)
+                    except ValueError:
+                        pass
+                msg = settings_edit.apply(session, "profile", name, scope)
+        except (KeyError, ValueError, AssertionError, SystemExit) as exc:
+            return _json_response({"error": str(exc)}, 400)
+        state.broadcast({"t": "status", "status": status_state(session)})
+        return _json_response({"ok": True, "message": msg})
+
     async def api_model(request):
         data = await request.json()
         try:
@@ -440,6 +493,8 @@ def make_app(session: Session) -> web.Application:
     app.router.add_get("/api/state", api_state)
     app.router.add_post("/api/model", api_model)
     app.router.add_post("/api/settings", api_settings)
+    app.router.add_get("/api/models/live", api_models_live)
+    app.router.add_post("/api/models/select", api_models_select)
     app.router.add_get("/api/update", api_update_get)
     app.router.add_post("/api/update", api_update_post)
     app.router.add_get("/api/config", api_config_get)

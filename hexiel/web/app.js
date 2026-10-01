@@ -223,11 +223,7 @@ async function refreshState() {
     const state = await (await fetch("/api/state")).json();
     document.lastApiState = state;
     applyStatus(state.status);
-    const select = $("#model-select");
-    if (select.options.length !== state.models.length) {
-      select.innerHTML = state.models.map(m => `<option value="${esc(m)}">${esc(m)}</option>`).join("");
-    }
-    if (state.current_profile) select.value = state.current_profile;
+    $("#model-name").textContent = state.status?.model_id || state.current_profile || "model";
     renderTodo(state.todo || []);
     renderSidebar(state);
   } catch { /* server restarting */ }
@@ -339,14 +335,74 @@ document.addEventListener("keydown", ev => {
   if (ev.key === "Escape" && !$("#scope-back").classList.contains("show")) $("#settings-back").classList.remove("show");
 });
 
-$("#model-select").addEventListener("change", async (ev) => {
-  const name = ev.target.value;
-  const scope = await askScope(`Switch model to ${name}`);
-  if (scope) {
-    await fetch("/api/config", { method: "POST", body: JSON.stringify({ key: "profile", value: name, scope }),
-                                 headers: { "content-type": "application/json" } });
+// ---------------------------------------------------------------- live model picker
+let pickerItems = [], pickerSel = 0;
+
+function fuzzy(q, text) {
+  let i = 0; text = text.toLowerCase();
+  for (const ch of q.toLowerCase().replace(/\s/g, "")) { i = text.indexOf(ch, i); if (i < 0) return false; i++; }
+  return true;
+}
+
+function renderPicker(data) {
+  const q = $("#picker-search").value.trim();
+  pickerItems = [];
+  let html = "";
+  for (const g of data.groups || []) {
+    const ms = g.models.filter(m => !q || fuzzy(q, `${m.model} ${g.label} ${m.profile}`));
+    if (!ms.length) continue;
+    html += `<div class="group">${esc(g.label)}</div>`;
+    for (const m of ms) {
+      const idx = pickerItems.push(m) - 1;
+      html += `<div class="item${idx === pickerSel ? " sel" : ""}" data-i="${idx}"><span>${esc(m.model)}</span>` +
+              (m.detail ? `<span class="meta">${esc(m.detail)}</span>` : "") +
+              (m.profile ? `<span class="meta">profile ${esc(m.profile)}</span>` : "") +
+              (m.current ? `<span class="cur">● current</span>` : "") + `</div>`;
+    }
   }
-  refreshState();   // also snaps the dropdown back when cancelled
+  $("#picker-list").innerHTML = html || "<div class='dim' style='padding:10px'>no matching models</div>";
+  $$("#picker-list .item").forEach(el => el.addEventListener("click", () => choosePicked(+el.dataset.i)));
+  const errs = Object.entries(data.errors || {}).map(([k, v]) => `<span class="err">✗ ${esc(k)}: ${esc(v)}</span>`);
+  const n = (data.groups || []).reduce((a, g) => a + g.models.length, 0);
+  $("#picker-status").innerHTML = [`${n} model(s) available now`, ...errs].join(" · ");
+}
+
+let pickerData = { groups: [] };
+async function openPicker() {
+  $("#picker-search").value = ""; pickerSel = 0;
+  $("#picker-list").innerHTML = "<div class='dim' style='padding:10px'>asking every provider what's available…</div>";
+  $("#picker-status").textContent = "";
+  $("#picker-back").classList.add("show");
+  $("#picker-search").focus();
+  pickerData = await (await fetch("/api/models/live")).json();   // fresh every time — never cached
+  renderPicker(pickerData);
+}
+
+async function choosePicked(i) {
+  const m = pickerItems[i];
+  if (!m) return;
+  $("#picker-back").classList.remove("show");
+  const scope = await askScope(`Switch to ${m.model}`);
+  if (!scope) return;
+  const r = await (await fetch("/api/models/select", { method: "POST", headers: { "content-type": "application/json" },
+                                body: JSON.stringify({ id: m.id, scope }) })).json();
+  const div = document.createElement("div");
+  div.className = "note"; div.textContent = r.error ? "⚠ " + r.error : "✓ " + r.message;
+  $("#chat").appendChild(div);
+  refreshState();
+}
+
+$("#model-btn").addEventListener("click", openPicker);
+$("#picker-close").addEventListener("click", () => $("#picker-back").classList.remove("show"));
+$("#picker-search").addEventListener("input", () => { pickerSel = 0; renderPicker(pickerData); });
+$("#picker-search").addEventListener("keydown", (ev) => {
+  if (ev.key === "ArrowDown") { pickerSel = Math.min(pickerSel + 1, pickerItems.length - 1); renderPicker(pickerData); ev.preventDefault(); }
+  else if (ev.key === "ArrowUp") { pickerSel = Math.max(pickerSel - 1, 0); renderPicker(pickerData); ev.preventDefault(); }
+  else if (ev.key === "Enter") { choosePicked(pickerSel); ev.preventDefault(); }
+  else if (ev.key === "Escape") { $("#picker-back").classList.remove("show"); }
+});
+document.addEventListener("keydown", (ev) => {
+  if ((ev.ctrlKey || ev.metaKey) && ev.key.toLowerCase() === "p") { ev.preventDefault(); openPicker(); }
 });
 $("#clear-btn").addEventListener("click", async () => {
   if (!confirm("Clear this conversation?")) return;
@@ -417,3 +473,4 @@ checkUpdate();
 
 // deep link: /#settings opens the settings panel (bookmarks, screenshots)
 if (location.hash === "#settings") $("#settings-btn").click();
+if (location.hash === "#models") openPicker();

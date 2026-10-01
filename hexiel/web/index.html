@@ -22,7 +22,7 @@
 
   <div id="main">
     <div id="topbar">
-      <select id="model-select"></select>
+      <button id="model-btn" title="Switch model (lists what's available right now)">⌘ <span id="model-name">model</span> ▾</button>
       <button id="compact-btn" title="Summarize history now (replaces tokens)">Compact</button>
       <button id="clear-btn" title="Start a fresh conversation">Clear</button>
       <button id="settings-btn" title="View and change settings">⚙ Settings</button>
@@ -65,6 +65,15 @@
         <tbody></tbody>
       </table>
       <div class="dim" id="settings-msg"></div>
+    </div>
+  </div>
+
+  <div class="modal-back" id="picker-back">
+    <div class="panel" id="picker-box">
+      <div class="panel-head"><h4>Switch model</h4><button id="picker-close" title="Close (Esc)">✕</button></div>
+      <input id="picker-search" placeholder="search models, e.g. sonnet, qwen, gemini…" autocomplete="off">
+      <div id="picker-list"></div>
+      <div class="dim" id="picker-status"></div>
     </div>
   </div>
 

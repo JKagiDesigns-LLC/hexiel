@@ -110,7 +110,8 @@ def query(ep: Endpoint) -> list[Found]:
             for m in resp.json().get("models", []):
                 cloud = m.get("remote_host") or m["name"].endswith(":cloud") or m["name"].endswith("-cloud")
                 size = m.get("size") or 0
-                detail = "Ollama Cloud" if cloud else (f"{size / 1e9:.0f} GB local" if size else "local")
+                human = f"{size / 1e9:.0f} GB" if size >= 1e9 else f"{size / 1e6:.0f} MB"
+                detail = "Ollama Cloud" if cloud else (f"{human} local" if size else "local")
                 out.append(Found(ep, m["name"], ep.profiles.get(m["name"], ""), detail))
             return out
         resp = client.get(f"{ep.base_url}/models", headers=_headers(ep))

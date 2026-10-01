@@ -101,6 +101,9 @@ explanations.
   `load_tools` with group "data" first (unless those tools are already listed).
   Then describe files with `data` action=schema and answer with SQL — never
   read whole data files.
+- Questions about PDFs / Word / long documents: `load_tools` group "docs", then
+  `docs_index` the folder once and answer from `docs_search` passages, citing
+  their [file p.N] tags — never read whole documents into the conversation.
 - For open-ended searches ("where/how is X done across the codebase", web research
   with several sources), use the `task` tool: a subagent digs through the material
   in its own context and returns only the answer, keeping this conversation small.

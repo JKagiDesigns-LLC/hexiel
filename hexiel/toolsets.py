@@ -11,6 +11,7 @@ GROUPS = {
     "data": "spreadsheets & data: CSV/Excel/Parquet analysis with SQL, local SQLite databases, "
             "Excel read/write, charts",
     "schedule": "scheduled/recurring jobs (cron-like, runs even when hexiel is closed)",
+    "docs": "question-answering over PDFs / Word / Markdown documents with page citations",
 }
 DATA_EXTS = {".csv", ".tsv", ".xlsx", ".xlsm", ".xls", ".parquet", ".db", ".sqlite", ".sqlite3"}
 SKIP = {".git", "node_modules", ".venv", "venv", "__pycache__", "dist", "build", ".hexiel"}
@@ -22,6 +23,9 @@ def _group_tools(group: str) -> list:
         return data_tools()
     if group == "schedule":
         return [_schedule_tool()]
+    if group == "docs":
+        from .docqa import doc_tools
+        return doc_tools()
     return []
 
 
@@ -58,18 +62,25 @@ def _schedule_tool():
         run=run)
 
 
+DOC_EXTS = {".pdf", ".docx"}
+
+
 def _looks_like(group: str, cwd: str) -> bool:
-    if group != "data":
+    if group == "docs":
+        exts = DOC_EXTS
+    elif group == "data":
+        exts = DATA_EXTS
+    else:
         return False
     root = Path(cwd)
     try:
         for child in root.iterdir():
             if child.name in SKIP:
                 continue
-            if child.is_file() and child.suffix.lower() in DATA_EXTS:
+            if child.is_file() and child.suffix.lower() in exts:
                 return True
             if child.is_dir():
-                if any(p.suffix.lower() in DATA_EXTS for p in list(child.iterdir())[:200] if p.is_file()):
+                if any(p.suffix.lower() in exts for p in list(child.iterdir())[:200] if p.is_file()):
                     return True
     except OSError:
         pass

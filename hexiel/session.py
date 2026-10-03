@@ -4,6 +4,8 @@ import json
 import threading
 import time
 import uuid
+
+import httpx
 from collections.abc import Callable
 from pathlib import Path
 
@@ -363,6 +365,14 @@ class Session:
             if final is None and not reasoning:
                 raise                      # nothing streamed yet: safe to wait and retry
             self._provider_error = "rate limited mid-response"
+        except httpx.TransportError as exc:
+            # a timeout or dropped connection is not a bug in hexiel: retry when nothing
+            # has streamed yet, otherwise end the turn with a clear message
+            if final is None and not reasoning and not streamed:
+                raise llm.TransientError(
+                    f"the connection to the model server failed ({type(exc).__name__}) — retrying") from exc
+            self._provider_error = (f"the connection to the model server dropped mid-reply "
+                                    f"({type(exc).__name__}) — send your message again to retry")
         except llm.ProviderError as exc:
             self._provider_error = str(exc)
         final = final if final is not None else {"role": "assistant", "content": ""}

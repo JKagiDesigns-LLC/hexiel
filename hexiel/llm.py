@@ -32,6 +32,14 @@ class RateLimitError(ProviderError):
         self.long_term = long_term
 
 
+class TransientError(RateLimitError):
+    """The connection to the model server failed (timeout, refused, dropped):
+    retried by the same auto-resume path as a rate limit, after a short pause."""
+
+    def __init__(self, message: str, retry_after: float = 5.0):
+        super().__init__(message, retry_after=retry_after)
+
+
 RETRYABLE_STATUS = {429, 503, 529}          # rate limited, unavailable, Anthropic "overloaded"
 _LONG_TERM = re.compile(r"monthly|weekly|daily (usage )?limit|insufficient_quota|billing|credit balance|"
                         r"usage limit|quota exceeded|add (usage )?credits", re.I)

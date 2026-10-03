@@ -133,3 +133,44 @@ def test_two_empty_replies_report_an_error(tmp_path, monkeypatch, clock):
     ends = [e for e in events if e[0] == "turn_end"]
     assert ends and "empty reply twice" in str(ends[-1])
     assert all(m["role"] != "assistant" for m in s.messages)
+
+
+# ---------------------------------------------------------------- dropped connections
+
+REAL_STREAM_ONCE = Session._stream_once        # captured before any test patches it
+
+
+class _Provider:
+    """Streams `items`; an exception instance in the list is raised at that point."""
+
+    def __init__(self, *items):
+        self.items = items
+
+    def stream(self, *a, **k):
+        for item in self.items:
+            if isinstance(item, Exception):
+                raise item
+            yield item
+
+
+def test_timeout_before_any_output_is_retried(tmp_path, monkeypatch, clock):
+    import httpx
+    s, events = make(tmp_path, monkeypatch, [])
+    providers = iter([_Provider(httpx.ReadTimeout("timed out")),
+                      _Provider(("assistant", {"role": "assistant", "content": "got there"}))])
+    monkeypatch.setattr(Session, "_stream_once",
+                        lambda self, provider, defs: REAL_STREAM_ONCE(self, next(providers), defs))
+    s.run_turn("hi")
+    assert s.messages[-1]["content"] == "got there"
+    assert any(e[0] == "rate_limited" for e in events)            # waited a moment, then retried
+
+
+def test_drop_mid_reply_ends_turn_cleanly(tmp_path, monkeypatch, clock):
+    import httpx
+    s, events = make(tmp_path, monkeypatch, [])
+    monkeypatch.setattr(Session, "_stream_once", lambda self, provider, defs: REAL_STREAM_ONCE(
+        self, _Provider(("text", "partial ans"), httpx.RemoteProtocolError("peer closed")), defs))
+    s.run_turn("hi")                                               # must not raise
+    ends = [e for e in events if e[0] == "turn_end"]
+    assert ends and "dropped mid-reply" in str(ends[-1])
+    assert all(m.get("content") != "partial ans" for m in s.messages)

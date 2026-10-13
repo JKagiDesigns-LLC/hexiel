@@ -143,3 +143,39 @@ def test_model_picker_lists_live_results(tmp_path, monkeypatch):
     assert is_picker and first == "qwen3.6:35b-a3b-coding"        # current model's group first
     assert filtered == ["claude-opus-5-5"]
     assert "3 model(s)" in status and "Groq" in status and "401" in status
+
+
+def test_prompt_accepts_multiline_and_enter_submits(tmp_path):
+    async def go():
+        app = make_app(tmp_path)
+        sent = []
+        app.submit_text = sent.append
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.press("a", "shift+enter", "b", "ctrl+j", "c")
+            await pilot.pause()
+            typed = app.query_one("#prompt").value
+            height = app.query_one("#prompt").outer_size.height
+            await pilot.press("enter")
+            await pilot.pause()
+            return typed, height, sent, app.query_one("#prompt").value
+    typed, height, sent, after = run(go())
+    assert typed == "a\nb\nc" and height >= 5
+    assert sent == ["a\nb\nc"] and after == ""
+
+
+def test_paste_is_sanitized(tmp_path):
+    from textual import events
+    from hexiel.tui import sanitize_paste
+    assert sanitize_paste("a\r\nb\rc") == "a\nb\nc"
+    assert sanitize_paste("\x1b[31mred\x1b[0m \x1b]0;title\x07ok\x00\x07") == "red ok"
+    assert sanitize_paste("x‮y​z") == "xyz"
+    assert sanitize_paste("a\tb") == "a   b"
+
+    async def go():
+        app = make_app(tmp_path)
+        async with app.run_test(size=(100, 30)) as pilot:
+            app.query_one("#prompt").focus()
+            app.query_one("#prompt").post_message(events.Paste("one\r\n\x1b[1mtwo\x1b[0m\x00"))
+            await pilot.pause()
+            return app.query_one("#prompt").value
+    assert run(go()) == "one\ntwo"

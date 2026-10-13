@@ -2,6 +2,7 @@
 
 import json
 import os
+import re
 import threading
 import time
 from pathlib import Path
@@ -10,7 +11,8 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
-from textual.widgets import Button, Input, Label, Markdown, OptionList, Static
+from textual.message import Message
+from textual.widgets import Button, Input, Label, Markdown, OptionList, Static, TextArea
 from textual.widgets.option_list import Option
 
 from . import memory as memory_mod
@@ -562,34 +564,112 @@ class CommandMenu(OptionList):
         return self._items[self.highlighted]
 
 
-class PromptInput(Input):
-    """The prompt: drives the slash menu with ↑/↓, Tab to complete, Enter to run, Esc to close."""
+_ANSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[@-Z\\-_]")
+_CTRL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f\u200b-\u200d\u2060\ufeff\u202a-\u202e\u2066-\u2069]")
+
+
+def sanitize_paste(text: str) -> str:
+    """Make pasted text safe for the prompt: unify newlines, drop terminal escape sequences,
+    stray control characters, and invisible/bidi-override characters; keep newlines and tabs."""
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    text = _ANSI_RE.sub("", text)
+    text = text.replace("\x1b", "")
+    text = _CTRL_RE.sub("", text)
+    return text.expandtabs(4) if "\t" in text else text
+
+
+class PromptInput(TextArea):
+    """The prompt: multiline. Enter sends; Shift+Enter / Ctrl+J / Alt+Enter insert a newline (pasted
+    newlines are kept). ↑/↓, Tab, Esc drive the slash menu while it is open."""
+
+    class Submitted(Message):
+        def __init__(self, input: "PromptInput", value: str) -> None:
+            super().__init__()
+            self.input = input
+            self.value = value
+
+    class ValueChanged(Message):
+        def __init__(self, input: "PromptInput", value: str) -> None:
+            super().__init__()
+            self.input = input
+            self.value = value
 
     BINDINGS = [Binding("up", "menu_up", show=False), Binding("down", "menu_down", show=False),
                 Binding("tab", "menu_complete", show=False), Binding("escape", "menu_close", show=False)]
+
+    def __init__(self, placeholder: str = "", **kwargs) -> None:
+        super().__init__(placeholder=placeholder, soft_wrap=True, show_line_numbers=False,
+                         tab_behavior="focus", **kwargs)
+
+    @property
+    def value(self) -> str:
+        return self.text
+
+    @value.setter
+    def value(self, text: str) -> None:
+        self.text = text
+        self.move_cursor(self.document.end)
+
+    @property
+    def cursor_position(self) -> int:
+        return len(self.text)
+
+    @cursor_position.setter
+    def cursor_position(self, _pos: int) -> None:
+        self.move_cursor(self.document.end)
 
     @property
     def menu(self) -> CommandMenu:
         return self.app.query_one(CommandMenu)
 
+    def on_text_area_changed(self, event: TextArea.Changed) -> None:
+        event.stop()
+        self.styles.height = min(self.text.count("\n") + 1, 8) + 2   # grow with the text
+        self.refresh(layout=True)
+        self.post_message(self.ValueChanged(self, self.text))
+
+    async def _on_paste(self, event) -> None:
+        event.stop()
+        event.prevent_default()
+        clean = sanitize_paste(event.text)
+        if clean:
+            self.replace(clean, *self.selection)
+
+    async def _on_key(self, event) -> None:
+        if event.key == "enter":
+            event.stop()
+            event.prevent_default()
+            await self.action_submit()
+        elif event.key in ("shift+enter", "ctrl+j", "alt+enter"):
+            event.stop()
+            event.prevent_default()
+            self.insert("\n")
+        else:
+            await super()._on_key(event)
+
     def action_menu_up(self) -> None:
         if self.menu.display:
             self.menu.action_cursor_up()
+        else:
+            self.action_cursor_up()
 
     def action_menu_down(self) -> None:
         if self.menu.display:
             self.menu.action_cursor_down()
+        else:
+            self.action_cursor_down()
 
     def action_menu_close(self) -> None:
         self.menu.hide()
 
     def action_menu_complete(self) -> None:
-        self.app.accept_menu(run=False)
+        if self.menu.display:
+            self.app.accept_menu(run=False)
 
     async def action_submit(self) -> None:
         if self.menu.display and self.app.accept_menu(run=True):
             return
-        await super().action_submit()
+        self.post_message(self.Submitted(self, self.text))
 
 
 class ActivityLine(Static):
@@ -815,7 +895,7 @@ class HexielTUI(App):
         self.status = self.query_one(StatusLine)
         self.activity = self.query_one(ActivityLine)
         self.status.refresh_text()
-        self.query_one("#prompt", Input).focus()
+        self.query_one("#prompt", PromptInput).focus()
         self.set_interval(1.0, self._tick)
         from .brand import LOGO_WIDTH, logo_text, small_logo_text
         chat = self.query_one("#chat", VerticalScroll)
@@ -862,10 +942,10 @@ class HexielTUI(App):
 
     # ---------------------------------------------------------------- input
 
-    def on_input_changed(self, event: Input.Changed) -> None:
+    def on_prompt_input_value_changed(self, event: PromptInput.ValueChanged) -> None:
         from .config import load_config
         text = event.value
-        if not text.startswith("/"):
+        if not text.startswith("/") or "\n" in text:
             self.query_one(CommandMenu).hide()
             return
         try:
@@ -884,7 +964,7 @@ class HexielTUI(App):
         if not picked:
             return False
         kind, value = picked
-        prompt = self.query_one("#prompt", Input)
+        prompt = self.query_one("#prompt", PromptInput)
         takes_arg = kind in ("skill", "custom") or any(n == value and a for n, a, _ in COMMANDS)
         if kind == "model":
             line, run_now = f"/model {value}", run
@@ -903,7 +983,7 @@ class HexielTUI(App):
             prompt.cursor_position = len(line)
         return True
 
-    def on_input_submitted(self, event: Input.Submitted) -> None:
+    def on_prompt_input_submitted(self, event: PromptInput.Submitted) -> None:
         event.input.value = ""
         self.query_one(CommandMenu).hide()
         self.submit_text(event.value)
@@ -1608,8 +1688,8 @@ class HexielTUI(App):
             self.session.stop()
             self.add_note("canceling turn…")
             return
-        if self.query_one("#prompt", Input).value:
-            self.query_one("#prompt", Input).value = ""
+        if self.query_one("#prompt", PromptInput).value:
+            self.query_one("#prompt", PromptInput).value = ""
             return
         self.exit()
 

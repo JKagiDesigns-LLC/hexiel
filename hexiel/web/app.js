@@ -141,7 +141,7 @@ function updateSendButton() {
 
 function connect() {
   const proto = location.protocol === "https:" ? "wss" : "ws";
-  ws = new WebSocket(`${proto}://${location.host}/ws`);
+  ws = new WebSocket(`${proto}://${location.host}${location.pathname.replace(/[^/]*$/, "")}ws`);
   ws.onopen = () => { wsQueue.splice(0).forEach(ws.send); };
   ws.onmessage = (ev) => {
     const data = JSON.parse(ev.data);
@@ -221,7 +221,7 @@ function hideApproval(data) {
 let lastStatus = null;
 async function refreshState() {
   try {
-    const state = await (await fetch("/api/state")).json();
+    const state = await (await fetch("api/state")).json();
     document.lastApiState = state;
     applyStatus(state.status);
     $("#model-name").textContent = state.status?.model_id || state.current_profile || "model";
@@ -290,7 +290,7 @@ function askScope(title) {
 async function changeSetting(key, label, value) {
   const scope = await askScope(`${label} → ${value}`);
   if (!scope) { loadSettings(); return; }
-  const resp = await (await fetch("/api/config", { method: "POST",
+  const resp = await (await fetch("api/config", { method: "POST",
     body: JSON.stringify({ key, value, scope }), headers: { "content-type": "application/json" } })).json();
   $("#settings-msg").textContent = resp.error ? "⚠ " + resp.error : "✓ " + resp.message;
   if (resp.rows) renderSettings(resp.rows);
@@ -322,7 +322,7 @@ function renderSettings(rows) {
 }
 
 async function loadSettings() {
-  const data = await (await fetch("/api/config")).json();
+  const data = await (await fetch("api/config")).json();
   renderSettings(data.rows || []);
 }
 
@@ -364,7 +364,7 @@ function showHealReview(data) {
 
 async function decideHeal(choice) {
   const files = healFiles.filter(f => f.selected).map(f => f.path);
-  const r = await (await fetch("/api/heal/decide", { method: "POST", headers: { "content-type": "application/json" },
+  const r = await (await fetch("api/heal/decide", { method: "POST", headers: { "content-type": "application/json" },
                                 body: JSON.stringify({ choice, files }) })).json();
   if (r.error && !r.kept) { alert(r.error); return; }
   $("#heal-back").classList.remove("show");
@@ -372,7 +372,7 @@ async function decideHeal(choice) {
   div.className = "note"; div.textContent = (r.error ? "⚠ " + r.error : "✓ " + r.message) + (r.restarting ? " — restarting…" : "");
   $("#chat").appendChild(div);
   if (r.restarting) {
-    const wait = async () => { try { await fetch("/api/state"); location.reload(); } catch { setTimeout(wait, 1000); } };
+    const wait = async () => { try { await fetch("api/state"); location.reload(); } catch { setTimeout(wait, 1000); } };
     setTimeout(wait, 2500);
   }
 }
@@ -417,7 +417,7 @@ async function openPicker() {
   $("#picker-status").textContent = "";
   $("#picker-back").classList.add("show");
   $("#picker-search").focus();
-  pickerData = await (await fetch("/api/models/live")).json();   // fresh every time — never cached
+  pickerData = await (await fetch("api/models/live")).json();   // fresh every time — never cached
   renderPicker(pickerData);
 }
 
@@ -427,7 +427,7 @@ async function choosePicked(i) {
   $("#picker-back").classList.remove("show");
   const scope = await askScope(`Switch to ${m.model}`);
   if (!scope) return;
-  const r = await (await fetch("/api/models/select", { method: "POST", headers: { "content-type": "application/json" },
+  const r = await (await fetch("api/models/select", { method: "POST", headers: { "content-type": "application/json" },
                                 body: JSON.stringify({ id: m.id, scope }) })).json();
   const div = document.createElement("div");
   div.className = "note"; div.textContent = r.error ? "⚠ " + r.error : "✓ " + r.message;
@@ -449,12 +449,12 @@ document.addEventListener("keydown", (ev) => {
 });
 $("#clear-btn").addEventListener("click", async () => {
   if (!confirm("Clear this conversation?")) return;
-  await fetch("/api/clear", { method: "POST" });
+  await fetch("api/clear", { method: "POST" });
   $("#chat").innerHTML = "";
   refreshState();
 });
 $("#compact-btn").addEventListener("click", async () => {
-  await fetch("/api/compact", { method: "POST" });
+  await fetch("api/compact", { method: "POST" });
   const div = document.createElement("div");
   div.className = "note"; div.textContent = "compacting…";
   $("#chat").appendChild(div);
@@ -465,7 +465,7 @@ const input = $("#input");
 
 // ---------------------------------------------------------------- slash menu
 let slashCommands = [], slashItems = [], slashSel = 0;
-fetch("/api/commands").then(r => r.json()).then(d => {
+fetch("api/commands").then(r => r.json()).then(d => {
   slashCommands = d.commands || [];
   if (location.hash === "#slash") { input.value = "/u"; renderSlash(); }      // demo / screenshots
 }).catch(() => {});
@@ -513,7 +513,7 @@ input.addEventListener("paste", async (ev) => {
   if (!file) return;                              // plain text pastes normally
   ev.preventDefault();
   try {
-    const res = await (await fetch("/api/paste-image", { method: "POST",
+    const res = await (await fetch("api/paste-image", { method: "POST",
       headers: { "content-type": file.type }, body: file })).json();
     if (!res.path) throw new Error(res.error || "upload failed");
     const ref = res.path.includes(" ") ? `"${res.path}" ` : `${res.path} `;
@@ -547,7 +547,7 @@ setInterval(refreshState, 20000);
 
 async function checkUpdate() {
   try {
-    const info = await (await fetch("/api/update")).json();
+    const info = await (await fetch("api/update")).json();
     const btn = $("#update-btn");
     if (info.available) {
       btn.textContent = `⬆ Update to ${info.latest}`;
@@ -560,12 +560,12 @@ $("#update-btn").addEventListener("click", async () => {
   const btn = $("#update-btn");
   if (!confirm(`${btn.title}\n\nUpdate now?`)) return;
   btn.disabled = true; btn.textContent = "updating…";
-  const r = await (await fetch("/api/update", { method: "POST" })).json();
+  const r = await (await fetch("api/update", { method: "POST" })).json();
   const div = document.createElement("div");
   div.className = "note"; div.textContent = (r.ok ? "✓ " : "⚠ ") + r.log + (r.restarting ? "\nrestarting…" : "");
   $("#chat").appendChild(div);
   if (r.restarting) {   // wait for the new server, then reload onto the new UI
-    const wait = async () => { try { await fetch("/api/state"); location.reload(); } catch { setTimeout(wait, 1000); } };
+    const wait = async () => { try { await fetch("api/state"); location.reload(); } catch { setTimeout(wait, 1000); } };
     setTimeout(wait, 2500);
   } else { btn.disabled = false; checkUpdate(); }
 });

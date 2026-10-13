@@ -33,6 +33,8 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--repl", action="store_true", help="plain readline loop (no TUI)")
     ap.add_argument("--serve", action="store_true",
                     help="run the browser web UI instead of the TUI")
+    ap.add_argument("--remote", action="store_true",
+                    help="with --serve: also connect to Hexiel Remote (paid; `hexiel remote login` first)")
     ap.add_argument("--host", default="127.0.0.1", help="web UI bind host (default: 127.0.0.1)")
     ap.add_argument("--port", type=int, default=8777, help="web UI port (default: 8777)")
     ap.add_argument("--presets", action="store_true",
@@ -223,6 +225,9 @@ def jobs_cli(argv: list[str]) -> int:
 def main() -> None:
     if len(sys.argv) > 1 and sys.argv[1] == "jobs":
         raise SystemExit(jobs_cli(sys.argv[2:]))
+    if len(sys.argv) > 1 and sys.argv[1] == "remote":
+        from .remote import remote_cli
+        raise SystemExit(remote_cli(sys.argv[2:]))
     args = parse_args()
     cwd = str(Path(args.path).resolve())
     os.chdir(cwd)
@@ -257,7 +262,15 @@ def main() -> None:
             from .webui import serve as webui_serve
         except ImportError as exc:
             raise SystemExit(f"web UI needs aiohttp:  pip install 'hexiel[serve]'  ({exc})")
-        webui_serve(session, host=args.host, port=args.port)
+        if args.remote:
+            import asyncio
+            from .remote import serve_with_remote
+            try:
+                asyncio.run(serve_with_remote(session, args.host, args.port))
+            except KeyboardInterrupt:
+                pass
+        else:
+            webui_serve(session, host=args.host, port=args.port)
     elif args.repl:
         repl_loop(session)
     else:

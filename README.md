@@ -150,6 +150,28 @@ and sessions. Local-only by default; `--host 0.0.0.0` prints a loud warning
 |---|---|
 | <img src="https://gitlab.com/jkagidesigns1/public/applications/hexiel/-/raw/main/docs/screenshots/web.png" alt="hexiel browser UI"> | <img src="https://gitlab.com/jkagidesigns1/public/applications/hexiel/-/raw/main/docs/screenshots/web-settings.png" alt="browser settings panel"> |
 
+### Pasting text and images
+
+The prompt is multi-line (Enter sends; Shift+Enter, Ctrl+J or Alt+Enter add a newline) and pasted text is
+sanitized (control characters, escape sequences and invisible/bidi characters are dropped). Pastes over
+~1,500 characters or 15 lines collapse to a `[Pasted text #1 +240 lines]` tag in the prompt and expand when you send.
+Copy an image and press `Ctrl+V` (or `Alt+V`) in the terminal UI, or just paste in the browser, to attach it.
+Terminal clipboard images need `wl-clipboard` or `xclip` (Linux) or `pngpaste` (macOS); the browser works everywhere.
+Pasted images are saved under `.hexiel/pastes/` in the project (add it to `.gitignore`).
+
+### Hexiel Remote (optional, paid)
+
+Drive the hexiel on your own machine from any browser or phone, and run cloud-triggered automations
+(schedules and webhooks) on it. $8/month after a 14-day trial — see <https://remote.hexiel.tech>. The agent itself
+stays free; this client is open source and the subscription is enforced by the relay.
+
+```bash
+hexiel remote login          # email + password -> revocable device token (stored 0600)
+hexiel --serve --remote      # connects OUT to the relay; nothing is opened locally
+```
+
+Only the web UI's own pages and API cross the tunnel (never `/v1`). The relay can see tunneled traffic (TLS, not end-to-end encrypted).
+
 ## Models
 
 **Fastest start:** `/model add <preset>` in the terminal UI — presets for Claude

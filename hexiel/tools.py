@@ -609,7 +609,7 @@ def html_to_text(html: str) -> str:
 
 
 def _fetch_cache_path(url: str, ctx: ToolContext) -> Path:
-    digest = hashlib.sha1(url.encode()).hexdigest()[:16]
+    digest = hashlib.sha1(url.encode(), usedforsecurity=False).hexdigest()[:16]
     return Path(ctx.cwd) / ".hexiel" / "webcache" / f"{digest}.txt"
 
 

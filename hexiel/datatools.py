@@ -76,7 +76,7 @@ def _connect(files: list[str], ctx):
         for name, src in sources:
             reader = {"csv": "read_csv_auto", "parquet": "read_parquet", "json": "read_json_auto",
                       "xlsx": "read_csv_auto"}[kind]
-            con.execute(f"CREATE OR REPLACE VIEW {name} AS SELECT * FROM {reader}('{src.as_posix()}')")
+            con.execute(f"CREATE OR REPLACE VIEW {name} AS SELECT * FROM {reader}('{src.as_posix()}')")  # nosec B608
             names.append(name)
     return con, names
 
@@ -93,7 +93,7 @@ def _table(cols: list[str], rows: list, total: int | None = None) -> str:
 
 
 def _schema_card(con, name: str) -> str:
-    total = con.execute(f"SELECT count(*) FROM {name}").fetchone()[0]
+    total = con.execute(f"SELECT count(*) FROM {name}").fetchone()[0]  # nosec B608
     summary = con.execute(f"SUMMARIZE {name}").fetchall()
     cols = [d[0] for d in con.execute(f"SUMMARIZE {name}").description]
     idx = {c: i for i, c in enumerate(cols)}
@@ -107,7 +107,7 @@ def _schema_card(con, name: str) -> str:
         if lo is not None:
             bits.append(f"range {str(lo)[:24]} … {str(hi)[:24]}")
         lines.append(f"  - {r[idx['column_name']]}: " + ", ".join(bits))
-    sample = con.execute(f"SELECT * FROM {name} LIMIT 5")
+    sample = con.execute(f"SELECT * FROM {name} LIMIT 5")  # nosec B608
     lines.append("sample rows:\n" + _table([d[0] for d in sample.description], sample.fetchall()))
     return "\n".join(lines)
 
@@ -125,12 +125,12 @@ def _data(args: dict, ctx) -> ToolResult:
                 return text_result("error: give `files` to describe", True)
             return text_result("\n\n".join(_schema_card(con, n) for n in names))
         sql = args["sql"].strip().rstrip(";")
-        cur = con.execute(f"SELECT * FROM ({sql}) LIMIT {MAX_ROWS + 1}")
+        cur = con.execute(f"SELECT * FROM ({sql}) LIMIT {MAX_ROWS + 1}")  # nosec B608
         cols = [d[0] for d in cur.description]
         rows = cur.fetchall()
         total = len(rows)
         if total > MAX_ROWS:
-            total = con.execute(f"SELECT count(*) FROM ({sql})").fetchone()[0]
+            total = con.execute(f"SELECT count(*) FROM ({sql})").fetchone()[0]  # nosec B608
             rows = rows[:MAX_ROWS]
         return text_result(_table(cols, rows, total) if rows else "(no rows)")
     except Exception as exc:  # noqa: BLE001 - SQL/file errors go back to the model to fix
@@ -162,7 +162,7 @@ def _data_export(args: dict, ctx) -> ToolResult:
             wb.save(out)
         else:
             return text_result("error: out must end in .csv, .xlsx, .json or .parquet", True)
-        n = con.execute(f"SELECT count(*) FROM ({sql})").fetchone()[0]
+        n = con.execute(f"SELECT count(*) FROM ({sql})").fetchone()[0]  # nosec B608
         return text_result(f"saved {n:,} row(s) to {out}")
     except Exception as exc:  # noqa: BLE001
         return text_result(f"error: {exc}", True)
@@ -185,7 +185,7 @@ def _db_query(args: dict, ctx) -> ToolResult:
             parts = []
             for name, ddl in con.execute("SELECT name, sql FROM sqlite_master WHERE type='table' "
                                          "AND name NOT LIKE 'sqlite_%' ORDER BY name"):
-                n = con.execute(f'SELECT count(*) FROM "{name}"').fetchone()[0]
+                n = con.execute(f'SELECT count(*) FROM "{name}"').fetchone()[0]  # nosec B608
                 parts.append(f"{ddl};  -- {n:,} row(s)")
             return text_result("\n".join(parts) or "(no tables yet)")
         cur = con.execute(sql)

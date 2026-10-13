@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# pre-commit: secret scan -> security scan (bandit) -> full test suite. Any failure blocks the commit.
+# Install once per clone:  scripts/install-hooks.sh     (bypass in an emergency: git commit --no-verify)
+set -euo pipefail
+cd "$(git rev-parse --show-toplevel)"
+
+BIN=""
+for d in .venv/bin venv/bin; do [ -x "$d/python" ] && BIN="$d/" && break; done
+need() { command -v "${BIN}$1" >/dev/null 2>&1 || { echo "pre-commit: '$1' not found — run: pip install -e '.[dev]'" >&2; exit 1; }; }
+need python; need bandit; need detect-secrets-hook; need pytest
+
+echo "▸ secret scan (staged files)"
+mapfile -d '' staged < <(git diff --cached --name-only --diff-filter=ACMR -z)
+if [ "${#staged[@]}" -gt 0 ]; then
+  "${BIN}detect-secrets-hook" --baseline .secrets.baseline "${staged[@]}"
+fi
+
+echo "▸ security scan (bandit, medium+ severity)"
+"${BIN}bandit" -q -r hexiel -ll -ii 2>/dev/null || { "${BIN}bandit" -q -r hexiel -ll -ii 2>&1 | grep -v WARNING; exit 1; }
+
+echo "▸ tests"
+# git exports GIT_INDEX_FILE etc. to hooks; the tests drive their own git repos/worktrees, so clear them.
+while IFS= read -r v; do unset "$v"; done < <(git rev-parse --local-env-vars)
+"${BIN}python" -m pytest tests -q -x

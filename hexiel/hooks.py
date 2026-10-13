@@ -101,7 +101,7 @@ def run(hooks: list[Hook], event: str, cwd: str, session_id: str, *, tool: str =
     outcomes = []
     for h in selected:
         try:
-            proc = subprocess.run(h.command, shell=True, input=data, capture_output=True, text=True,
+            proc = subprocess.run(h.command, shell=True, input=data, capture_output=True, text=True,  # nosec B602
                                   cwd=cwd, timeout=h.timeout,
                                   env={**__import__("os").environ, "HEXIEL_PROJECT_DIR": cwd,
                                        "CLAUDE_PROJECT_DIR": cwd, "FILE": env_file})

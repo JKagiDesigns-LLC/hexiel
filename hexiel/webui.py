@@ -187,7 +187,7 @@ def _json_response(data: dict, status: int = 200) -> web.Response:
 
 def make_app(session: Session) -> web.Application:
     state = WebState(session)
-    app = web.Application()
+    app = web.Application(client_max_size=32 * 1024 * 1024)
     app["state"] = state
 
     async def start_drain(app):
@@ -214,7 +214,7 @@ def make_app(session: Session) -> web.Application:
         return web.FileResponse(path)
 
     async def websocket(request):
-        ws = web.WebSocketResponse(heartbeat=30)
+        ws = web.WebSocketResponse(heartbeat=30, max_msg_size=64 * 1024 * 1024)
         await ws.prepare(request)
         state.clients[ws] = asyncio.get_running_loop()
         try:
@@ -429,6 +429,16 @@ def make_app(session: Session) -> web.Application:
         items += [{"name": s.name, "args": "<request>", "desc": "skill: " + (s.description or "")[:70]}
                   for s in skills_mod.discover(session.cwd)]
         return _json_response({"commands": items})
+
+    async def api_paste_image(request):
+        from .clipboard import save_image
+        mime = request.content_type
+        if mime not in ("image/png", "image/jpeg", "image/webp", "image/gif"):
+            return _json_response({"error": "unsupported image type"}, status=400)
+        data = await request.read()
+        if not data or len(data) > 20 * 1024 * 1024:
+            return _json_response({"error": "empty or over 20MB"}, status=400)
+        return _json_response({"path": save_image(data, mime, session.cwd)})
 
     async def api_state(request):
         cfg = load_config()
@@ -667,6 +677,7 @@ def make_app(session: Session) -> web.Application:
     app.router.add_get("/static/{name}", static)
     app.router.add_get("/ws", websocket)
     app.router.add_get("/api/state", api_state)
+    app.router.add_post("/api/paste-image", api_paste_image)
     app.router.add_post("/api/model", api_model)
     app.router.add_post("/api/settings", api_settings)
     app.router.add_get("/api/commands", api_commands)

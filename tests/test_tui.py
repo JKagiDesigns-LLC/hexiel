@@ -179,3 +179,12 @@ def test_paste_is_sanitized(tmp_path):
             await pilot.pause()
             return app.query_one("#prompt").value
     assert run(go()) == "one\ntwo"
+
+
+def test_clipboard_save_image_roundtrip(tmp_path):
+    from hexiel.clipboard import save_image
+    from hexiel.tools import attach_images
+    from tests.test_images import PNG
+    path = save_image(PNG, "image/png", str(tmp_path))
+    images, _ = attach_images(f"look at {path}", str(tmp_path))
+    assert len(images) == 1

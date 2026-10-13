@@ -595,9 +595,14 @@ class PromptInput(TextArea):
             self.value = value
 
     BINDINGS = [Binding("up", "menu_up", show=False), Binding("down", "menu_down", show=False),
-                Binding("tab", "menu_complete", show=False), Binding("escape", "menu_close", show=False)]
+                Binding("tab", "menu_complete", show=False), Binding("escape", "menu_close", show=False),
+                Binding("ctrl+v", "paste_image", show=False), Binding("alt+v", "paste_image", show=False)]
+
+    PASTE_COLLAPSE_CHARS = 1500      # longer pastes collapse to a placeholder, expanded on send
+    PASTE_COLLAPSE_LINES = 15
 
     def __init__(self, placeholder: str = "", **kwargs) -> None:
+        self._pastes: dict[str, str] = {}
         super().__init__(placeholder=placeholder, soft_wrap=True, show_line_numbers=False,
                          tab_behavior="focus", **kwargs)
 
@@ -632,8 +637,29 @@ class PromptInput(TextArea):
         event.stop()
         event.prevent_default()
         clean = sanitize_paste(event.text)
-        if clean:
-            self.replace(clean, *self.selection)
+        if not clean.strip():                    # an image-only clipboard arrives as an empty paste
+            self.action_paste_image()
+            return
+        lines = clean.count("\n") + 1
+        if len(clean) > self.PASTE_COLLAPSE_CHARS or lines > self.PASTE_COLLAPSE_LINES:
+            tag = f"[Pasted text #{len(self._pastes) + 1} +{lines} lines]"
+            self._pastes[tag] = clean
+            clean = tag
+        self.replace(clean, *self.selection)
+
+    def action_paste_image(self) -> None:
+        from .clipboard import paste_clipboard_image
+        path = paste_clipboard_image(getattr(getattr(self.app, "session", None), "cwd", None) or os.getcwd())
+        if path:
+            self.replace(f'"{path}" ' if " " in path else f"{path} ", *self.selection)
+        else:
+            self.app.notify("No image on the clipboard (needs wl-paste or xclip)", severity="warning")
+
+    def expanded(self) -> str:
+        text = self.text
+        for tag, body in self._pastes.items():
+            text = text.replace(tag, body)
+        return text
 
     async def _on_key(self, event) -> None:
         if event.key == "enter":
@@ -669,7 +695,8 @@ class PromptInput(TextArea):
     async def action_submit(self) -> None:
         if self.menu.display and self.app.accept_menu(run=True):
             return
-        self.post_message(self.Submitted(self, self.text))
+        self.post_message(self.Submitted(self, self.expanded()))
+        self._pastes.clear()
 
 
 class ActivityLine(Static):

@@ -4,3 +4,6 @@ __pycache__/
 *.pyc
 .hexiel/
 dist/
+
+# pasted clipboard images
+.hexiel/pastes/

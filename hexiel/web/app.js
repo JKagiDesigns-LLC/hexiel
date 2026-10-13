@@ -508,6 +508,19 @@ input.addEventListener("keydown", (ev) => {
   }
   if (ev.key === "Enter" && !ev.shiftKey) { ev.preventDefault(); submit(); }
 });
+input.addEventListener("paste", async (ev) => {
+  const file = [...(ev.clipboardData?.files || [])].find(f => f.type.startsWith("image/"));
+  if (!file) return;                              // plain text pastes normally
+  ev.preventDefault();
+  try {
+    const res = await (await fetch("/api/paste-image", { method: "POST",
+      headers: { "content-type": file.type }, body: file })).json();
+    if (!res.path) throw new Error(res.error || "upload failed");
+    const ref = res.path.includes(" ") ? `"${res.path}" ` : `${res.path} `;
+    input.setRangeText(ref, input.selectionStart, input.selectionEnd, "end");
+    input.dispatchEvent(new Event("input"));
+  } catch (e) { alert(`image paste failed: ${e.message}`); }
+});
 input.addEventListener("input", () => { slashSel = 0; renderSlash(); });
 input.addEventListener("input", () => {
   input.style.height = "auto";

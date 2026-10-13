@@ -102,8 +102,9 @@ class Tunnel:
 
     async def _connect_once(self, aiohttp) -> None:
         headers = {"Authorization": f"Bearer {self.cfg['device_token']}"}
-        async with aiohttp.ClientSession() as http:
-            async with http.ws_connect(_relay_ws_url(self.cfg["relay"]), headers=headers,
+        # The relay connection honours HTTP(S)_PROXY / NO_PROXY; the session for the local web UI must not.
+        async with aiohttp.ClientSession() as http, aiohttp.ClientSession(trust_env=True) as relay_http:
+            async with relay_http.ws_connect(_relay_ws_url(self.cfg["relay"]), headers=headers,
                                        heartbeat=25, max_msg_size=32 * 1024 * 1024) as ws:
                 await ws.send_json({"t": "hello", "name": self.cfg.get("name", ""), "cwd": self.cwd})
                 print("  remote: connected — open https://remote.hexiel.tech to drive this machine")

@@ -89,6 +89,9 @@ def _is_empty_reply(msg: dict) -> bool:
             and not msg.get("tool_calls"))
 
 
+MAX_TIMEOUT_RETRIES = 2   # consecutive request timeouts before giving up (each already waited request_timeout)
+
+
 class Session:
     def __init__(self, model_config: ModelConfig, settings: Settings, cwd: str,
                  tools: list, system_prompt: str, on_event: Callable = None,
@@ -277,10 +280,28 @@ class Session:
         """Stream one assistant response, waiting out rate limits (auto-resume)
         and switching to the fallback profile when a limit won't reset soon."""
         attempt = 0
+        timeouts = 0
         while True:
             try:
                 return self._stream_once(self._provider_override or provider, tool_defs)
             except llm.RateLimitError as exc:
+                if isinstance(exc, llm.TransientError):
+                    # not a rate limit: the server is down, unreachable or hung. A request that timed out
+                    # already waited request_timeout seconds, so don't repeat that more than once.
+                    timeouts += exc.timed_out
+                    if timeouts >= MAX_TIMEOUT_RETRIES:
+                        self._provider_error = (f"{exc} — the model server accepted the request but never answered "
+                                                f"(it may be hung or overloaded). Check it, then send your message again.")
+                        return {"role": "assistant", "content": ""}
+                    wait = self._limit_wait(exc, attempt)
+                    if wait is None:
+                        self._provider_error = str(exc)
+                        return {"role": "assistant", "content": ""}
+                    self.on_event("model_unreachable", wait, str(exc)[:200])
+                    if not self._sleep_interruptibly(wait):
+                        return {"role": "assistant", "content": ""}
+                    attempt += 1
+                    continue
                 wait = self._limit_wait(exc, attempt)
                 if wait is None:
                     if self._switch_to_fallback(str(exc)):
@@ -290,13 +311,19 @@ class Session:
                         "" if self.settings.auto_resume else " (auto-resume is off)")
                     return {"role": "assistant", "content": ""}
                 self.on_event("rate_limited", wait, str(exc)[:200])
-                deadline = time.time() + wait
-                while time.time() < deadline:
-                    if self._stop.is_set():
-                        return {"role": "assistant", "content": ""}
-                    time.sleep(min(1.0, deadline - time.time()))
+                if not self._sleep_interruptibly(wait):
+                    return {"role": "assistant", "content": ""}
                 self.on_event("resumed")
                 attempt += 1
+
+    def _sleep_interruptibly(self, seconds: float) -> bool:
+        """Sleep, waking early if the turn is stopped. False when it was stopped."""
+        deadline = time.time() + seconds
+        while time.time() < deadline:
+            if self._stop.is_set():
+                return False
+            time.sleep(min(1.0, deadline - time.time()))
+        return True
 
     def _limit_wait(self, exc: "llm.RateLimitError", attempt: int) -> float | None:
         """Seconds to wait before retrying, or None to stop waiting."""
@@ -369,8 +396,11 @@ class Session:
             # a timeout or dropped connection is not a bug in hexiel: retry when nothing
             # has streamed yet, otherwise end the turn with a clear message
             if final is None and not reasoning and not streamed:
+                timed_out = isinstance(exc, httpx.TimeoutException)
                 raise llm.TransientError(
-                    f"the connection to the model server failed ({type(exc).__name__}) — retrying") from exc
+                    f"the model server didn't answer within {self.settings.request_timeout}s" if timed_out
+                    else f"the connection to the model server failed ({type(exc).__name__}) — retrying",
+                    timed_out=timed_out) from exc
             self._provider_error = (f"the connection to the model server dropped mid-reply "
                                     f"({type(exc).__name__}) — send your message again to retry")
         except llm.ProviderError as exc:

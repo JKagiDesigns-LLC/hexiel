@@ -162,7 +162,35 @@ def test_timeout_before_any_output_is_retried(tmp_path, monkeypatch, clock):
                         lambda self, provider, defs: REAL_STREAM_ONCE(self, next(providers), defs))
     s.run_turn("hi")
     assert s.messages[-1]["content"] == "got there"
-    assert any(e[0] == "rate_limited" for e in events)            # waited a moment, then retried
+    assert any(e[0] == "model_unreachable" for e in events)       # waited a moment, then retried
+    assert not any(e[0] == "rate_limited" for e in events)        # a hung server is not a rate limit
+
+
+def test_repeated_timeouts_give_up_with_a_clear_message(tmp_path, monkeypatch, clock):
+    import httpx
+    s, events = make(tmp_path, monkeypatch, [])
+    calls = []
+
+    def once(self, provider, defs):
+        calls.append(1)
+        return REAL_STREAM_ONCE(self, _Provider(httpx.ReadTimeout("timed out")), defs)
+    monkeypatch.setattr(Session, "_stream_once", once)
+    s.run_turn("hi")
+    assert len(calls) == session_mod.MAX_TIMEOUT_RETRIES           # not retried forever
+    ends = [e for e in events if e[0] == "turn_end"]
+    assert ends and "never answered" in str(ends[-1])
+    assert not any(e[0] == "rate_limited" for e in events)
+
+
+def test_refused_connection_keeps_retrying_longer_than_timeouts(tmp_path, monkeypatch, clock):
+    import httpx
+    s, events = make(tmp_path, monkeypatch, [])
+    providers = iter([_Provider(httpx.ConnectError("refused")) for _ in range(4)]
+                     + [_Provider(("assistant", {"role": "assistant", "content": "back up"}))])
+    monkeypatch.setattr(Session, "_stream_once",
+                        lambda self, provider, defs: REAL_STREAM_ONCE(self, next(providers), defs))
+    s.run_turn("hi")
+    assert s.messages[-1]["content"] == "back up"                  # server restarting: keep waiting
 
 
 def test_drop_mid_reply_ends_turn_cleanly(tmp_path, monkeypatch, clock):

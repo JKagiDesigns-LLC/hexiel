@@ -1363,6 +1363,12 @@ class HexielTUI(App):
             self.add_note(f"⏸ rate limited — hexiel will resume on its own in ~{int(seconds // 60)}m"
                           f"{int(seconds % 60):02d}s. ({reason[:120].replace('[', chr(92) + '[')})")
             return
+        if event == "model_unreachable":
+            seconds, reason = payload[0], payload[1] if len(payload) > 1 else ""
+            self.activity.countdown(seconds)
+            self.add_note(f"⚠ model server not responding — retrying in {int(seconds)}s. "
+                          f"({reason[:120].replace('[', chr(92) + '[')})")
+            return
         if event == "resumed":
             self.activity.phase("waiting")
             self.add_note("▶ limit reset — resuming")

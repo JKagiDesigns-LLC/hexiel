@@ -36,8 +36,9 @@ class TransientError(RateLimitError):
     """The connection to the model server failed (timeout, refused, dropped):
     retried by the same auto-resume path as a rate limit, after a short pause."""
 
-    def __init__(self, message: str, retry_after: float = 5.0):
+    def __init__(self, message: str, retry_after: float = 5.0, timed_out: bool = False):
         super().__init__(message, retry_after=retry_after)
+        self.timed_out = timed_out
 
 
 RETRYABLE_STATUS = {429, 503, 529}          # rate limited, unavailable, Anthropic "overloaded"

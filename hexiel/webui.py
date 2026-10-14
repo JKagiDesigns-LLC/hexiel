@@ -106,6 +106,9 @@ class WebState:
         elif event == "rate_limited":
             self.broadcast({"t": "note", "text": f"⏸ rate limited — resuming automatically in "
                                                 f"~{int(payload[0] // 60)}m{int(payload[0] % 60):02d}s"})
+        elif event == "model_unreachable":
+            self.broadcast({"t": "note", "text": f"⚠ model server not responding — retrying in {int(payload[0])}s "
+                                                f"({payload[1]})"})
         elif event == "fallback":
             self.broadcast({"t": "note", "text": f"↪ {payload[0]} is limited — continuing on {payload[1]}"})
         elif event == "turn_end":

@@ -31,7 +31,7 @@ def test_plain_command_runs(ctx):
 @pytest.mark.parametrize("cmd", ["cat <<'EOF' | docker exec -i c tee /tmp/x", "a && b", "ls > out", "a | b"])
 def test_shell_syntax_is_refused_with_guidance(ctx, cmd):
     out = _container({"action": "exec", "container": "c1", "cmd": cmd}, ctx)
-    assert out.is_error and "needs a shell" in out.text and "stdin" in out.text
+    assert out.is_error and "needs a shell" in out.text and "stdin" in out.text and "`bash` tool" in out.text
     assert "args:" not in out.text                    # nothing was executed
 
 

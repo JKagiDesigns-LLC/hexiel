@@ -836,7 +836,8 @@ def _cmd_list(user_cmd) -> list[str]:
             raise ShellSyntaxError(
                 f"`{ops[0]}` needs a shell, but cmd is run directly, not through one. To use a shell inside the "
                 "container pass cmd='sh -c \"...\"' (quote the whole script); to feed data to the command use "
-                "the `stdin` argument instead of a heredoc or pipe.")
+                "the `stdin` argument instead of a heredoc or pipe. To pipe one container's output into another (or any "
+                "host-side pipeline), use the `bash` tool, e.g. `docker exec a cat f | docker exec -i b tee g`.")
         return parts
     return [str(part) for part in user_cmd]
 
@@ -975,7 +976,7 @@ def build_tools(chain: Toolchain) -> list[ToolDef]:
         ToolDef("container", "Drive the detected container runtime (docker or podman) natively. "
                 "actions: list, run (image, name, ports[], volumes[], cmd), exec (container, cmd, stdin?), "
                 "cmd is run directly, NOT through a shell: no pipes, heredocs or redirects — use "
-                "cmd='sh -c \"...\"' for a shell, and `stdin` to send text (e.g. a patch) to the command. "
+                "cmd='sh -c \"...\"' for a shell, and `stdin` to send text (e.g. a patch) to the command; for pipelines between containers use the bash tool. "
                 "logs (container, tail), build (path, tag), compose (compose_action: up|down|logs|build|ps, path), "
                 "stop, rm, images.",
                 obj(action={"type": "string"}, image={"type": "string"}, name={"type": "string"},

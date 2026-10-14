@@ -33,8 +33,8 @@ class TurnThread(threading.Thread):
     def run(self) -> None:
         session = self.app_ref.session
         app = self.app_ref.app
-        session.on_event = lambda event, *p: app.call_from_thread(
-            self.app_ref.handle_event, event, *p)
+        session.on_event = lambda event, *p, **kw: app.call_from_thread(
+            lambda: self.app_ref.handle_event(event, *p, **kw))
         session.on_approve = self.app_ref.ask_approval
         try:
             session.run_turn(self.prompt)
@@ -1332,7 +1332,7 @@ class HexielTUI(App):
 
     # callbacks used by session ------------------------------------------------
 
-    def handle_event(self, event, *payload) -> None:
+    def handle_event(self, event, *payload, **_kw) -> None:
         chat = self.query_one("#chat", VerticalScroll)
         if event == "thinking":
             # reasoning models can think for minutes; the activity line shows progress

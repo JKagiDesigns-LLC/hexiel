@@ -188,3 +188,25 @@ def test_clipboard_save_image_roundtrip(tmp_path):
     path = save_image(PNG, "image/png", str(tmp_path))
     images, _ = attach_images(f"look at {path}", str(tmp_path))
     assert len(images) == 1
+
+
+def test_stopped_turn_does_not_crash_the_agent_thread():
+    """Session sends turn_end with aborted=True; the TUI's hook must pass the keyword through."""
+    from types import SimpleNamespace
+    from hexiel import tui
+    seen, notes = [], []
+
+    class FakeSession:
+        def run_turn(self, prompt):
+            self.on_event("turn_end", aborted=True)
+
+        def save(self):
+            pass
+
+    app = SimpleNamespace(call_from_thread=lambda fn, *a: fn(*a))
+    app_ref = SimpleNamespace(session=FakeSession(), app=app,
+                              handle_event=lambda event, *p, **kw: seen.append((event, p, kw)),
+                              add_note=notes.append, ask_approval=None,
+                              activity=SimpleNamespace(stop=lambda: None))
+    tui.TurnThread(app_ref, "hi").run()
+    assert seen == [("turn_end", (), {"aborted": True})] and not notes   # no "agent crashed" note

@@ -746,6 +746,13 @@ def _test(args: dict, ctx: ToolContext) -> ToolResult:
 
 
 def _container(args: dict, ctx: ToolContext) -> ToolResult:
+    try:
+        return _container_run(args, ctx)
+    except ShellSyntaxError as exc:
+        return text_result(f"error: {exc}", True)
+
+
+def _container_run(args: dict, ctx: ToolContext) -> ToolResult:
     runtime = ctx.chain.container
     if not runtime:
         return text_result("error: no container runtime detected (neither docker nor podman)", True)
@@ -772,7 +779,8 @@ def _container(args: dict, ctx: ToolContext) -> ToolResult:
     elif action == "exec":
         if not args.get("container") or not args.get("cmd"):
             return text_result("error: exec needs `container` and `cmd`", True)
-        cmd = [bin_, "exec", args["container"]] + _cmd_list(args["cmd"])
+        stdin = args.get("stdin")
+        cmd = [bin_, "exec"] + (["-i"] if stdin is not None else []) + [args["container"]] + _cmd_list(args["cmd"])
     elif action == "logs":
         if not args.get("container"):
             return text_result("error: logs needs `container`", True)
@@ -802,6 +810,8 @@ def _container(args: dict, ctx: ToolContext) -> ToolResult:
 
     try:
         proc = subprocess.run(cmd, cwd=ctx.cwd, capture_output=True, text=True,
+                              input=args.get("stdin") if action == "exec" and args.get("stdin") is not None
+                              else None,
                               timeout=float(args.get("timeout") or 120))
     except subprocess.TimeoutExpired:
         return text_result(f"error: container command timed out: {shlex.join(cmd)}", True)
@@ -812,9 +822,22 @@ def _container(args: dict, ctx: ToolContext) -> ToolResult:
     return text_result(f"$ {shlex.join(cmd)}\n{summary}", is_error=proc.returncode != 0)
 
 
+class ShellSyntaxError(ValueError):
+    pass
+
+
 def _cmd_list(user_cmd) -> list[str]:
     if isinstance(user_cmd, str):
-        return shlex.split(user_cmd)
+        lexer = shlex.shlex(user_cmd, posix=True, punctuation_chars=True)
+        lexer.whitespace_split = True
+        parts = list(lexer)
+        ops = [p for p in parts if p and all(ch in "();<>|&" for ch in p)]
+        if ops:
+            raise ShellSyntaxError(
+                f"`{ops[0]}` needs a shell, but cmd is run directly, not through one. To use a shell inside the "
+                "container pass cmd='sh -c \"...\"' (quote the whole script); to feed data to the command use "
+                "the `stdin` argument instead of a heredoc or pipe.")
+        return parts
     return [str(part) for part in user_cmd]
 
 
@@ -950,11 +973,13 @@ def build_tools(chain: Toolchain) -> list[ToolDef]:
                 obj(runner={"type": "string"}, timeout={"type": "number"}),
                 run=_test),
         ToolDef("container", "Drive the detected container runtime (docker or podman) natively. "
-                "actions: list, run (image, name, ports[], volumes[], cmd), exec (container, cmd), "
+                "actions: list, run (image, name, ports[], volumes[], cmd), exec (container, cmd, stdin?), "
+                "cmd is run directly, NOT through a shell: no pipes, heredocs or redirects — use "
+                "cmd='sh -c \"...\"' for a shell, and `stdin` to send text (e.g. a patch) to the command. "
                 "logs (container, tail), build (path, tag), compose (compose_action: up|down|logs|build|ps, path), "
                 "stop, rm, images.",
                 obj(action={"type": "string"}, image={"type": "string"}, name={"type": "string"},
-                    container={"type": "string"}, cmd={"type": "string"},
+                    container={"type": "string"}, cmd={"type": "string"}, stdin={"type": "string"},
                     path={"type": "string"}, tag={"type": "string"},
                     ports={"type": "array", "items": {"type": "string"}},
                     volumes={"type": "array", "items": {"type": "string"}},

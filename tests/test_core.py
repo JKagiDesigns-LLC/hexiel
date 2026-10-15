@@ -197,3 +197,34 @@ def test_tool_result_cache_repeats_cost_once(tmp_path):
     assert len(contents) == 2
     assert "cached" in contents[1]
     assert contents[1].startswith(contents[0].split("\n(cached")[0][:50])
+
+
+def test_one_huge_turn_compacts_inside_the_turn_and_does_not_loop():
+    """Regression: a single agentic turn of ~150 tool calls filled the window, 'the last 1-2 turns' was
+    nearly everything, and compaction saved ~2k tokens per pass and re-triggered on every step."""
+    mc = ModelConfig(name="t", provider="openai", model="fake", base_url="http://x", context_window=20000)
+    session = Session(mc, Settings(True), cwd="/tmp", tools=[], system_prompt="system")
+    session.messages.append({"role": "user", "content": "<auto-compaction>\n\nold summary\n</auto-compaction>"})
+    session.messages.append({"role": "user", "content": "FIX THE FILTERING BUG please"})
+    for i in range(150):
+        session.messages.append({"role": "assistant", "content": f"step {i}",
+                                 "tool_calls": [{"id": f"c{i}", "name": "bash", "arguments": {"command": "ls"}}]})
+        session.messages.append({"role": "tool", "tool_call_id": f"c{i}", "content": "x" * 400})
+    assert session.compaction_needed()
+    seen = {}
+
+    class FakeProvider:
+        def stream(self, messages, system, tools, **kw):
+            seen["chars"] = len(messages[0]["content"])
+            yield ("text", "SUMMARY of the work so far.")
+            yield ("done", {})
+            yield ("assistant", None)
+
+    session.on_event = lambda *a, **k: None
+    session.compact(FakeProvider())
+    assert not session.compaction_needed()                      # actually freed space, so no loop
+    assert session.estimate_tokens() < 20000 * 0.5
+    assert session.messages[0]["content"].count("FIX THE FILTERING BUG") == 1      # request kept verbatim
+    assert session.messages[1]["role"] == "assistant"          # never starts on an orphaned tool result
+    assert session.messages[-1]["content"] == "x" * 400 and session.messages[-2]["content"] == "step 149"
+    assert seen["chars"] < 20000 * 0.7 * 4                      # the summarizer prompt fits its window

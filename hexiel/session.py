@@ -599,8 +599,12 @@ class Session:
         return self.estimate_tokens()
 
     def estimate_tokens(self) -> int:
-        total = llm.est_tokens(self.system_prompt) + 300  # tool schemas
-        for msg in self.messages:
+        return llm.est_tokens(self.system_prompt) + 300 + self._msgs_tokens(self.messages)  # + tool schemas
+
+    @staticmethod
+    def _msgs_tokens(messages: list[dict]) -> int:
+        total = 0
+        for msg in messages:
             total += llm.est_tokens(msg.get("content", "")) + 8
             for call in msg.get("tool_calls", []):
                 total += llm.est_tokens(json.dumps(call.get("arguments", {}))) + 20
@@ -654,6 +658,16 @@ class Session:
             return
         self.messages = messages  # elision stays in history either way
         split = self._turn_split(messages)
+        # One very long agentic turn (100+ tool calls) can fill the window by itself. Then "the last 1-2
+        # turns" is nearly everything: compacting would save ~nothing and re-trigger on the very next
+        # step, over and over (each pass also invalidates the model server's prompt cache). Split inside
+        # the turn instead, keeping only the newest messages.
+        window = self.model_config.context_window
+        in_turn = False
+        if self._msgs_tokens(messages[split:]) > window * 0.45:
+            inner = self._split_by_budget(messages, int(window * 0.3))
+            if inner > split:
+                split, in_turn = inner, True
         if split == 0:
             if not manual:
                 return
@@ -665,7 +679,7 @@ class Session:
         self.compacting = True
         self.on_event("compact_start")
         before = self.last_usage.get("prompt_tokens") or self.estimate_tokens()
-        transcript = self._transcript(head)
+        transcript = self._transcript(head, budget_chars=int(window * 0.6) * 4)
         out_parts = []
         try:
             stream = provider.stream(
@@ -691,8 +705,14 @@ class Session:
             memory_mod.save_auto_facts(self.cwd, memory_mod.parse_durable_facts(summary))
         except Exception:  # noqa: BLE001
             pass
+        request = ""
+        if in_turn:   # the user's message that started this turn is in the summarized part: keep it verbatim
+            asked = next((m for m in reversed(head) if m["role"] == "user"
+                          and not str(m.get("content", "")).startswith("<auto-compaction>")), None)
+            if asked:
+                request = f"\n\nThe user's current request, verbatim:\n{str(asked.get('content', ''))[:4000]}"
         compacted: list[dict] = [{"role": "user", "content":
-                                  f"<auto-compaction>\n\n{summary}\n</auto-compaction>\n\n"
+                                  f"<auto-compaction>\n\n{summary}{request}\n</auto-compaction>\n\n"
                                   + ON_COMPACTION_NOTE}]
         self.messages = compacted + tail
         self.last_usage = {}
@@ -712,12 +732,27 @@ class Session:
             return user_idx[-2]
         return last
 
-    def _transcript(self, head: list[dict]) -> str:
+    def _split_by_budget(self, messages: list[dict], budget: int) -> int:
+        """Index where a tail worth about `budget` tokens begins, starting on an assistant message so a
+        tool result is never separated from the call that produced it. 0 when there is no such point."""
+        used = 0
+        start = len(messages)
+        while start > 0 and used + self._msgs_tokens(messages[start - 1:start]) <= budget:
+            start -= 1
+            used += self._msgs_tokens(messages[start:start + 1])
+        while start < len(messages) and messages[start]["role"] != "assistant":
+            start += 1
+        return start if 0 < start < len(messages) else 0
+
+    def _transcript(self, head: list[dict], budget_chars: int | None = None) -> str:
         lines = ["Below is a conversation transcript. Summarize it per the instructions."]
+        tool_clip = 4000
+        if budget_chars:     # many tool results must still fit in the summarizer's own context window
+            tool_clip = max(300, min(4000, budget_chars // max(1, len(head))))
         for msg in head:
             role = msg["role"]
             if role == "tool":
-                lines.append(f"[tool result] {msg.get('content', '')[:4000]}")
+                lines.append(f"[tool result] {msg.get('content', '')[:tool_clip]}")
             elif msg.get("tool_calls"):
                 for call in msg["tool_calls"]:
                     lines.append(f"[assistant -> {call['name']}] "

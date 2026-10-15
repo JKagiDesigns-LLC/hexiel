@@ -16,6 +16,56 @@ import os
 from collections.abc import Iterator
 
 import httpx
+import httpcore
+import socket
+import threading
+
+
+class _TrackingBackend(httpcore.SyncBackend):
+    """Remembers the sockets it opens so a blocked request can be cut from another thread."""
+
+    def __init__(self, sockets: set, lock: threading.Lock):
+        super().__init__()
+        self._sockets, self._lock = sockets, lock
+
+    def connect_tcp(self, *args, **kwargs):
+        stream = super().connect_tcp(*args, **kwargs)
+        sock = stream.get_extra_info("socket")
+        if sock is not None:
+            with self._lock:
+                self._sockets.add(sock)
+        return stream
+
+
+class AbortableHTTP:
+    """Mixin for providers: `self.client(timeout)` gives an httpx client whose in-flight request can be
+    aborted with `self.abort()` (a read blocked on a silent server — e.g. a long prompt being processed —
+    can't otherwise be interrupted). Closing the socket also tells the model server to stop working."""
+
+    def _tracked(self):
+        if not hasattr(self, "_socks"):
+            self._socks, self._socks_lock = set(), threading.Lock()
+        return self._socks, self._socks_lock
+
+    def client(self, timeout: float) -> httpx.Client:
+        transport = httpx.HTTPTransport()
+        try:
+            socks, lock = self._tracked()
+            transport._pool._network_backend = _TrackingBackend(socks, lock)
+        except AttributeError:        # httpx/httpcore internals changed: still works, just not abortable
+            pass
+        return httpx.Client(timeout=timeout, transport=transport)
+
+    def abort(self) -> None:
+        socks, lock = self._tracked()
+        with lock:
+            live = list(socks)
+            socks.clear()
+        for sock in live:
+            try:
+                sock.shutdown(socket.SHUT_RDWR)      # wakes the thread blocked in recv()
+            except OSError:
+                pass
 
 
 class ProviderError(RuntimeError):
@@ -172,7 +222,7 @@ def _mark_cache_tail(messages: list[dict]) -> list[dict]:
     return messages[:-1] + [{**last, "content": content}]
 
 
-class AnthropicProvider:
+class AnthropicProvider(AbortableHTTP):
     def __init__(self, api_key: str, base_url: str = "https://api.anthropic.com") -> None:
         self.api_key = api_key
         self.base_url = base_url.rstrip("/")
@@ -253,7 +303,7 @@ class AnthropicProvider:
             "content-type": "application/json",
         }
         buf = AssistantBuffer()
-        with httpx.Client(timeout=timeout) as client:
+        with self.client(timeout) as client:
             with client.stream("POST", f"{self.base_url}/v1/messages",
                                json=body, headers=headers) as resp:
                 if resp.status_code >= 400:
@@ -291,7 +341,7 @@ class AnthropicProvider:
         yield ("assistant", buf.finalize())
 
 
-class OpenAICompatProvider:
+class OpenAICompatProvider(AbortableHTTP):
     """Any /chat/completions endpoint: Ollama, vLLM, OpenRouter, OpenAI itself."""
 
     def __init__(self, api_key: str, base_url: str) -> None:
@@ -379,7 +429,7 @@ class OpenAICompatProvider:
         if self.api_key:
             headers["authorization"] = f"Bearer {self.api_key}"
         buf = AssistantBuffer()
-        with httpx.Client(timeout=timeout) as client:
+        with self.client(timeout) as client:
             response = None
             # try include_usage first; servers that reject stream_options get one retry
             for attempt in (1, 2):

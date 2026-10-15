@@ -1,6 +1,7 @@
 """Session state: the agentic loop, token accounting, and auto-compaction."""
 
 import json
+import queue
 import threading
 import time
 import uuid
@@ -316,6 +317,50 @@ class Session:
                 self.on_event("resumed")
                 attempt += 1
 
+    def _interruptible(self, stream, provider):
+        """Yield from a provider stream while staying responsive to stop(): the request runs in a worker
+        thread, so Ctrl+C works even while the model server is silent (reading a long prompt can take
+        minutes). On stop the connection is cut, which also makes the server abandon the request."""
+        items: queue.Queue = queue.Queue()
+        done = object()
+        cancelled = threading.Event()
+
+        def pump():
+            try:
+                for item in stream:
+                    if cancelled.is_set():
+                        break
+                    items.put(item)
+            except BaseException as exc:  # noqa: BLE001 - re-raised in the consuming thread
+                if not cancelled.is_set():
+                    items.put(exc)
+            finally:
+                try:
+                    stream.close()
+                finally:
+                    items.put(done)
+
+        threading.Thread(target=pump, daemon=True, name="hexiel-stream").start()
+        try:
+            while True:
+                try:
+                    item = items.get(timeout=0.2)
+                except queue.Empty:
+                    if self._stop.is_set():
+                        return
+                    continue
+                if item is done:
+                    return
+                if isinstance(item, BaseException):
+                    raise item
+                yield item
+        finally:
+            if self._stop.is_set():
+                cancelled.set()
+                abort = getattr(provider, "abort", None)
+                if abort:
+                    abort()
+
     def _sleep_interruptibly(self, seconds: float) -> bool:
         """Sleep, waking early if the turn is stopped. False when it was stopped."""
         deadline = time.time() + seconds
@@ -362,7 +407,7 @@ class Session:
                                      timeout=self.settings.request_timeout,
                                      echo_reasoning=self.model_config.echo_reasoning,
                                      max_tokens_param=self.model_config.max_tokens_param)
-            for event, *payload in stream:
+            for event, *payload in self._interruptible(stream, provider):
                 if self._stop.is_set():
                     break
                 if event == "text":
@@ -688,7 +733,7 @@ class Session:
                 max_output_tokens=max(self.model_config.max_output_tokens, 8192),
                 extra_body=self.model_config.extra_body,
                 timeout=self.settings.request_timeout)
-            for event, *payload in stream:
+            for event, *payload in self._interruptible(stream, provider):
                 if event == "text":
                     out_parts.append(payload[0])
         except llm.ProviderError as exc:
@@ -699,6 +744,10 @@ class Session:
         except BaseException:
             self.compacting = False
             raise
+        if self._stop.is_set():       # cancelled mid-summary: keep the history as it was, never a partial summary
+            self.compacting = False
+            self.messages = messages
+            return
         summary = "".join(out_parts).strip()
         try:   # durable facts become project memory — no extra model call
             from . import memory as memory_mod

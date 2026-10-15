@@ -103,6 +103,7 @@ def test_stop_during_a_silent_request_returns_quickly_end_to_end():
 
 class ThinkingServer:
     """Streams reasoning tokens forever, like a model in the middle of a long thought."""
+    chunk = b'data: {"choices":[{"index":0,"delta":{"reasoning":"hmm "}}]}\n\n'
 
     def __init__(self):
         self.sock = socket.socket()
@@ -119,7 +120,7 @@ class ThinkingServer:
         conn.sendall(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n")
         try:
             while True:
-                data = b'data: {"choices":[{"index":0,"delta":{"reasoning":"hmm "}}]}\n\n'
+                data = self.chunk
                 conn.sendall(f"{len(data):x}\r\n".encode() + data + b"\r\n")
                 self.sent += 1
                 time.sleep(0.05)
@@ -141,3 +142,23 @@ def test_stop_in_the_middle_of_a_thought_returns_quickly_and_hangs_up():
     assert time.time() - t0 < 4
     assert len(thoughts) > 5                       # it really was mid-thought when stopped
     assert server.hung_up.wait(3)                  # and the connection was cut, so the server stops generating
+
+
+class ToolCallServer(ThinkingServer):
+    """Streams the arguments of one huge tool call (e.g. writing a big file): the client shows nothing
+    while this happens, so there are no text/thinking events to check the stop flag on."""
+    chunk = (b'data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"c1",'
+             b'"function":{"name":"write","arguments":"xxxxxxxxxxxxxxxx"}}]}}]}\n\n')
+
+
+def test_stop_while_a_long_tool_call_is_being_written():
+    server = ToolCallServer()
+    s = make_session()
+    s.settings.request_timeout = 60
+    provider = llm.OpenAICompatProvider("", f"http://127.0.0.1:{server.port}/v1")
+    s.messages.append({"role": "user", "content": "write a big file"})
+    threading.Timer(1.0, s.stop).start()
+    t0 = time.time()
+    s._stream_once(provider, [])
+    assert time.time() - t0 < 4
+    assert server.sent > 5 and server.hung_up.wait(3)

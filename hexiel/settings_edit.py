@@ -39,6 +39,17 @@ FIELDS = [
      "help": "profile to switch to when a limit won't reset soon (e.g. your local model); empty = none"},
     {"key": "settings.subagent_profile", "label": "Subagent model", "kind": "choice",
      "help": "profile for `task` subagents — e.g. a cheaper or local model; empty = current model"},
+    {"key": "settings.planner_profile", "label": "Planner model", "kind": "choice",
+     "help": "/delegate: the strong model that writes the plan (e.g. a cloud model); empty = fallback model, else the current one"},
+    {"key": "settings.executor_profile", "label": "Worker model", "kind": "choice",
+     "help": "/delegate: the model that does each step (e.g. your local model); empty = the current model"},
+    {"key": "settings.auto_delegate", "label": "Big-task check", "kind": "choice",
+     "options": ["off", "ask", "auto"],
+     "help": "size up each request: off, ask before delegating big ones, or delegate them automatically"},
+    {"key": "settings.delegate_approval", "label": "Approve plans", "kind": "bool",
+     "options": [True, False], "help": "show the plan and wait for a yes before the worker model starts"},
+    {"key": "settings.delegate_retries", "label": "Step retries", "kind": "number",
+     "options": [0, 1, 2, 3, 5], "help": "fix attempts per step before it is handed to the planner model"},
     {"key": "settings.auto_commit", "label": "Git auto-commit", "kind": "bool",
      "options": [False, True], "help": "commit the files hexiel changed after each finished turn"},
     {"key": "settings.notify", "label": "Notifications", "kind": "bool",
@@ -81,6 +92,8 @@ def options_for(session, key: str) -> list | None:
     field = FIELD_BY_KEY[key]
     if key == "profile":
         return list(config_mod.load_config().models)
+    if key in ("settings.planner_profile", "settings.executor_profile"):
+        return [""] + list(config_mod.load_config().models)
     if key in ("settings.fallback_profile", "settings.subagent_profile"):
         return [""] + [n for n in config_mod.load_config().models if n != session.model_config.name]
     if key == "model.model":

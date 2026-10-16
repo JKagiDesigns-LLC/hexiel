@@ -54,6 +54,13 @@ request_timeout = 900       # seconds per provider request
 search_backend = "duckduckgo"   # "duckduckgo" (no key) or "searxng"
 searxng_url = ""            # e.g. http://localhost:8888 when search_backend = "searxng"
 
+# Big tasks: a strong model plans, a cheaper (e.g. local) model does the work. See /delegate.
+# planner_profile = "kimi"      # model that writes the plan ("" = fallback_profile, else the current model)
+# executor_profile = ""         # model that does each task ("" = the current model)
+# auto_delegate = "ask"         # "off" | "ask" (offer to delegate big requests) | "auto"
+# delegate_approval = true      # show the plan and wait for a yes before running it
+# delegate_retries = 2          # fix attempts per task before escalating it to the planner model
+
 [models.glm-flash]
 provider = "openai"         # "openai" = any OpenAI-compatible /chat/completions endpoint
 base_url = "http://localhost:11434/v1"
@@ -154,6 +161,11 @@ class Settings:
     auto_commit: bool = False         # git-commit the files hexiel changed after each finished turn
     subagent_profile: str = ""        # model profile for `task` subagents ("" = the current model)
     toolsets: object = "auto"         # optional tool groups: "auto" | "all" | ["data", …]
+    planner_profile: str = ""         # /delegate: model that writes the plan ("" = fallback_profile, else the current model)
+    executor_profile: str = ""        # /delegate: model that does each task ("" = the current model)
+    auto_delegate: str = "off"        # size up each request: "off" | "ask" (offer to delegate big ones) | "auto"
+    delegate_approval: bool = True    # show the plan and wait for a yes before running it
+    delegate_retries: int = 2         # fix attempts per task before escalating it to the planner model
 
 
 @dataclass
@@ -204,6 +216,12 @@ def load_config(model_override: str | None = None) -> Config:
         auto_commit=bool(settings_raw.get("auto_commit", False)),
         subagent_profile=str(settings_raw.get("subagent_profile", "")),
         toolsets=settings_raw.get("toolsets", "auto"),
+        planner_profile=str(settings_raw.get("planner_profile", "")),
+        executor_profile=str(settings_raw.get("executor_profile", "")),
+        auto_delegate=(str(settings_raw.get("auto_delegate", "off")).lower()
+                       if str(settings_raw.get("auto_delegate", "off")).lower() in ("off", "ask", "auto") else "off"),
+        delegate_approval=bool(settings_raw.get("delegate_approval", True)),
+        delegate_retries=max(0, int(settings_raw.get("delegate_retries", 2))),
     )
 
     default_model = model_override or raw.get("default", next(iter(models), "default"))

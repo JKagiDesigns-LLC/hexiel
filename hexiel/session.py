@@ -166,6 +166,15 @@ class Session:
 
     def _turn_body(self, user_text: str) -> None:
         from .tools import attach_images
+        delegate_mode = None                       # /delegate forces it, /solo opts out of the automatic check
+        for prefix, mode in (("/delegate", "force"), ("/solo", "skip")):
+            if user_text == prefix or user_text.startswith(prefix + " "):
+                user_text, delegate_mode = user_text[len(prefix):].strip(), mode
+                break
+        if delegate_mode == "force" and not user_text:
+            self.on_event("note", "usage: /delegate <request>  — or /delegate resume to continue an unfinished plan")
+            self.on_event("turn_end")
+            return
         images, notes = attach_images(user_text, self.cwd)
         entry = {"role": "user", "content": "\n".join(
             [user_text, *notes, *([PLAN_MODE_NOTE] if self.plan_mode else [])])}
@@ -183,6 +192,10 @@ class Session:
         self.messages = [m for m in self.messages if not _is_empty_reply(m)]
         self.messages.append(entry)
         self.save()
+        if delegate_mode != "skip":
+            from . import planner
+            if planner.maybe_delegate(self, user_text, forced=delegate_mode == "force"):
+                return
         provider = llm.make_provider(self.model_config, self.settings)
         tool_defs = [
             {"name": t.name, "description": t.description, "parameters": t.parameters}
@@ -355,7 +368,7 @@ class Session:
                     items.put(exc)
             finally:
                 try:
-                    stream.close()
+                    getattr(stream, "close", lambda: None)()
                 finally:
                     items.put(done)
 

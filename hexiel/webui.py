@@ -106,6 +106,8 @@ class WebState:
         elif event == "rate_limited":
             self.broadcast({"t": "note", "text": f"⏸ rate limited — resuming automatically in "
                                                 f"~{int(payload[0] // 60)}m{int(payload[0] % 60):02d}s"})
+        elif event == "note":
+            self.broadcast({"t": "note", "text": str(payload[0])})
         elif event == "model_unreachable":
             self.broadcast({"t": "note", "text": f"⚠ model server not responding — retrying in {int(payload[0])}s "
                                                 f"({payload[1]})"})
@@ -146,8 +148,11 @@ class WebState:
         request_id = time.time_ns() % 10 ** 9
         holder = {"event": threading.Event(), "verdict": "no"}
         self.approvals[request_id] = holder
-        self.broadcast({"t": "approval", "id": request_id, "tool": tool_name,
-                        "args": json.dumps(args, indent=2)[:1400]})
+        titles = {"delegate": "plan this with the strong model?", "delegate-plan": "run this plan?"}
+        shown = (str(args["text"])[:2400] if tool_name in titles and isinstance(args, dict) and "text" in args
+                 else json.dumps(args, indent=2)[:1400])
+        self.broadcast({"t": "approval", "id": request_id, "tool": titles.get(tool_name, tool_name),
+                        "args": shown})
         holder["event"].wait(timeout=900)
         self.approvals.pop(request_id, None)
         verdict = holder["verdict"] if holder["verdict"] in ("yes", "always", "no") else "no"
@@ -299,6 +304,8 @@ def make_app(session: Session) -> web.Application:
         if cmd == "undo":
             restored = session.undo()
             return ("↶ " + "\n".join(restored)) if restored else "nothing to undo"
+        if cmd in ("delegate", "solo"):
+            return "prompt:" + text           # the session parses the prefix
         if cmd == "plan":
             session.plan_mode = not session.plan_mode
             return "📝 plan mode ON — investigate and plan, change nothing" if session.plan_mode else "plan mode OFF"

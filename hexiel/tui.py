@@ -51,6 +51,8 @@ class ApproveScreen(ModalScreen):
     BINDINGS = [("y", "yes", "Yes"), ("n", "no", "No"), ("a", "always", "Always"),
                 ("escape", "no", "No")]
 
+    TITLES = {"delegate": "Plan this with the strong model?", "delegate-plan": "Run this plan?"}
+
     def __init__(self, tool_name: str, args_preview: str, always_rule: str = "") -> None:
         super().__init__()
         self._tool_name = tool_name
@@ -61,7 +63,7 @@ class ApproveScreen(ModalScreen):
 
     def compose(self) -> ComposeResult:
         with Vertical(id="approve-box"):
-            yield Label(f"[b]Allow {self._tool_name}?[/b]")
+            yield Label(f"[b]{self.TITLES.get(self._tool_name) or f'Allow {self._tool_name}?'}[/b]")
             yield Static(self._args_preview, id="approve-args")
             with Horizontal(id="approve-buttons"):
                 yield Button("Yes  \\[y]", variant="primary", id="btn-yes")
@@ -1029,6 +1031,8 @@ class HexielTUI(App):
             return text
         cmd, _, arg = text[1:].partition(" ")
         arg = arg.strip()
+        if cmd in ("delegate", "solo"):       # handled by the session itself (it parses the prefix)
+            return text
         handler = {
             "help": self.cmd_help, "clear": self.cmd_clear, "compact": self.cmd_compact,
             "config": self.cmd_config, "update": self.cmd_update, "mcp": self.cmd_mcp,
@@ -1349,6 +1353,9 @@ class HexielTUI(App):
             return
         if event == "empty_retry":
             self.add_note("the model returned an empty reply — nudging it to continue")
+            return
+        if event == "note":
+            self.add_note(str(payload[0]).replace("[", "\\["))
             return
         if event == "subagent":
             self.activity.phase("tool", payload[1] if len(payload) > 1 else "task")
@@ -1702,8 +1709,13 @@ class HexielTUI(App):
             self.activity.phase("approval")
             self.notify_user("hexiel needs your approval", f"allow {tool_name}?")
             from .permissions import always_rule
-            preview = json.dumps(args, indent=2)[:1400]
-            self.push_screen(ApproveScreen(tool_name, preview, always_rule(tool_name, args or {})),
+            if tool_name in ApproveScreen.TITLES and isinstance(args, dict) and "text" in args:
+                preview = str(args["text"])[:1800].replace("[", "\\[")
+                rule = "for this session"
+            else:
+                preview = json.dumps(args, indent=2)[:1400]
+                rule = always_rule(tool_name, args or {})
+            self.push_screen(ApproveScreen(tool_name, preview, rule),
                              callback=lambda verdict: _collect(verdict))
 
         def _collect(verdict) -> None:

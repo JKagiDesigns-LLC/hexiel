@@ -77,6 +77,8 @@ BUILTIN = [
     ("compact", "", "summarize history now to free up context"),
     ("auto", "", "toggle auto-approve for edits and commands"),
     ("plan", "", "toggle plan mode: investigate and plan, change nothing"),
+    ("delegate", "<request>|resume", "a strong model plans it, your worker model does each step (see /config for the models)"),
+    ("solo", "<request>", "run this request normally, skipping the automatic big-task check"),
     ("undo", "", "revert the file changes hexiel made in its last turn"),
     ("jobs", "", "scheduled jobs (ask hexiel to schedule something to create one)"),
     ("inbox", "", "results from scheduled jobs"),

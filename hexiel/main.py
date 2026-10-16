@@ -129,6 +129,10 @@ def headless_loop(session: Session, prompts: list[str]) -> None:
             sys.stderr.write(f"\n[model server not responding — retrying in {int(payload[0])}s: {payload[1]}]\n")
             sys.stderr.flush()
             return
+        if event == "note":
+            sys.stderr.write(f"\n{payload[0]}\n")
+            sys.stderr.flush()
+            return
         if event == "fallback":
             sys.stderr.write(f"\n[{payload[0]} limited — continuing on fallback {payload[1]}]\n")
             return

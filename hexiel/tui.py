@@ -43,6 +43,9 @@ class TurnThread(threading.Thread):
         finally:
             session.save()
             app.call_from_thread(self.app_ref.activity.stop)
+            leftover = session.take_pending()      # typed after the last step: answer it as a follow-up turn
+            if leftover:
+                app.call_from_thread(self.app_ref.start_followup, "\n\n".join(leftover))
 
 
 class ApproveScreen(ModalScreen):
@@ -470,7 +473,7 @@ class StatusLine(Static):
             threshold = self._session.settings.compact_threshold
             pct = 100 * tokens_now // max(window, 1)
             compact_at = int(100 * threshold)
-            model = self._session.model_config.model
+            model = self._session.active_model or self._session.model_config.model
             from . import todo as todo_mod
             todo_line = todo_mod.summary_line(self._session.cwd)
             approve = ("[yellow]auto-approve[/]", "auto-approve") if self._session.auto_approve \
@@ -1316,9 +1319,17 @@ class HexielTUI(App):
 
     # ---------------------------------------------------------------- agent plumbing
 
+    def start_followup(self, text: str) -> None:
+        """Run messages that were queued while the previous turn was ending (already shown in the chat)."""
+        if self._thread and self._thread.is_alive():
+            self.set_timer(0.2, lambda: self.start_followup(text))
+            return
+        self._start_turn(text)
+
     def _start_turn(self, prompt: str) -> None:
         if self._thread and self._thread.is_alive():
-            self.add_note("hexiel is still working — Ctrl+C to cancel")
+            self.session.queue_message(prompt)
+            self.add_note("↳ sent — hexiel will read this before its next step (Ctrl+C stops the current work)")
             return
         self._thread = TurnThread(self, prompt)
         self.activity.start()
@@ -1360,6 +1371,9 @@ class HexielTUI(App):
         if event == "empty_retry":
             self.add_note("the model returned an empty reply — nudging it to continue")
             return
+        if event == "model_active":
+            self.status.refresh_text()
+            return
         if event == "note":
             self.finalize_stream(placeholder=False)       # text after the note starts a new block below it
             self.add_note(str(payload[0]).replace("[", "\\["))
@@ -1387,6 +1401,7 @@ class HexielTUI(App):
             self.add_note("▶ limit reset — resuming")
             return
         if event == "fallback":
+            self._refresh_status()
             old, new, reason = payload[0], payload[1], payload[2] if len(payload) > 2 else ""
             self.add_note(f"↪ {old} is limited and won't reset soon — continuing on fallback model "
                           f"[b]{new}[/b] for this session")

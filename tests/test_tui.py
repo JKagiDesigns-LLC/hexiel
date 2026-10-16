@@ -203,6 +203,9 @@ def test_stopped_turn_does_not_crash_the_agent_thread():
         def save(self):
             pass
 
+        def take_pending(self):
+            return []
+
     app = SimpleNamespace(call_from_thread=lambda fn, *a: fn(*a))
     app_ref = SimpleNamespace(session=FakeSession(), app=app,
                               handle_event=lambda event, *p, **kw: seen.append((event, p, kw)),
@@ -228,3 +231,19 @@ def test_note_ends_the_streaming_block_so_text_after_it_appears_below():
     seen = run(go())
     assert [kind for kind, _ in seen] == ["Markdown", "Static", "Markdown"]
     assert seen[0][1] == "step one report" and seen[2][1] == "step two report"
+
+
+def test_status_line_shows_the_model_that_is_working_now(tmp_path):
+    async def go():
+        app = make_app(tmp_path)
+        async with app.run_test(size=(140, 30)) as pilot:
+            app.session.on_event = lambda event, *p, **k: app.handle_event(event, *p, **k)   # as TurnThread wires it
+            app.session.set_active_model(app.session.model_config, "planning")
+            await pilot.pause()
+            during = str(app.status.content)
+            app.session.active_model = ""
+            app.handle_event("model_active")
+            await pilot.pause()
+            return during, str(app.status.content)
+    during, after = run(go())
+    assert "m · planning" in during and "planning" not in after

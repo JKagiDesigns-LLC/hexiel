@@ -47,7 +47,7 @@ def status_state(session: Session) -> dict:
     window = session.model_config.context_window
     return {
         "model": session.model_config.name,
-        "model_id": session.model_config.model,
+        "model_id": getattr(session, "active_model", "") or session.model_config.model,
         "context": {"tokens": tokens_now, "window": window,
                     "pct": min(100, 100 * tokens_now // max(window, 1)),
                     "compact_at_pct": int(100 * session.settings.compact_threshold)},
@@ -106,12 +106,15 @@ class WebState:
         elif event == "rate_limited":
             self.broadcast({"t": "note", "text": f"⏸ rate limited — resuming automatically in "
                                                 f"~{int(payload[0] // 60)}m{int(payload[0] % 60):02d}s"})
+        elif event == "model_active":
+            self.broadcast({"t": "status", "status": status_state(self.session)})
         elif event == "note":
             self.broadcast({"t": "note", "text": str(payload[0])})
         elif event == "model_unreachable":
             self.broadcast({"t": "note", "text": f"⚠ model server not responding — retrying in {int(payload[0])}s "
                                                 f"({payload[1]})"})
         elif event == "fallback":
+            self.broadcast({"t": "status", "status": status_state(self.session)})
             self.broadcast({"t": "note", "text": f"↪ {payload[0]} is limited — continuing on {payload[1]}"})
         elif event == "turn_end":
             error = payload[0].get("error") if payload and isinstance(payload[0], dict) else None
@@ -370,20 +373,27 @@ def make_app(session: Session) -> web.Application:
                 if reply:
                     text = reply[len("prompt:"):]
             with state.lock:
-                if not text or state.busy:
-                    if text:
-                        state.broadcast({"t": "note",
-                                         "text": "hexiel is still working — stop it first"})
+                if not text:
+                    return
+                if state.busy:               # typed mid-turn: the model reads it before its next step
+                    session.queue_message(text)
+                    state.broadcast({"t": "note", "text": "↳ sent — hexiel will read this before its next step "
+                                                          "(Stop ends the current work)"})
                     return
                 state.busy = True
-                def run():
-                    try:
-                        session.run_turn(text)
-                    finally:
-                        with state.lock:
-                            state.busy = False
-                        state.broadcast({"t": "status", "status": status_state(session)})
-                threading.Thread(target=run, daemon=True).start()
+                def run(first):
+                    nxt = first
+                    while nxt:
+                        try:
+                            session.run_turn(nxt)
+                        finally:
+                            left = session.take_pending()      # arrived as the turn was ending
+                            nxt = "\n\n".join(left) if left else None
+                            if not nxt:
+                                with state.lock:
+                                    state.busy = False
+                            state.broadcast({"t": "status", "status": status_state(session)})
+                threading.Thread(target=run, args=(text,), daemon=True).start()
         elif data.get("t") == "stop":
             session.stop()
         elif data.get("t") == "approve":

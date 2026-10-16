@@ -270,7 +270,8 @@ def test_cancel_stops_the_plan_between_steps_and_keeps_progress(env):
     assert (tmp / "a.txt").exists() and not (tmp / "c.txt").exists()
     plan = planner.latest_unfinished(str(tmp))
     assert plan and [t.status for t in plan.tasks][0] == "done" and plan.tasks[2].status == "pending"
-    assert events[-1][0] == "turn_end" and events[-1][-1] == {"aborted": True}
+    last = [e for e in events if e[0] != "model_active"][-1]                 # (the status line is reset after it)
+    assert last[0] == "turn_end" and last[-1] == {"aborted": True}
 
 
 # ---------------------------------------------------------------- automatic check + prefixes
@@ -346,3 +347,46 @@ def test_summary_is_a_markdown_list_with_short_details():
     bullets = [ln for ln in lines if ln.startswith("- ")]
     assert bullets[0].startswith("- ✓ 1. first — Created") and bullets[0].endswith("…") and len(bullets[0]) < 140
     assert bullets[1].startswith("- ✗ 2. second") and "Files changed: `a.py`" in text
+
+
+# ---------------------------------------------------------------- which model is working right now
+
+def _track_models(s):
+    shown = []
+    original = s.on_event
+
+    def watch(event, *p, **k):
+        original(event, *p, **k)
+        if event == "model_active":
+            shown.append(s.active_model)
+    s.on_event = watch
+    return shown
+
+
+def test_the_active_model_follows_the_role_that_is_working(env):
+    s, providers, events, _, tmp = env
+    shown = _track_models(s)
+    s.run_turn("/delegate make two files")
+    seq = [x for i, x in enumerate(shown) if i == 0 or x != shown[i - 1]]
+    assert seq == ["small · gathering context", "big · planning", "small · step 1/3", "small · step 2/3",
+                   "small · step 3/3", ""]                      # worker -> planner -> worker per step -> back to normal
+    assert s.active_model == ""
+
+
+def test_the_active_model_shows_the_planner_when_a_step_is_escalated(env):
+    s, providers, events, _, tmp = env
+    providers["local"].never = {"b.txt"}
+    providers["cloud"] = Planner(plan_json("a.txt", "b.txt"))
+    shown = _track_models(s)
+    s.run_turn("/delegate make two files")
+    assert "big · step 2/2, escalated" in shown and shown[-1] == ""
+
+
+def test_status_displays_use_the_active_model(env):
+    from hexiel.webui import status_state
+    s, *_ = env
+    assert status_state(s)["model_id"] == "small"
+    s.set_active_model(PLANNER, "planning")
+    assert status_state(s)["model_id"] == "big · planning"
+    s.active_model = ""
+    assert status_state(s)["model_id"] == "small"

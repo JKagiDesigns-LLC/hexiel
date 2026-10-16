@@ -64,6 +64,9 @@ ACCURACY RULES — the summary replaces your memory, so a wrong line in it becom
   ideas, merges, deployments or clean-ups the user did not ask for.
 """
 
+STEERING_NOTE = ("[The user sent this message while you were working. It takes priority over what you were "
+                 "doing: read it now, acknowledge it, and change course if it says to.]\n\n")
+
 ON_COMPACTION_NOTE = (
     "This session was auto-compacted: everything above this point is a summary of the "
     "earlier conversation. The user's instructions in it still apply, but the summary can be "
@@ -140,7 +143,10 @@ class Session:
         self.total_completion_tokens = 0
         self.auto_approve = settings.auto_approve
         self.compacting = False
+        self.active_model = ""     # "model · role" while a /delegate role (planner/worker) is working; "" otherwise
         self._usage_msgs = 0       # len(messages) when the request behind last_usage was sent
+        self._pending: list[str] = []          # messages the user typed while a turn was running
+        self._pending_lock = threading.Lock()
         self._stop = threading.Event()
         self._tool_ctx = None  # bind with bind_tool_ctx() before run_turn
 
@@ -148,6 +154,40 @@ class Session:
 
     def stop(self) -> None:
         self._stop.set()
+
+    def set_active_model(self, mc, role: str = "") -> None:
+        """Tell the UIs which model is doing the work right now (the status line shows it)."""
+        self.active_model = f"{mc.model} · {role}" if role else ""
+        self.on_event("model_active")
+
+    # -- messages typed while a turn is running ("steering")
+
+    def queue_message(self, text: str) -> None:
+        """The user typed something while hexiel was busy. It is read by the model before its next step
+        (or answered as a follow-up turn if the turn ends first) — never dropped."""
+        text = text.strip()
+        if text:
+            with self._pending_lock:
+                self._pending.append(text)
+
+    def has_pending(self) -> bool:
+        with self._pending_lock:
+            return bool(self._pending)
+
+    def take_pending(self) -> list[str]:
+        with self._pending_lock:
+            items, self._pending = self._pending, []
+        return items
+
+    def _deliver_pending(self) -> None:
+        items = self.take_pending()
+        if not items:
+            return
+        for text in items:
+            self.messages.append({"role": "user", "content": STEERING_NOTE + text})
+        self.on_event("note", "↳ hexiel read your new message" if len(items) == 1
+                      else f"↳ hexiel read your {len(items)} new messages")
+        self.save()
 
     def run_turn(self, user_text: str) -> None:
         self._stop.clear()
@@ -208,6 +248,7 @@ class Session:
                 if self._stop.is_set():
                     self.on_event("turn_end", aborted=True)
                     return
+                self._deliver_pending()
                 if self.compaction_needed() and not self.compacting:
                     self.compact(provider)
                 tool_defs = [{"name": t.name, "description": t.description, "parameters": t.parameters}
@@ -238,6 +279,8 @@ class Session:
                 self.save()
                 calls = assistant.get("tool_calls") or []
                 if not calls:
+                    if self.has_pending():        # the user spoke while this reply was being written: answer them too
+                        continue
                     turn["ok"] = True
                     self.on_event("turn_end")
                     return

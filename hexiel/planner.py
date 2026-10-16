@@ -354,6 +354,7 @@ def _link_stop(session, helper):
 
 def build_brief(session, request: str) -> str:
     mc = worker_model(session)
+    session.set_active_model(mc, "gathering context")
     tools = [t for t in session.tools if t.readonly and t.name != "task"]
     helper = make_helper(session, mc, BRIEF_SYSTEM, tools)
     calls = {"n": 0}
@@ -393,6 +394,7 @@ def make_plan(session, request: str, brief: str) -> Plan:
     last_error = ""
     for mc in ([pmc] if pmc.name == wmc.name else [pmc, wmc]):
         attempt_user = user
+        session.set_active_model(mc, "planning")
         for attempt in (1, 2):
             try:
                 text, usage = complete(session, mc, PLANNER_SYSTEM, attempt_user, max_tokens=4096)
@@ -489,6 +491,8 @@ def run_check(session, task: Task) -> tuple[bool, str]:
 def _run_task(session, plan: Plan, task: Task, helper_tools: list, system: str) -> bool:
     """Run one task in a fresh helper. True when its check passes."""
     wmc, pmc = worker_model(session), planner_model(session)
+    where = f"step {plan.tasks.index(task) + 1}/{len(plan.tasks)}"
+    session.set_active_model(wmc, where)
     helper = make_helper(session, wmc, system, helper_tools)
     errors: list = []
     quiet = {"turn_end", "turn_start"}
@@ -533,6 +537,7 @@ def _run_task(session, plan: Plan, task: Task, helper_tools: list, system: str) 
                 escalated = True
                 say(session, f"⬆ task {task.id} is stuck on {wmc.name} — handing it to {pmc.name}")
                 helper.model_config = pmc
+                session.set_active_model(pmc, f"{where}, escalated")
             else:
                 task.report = f"failed: {str(failure)[:300]}"
                 return False
@@ -550,6 +555,9 @@ def execute(session, plan: Plan, resumed: bool = False) -> bool:
         if task.status == "done":
             continue
         if session._stop.is_set():
+            break
+        if session.has_pending():        # you said something: stop here so it gets read, resume afterwards
+            say(session, "⏸ pausing the plan because you sent a message — /delegate resume continues it")
             break
         task.status = "running"
         n = plan.tasks.index(task) + 1
@@ -654,7 +662,11 @@ def maybe_delegate(session, request: str, *, forced: bool = False) -> bool:
     whole turn (and ended it); False = carry on as a normal turn."""
     st = session.settings
     if request.strip().lower() == "resume" and forced:
-        return resume(session)
+        try:
+            return resume(session)
+        finally:
+            session.active_model = ""
+            session.on_event("model_active")
     if not forced:
         if st.auto_delegate == "off" or session.plan_mode:
             return False
@@ -671,4 +683,8 @@ def maybe_delegate(session, request: str, *, forced: bool = False) -> bool:
                 st.auto_delegate = "auto"                # for this session only
             elif verdict != "yes":
                 return False
-    return _run_whole(session, request)
+    try:
+        return _run_whole(session, request)
+    finally:
+        session.active_model = ""                                # back to showing the session's own model
+        session.on_event("model_active")

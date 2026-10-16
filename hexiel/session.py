@@ -633,6 +633,8 @@ class Session:
 
     def bind_tool_ctx(self, tool_ctx) -> None:
         self._tool_ctx = tool_ctx
+        if tool_ctx.stop_event is None:       # lets Ctrl+C kill a command that is running (first binder wins)
+            tool_ctx.stop_event = self._stop
 
     # ---------------------------------------------------------------- token accounting
 

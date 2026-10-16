@@ -9,6 +9,7 @@ import shutil
 import struct
 import subprocess
 import sys
+import time
 from dataclasses import dataclass, field
 from html.parser import HTMLParser
 from pathlib import Path
@@ -82,6 +83,55 @@ def _clean(text: str) -> str:
     return _ANSI.sub("", text)
 
 
+class ToolCancelled(Exception):
+    """The user cancelled the turn while a command was running; the command (and its children) was killed."""
+
+    def __init__(self, stdout: str = "", stderr: str = ""):
+        super().__init__("cancelled")
+        self.stdout, self.stderr = stdout, stderr
+
+
+def _kill_tree(proc: subprocess.Popen) -> None:
+    try:
+        if os.name == "nt":
+            proc.kill()
+        else:
+            os.killpg(proc.pid, 9)       # the shell and everything it started (sleep, docker exec, ...)
+    except (ProcessLookupError, PermissionError, OSError):
+        proc.kill()
+
+
+def run_cancellable(argv, *, cwd=None, timeout=None, stop=None, input=None) -> subprocess.CompletedProcess:
+    """subprocess.run(capture_output, text) that notices `stop` (a threading.Event) within ~0.25 s and kills
+    the whole process group instead of blocking until the command finishes. Raises ToolCancelled on stop and
+    subprocess.TimeoutExpired on timeout (both after killing the command)."""
+    proc = subprocess.Popen(argv, cwd=cwd, stdin=subprocess.PIPE if input is not None else None,
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                            start_new_session=(os.name != "nt"))
+    deadline = time.time() + timeout if timeout else None
+    pending = input
+    while True:
+        try:
+            out, err = proc.communicate(input=pending, timeout=0.25)
+            return subprocess.CompletedProcess(argv, proc.returncode, out, err)
+        except subprocess.TimeoutExpired:
+            pending = None              # communicate() may only be given input on its first call
+        if stop is not None and stop.is_set():
+            _kill_tree(proc)
+            out, err = proc.communicate()
+            raise ToolCancelled(out or "", err or "")
+        if deadline and time.time() > deadline:
+            _kill_tree(proc)
+            out, err = proc.communicate()
+            raise subprocess.TimeoutExpired(argv, timeout, output=out, stderr=err)
+
+
+def _cancelled_result(exc: ToolCancelled) -> ToolResult:
+    tail = head_tail(_clean((exc.stdout or "").strip()), 2000, 1000) if exc.stdout else ""
+    return text_result("error: cancelled by the user — the command was killed before it finished"
+                       + (f"\npartial output:\n{tail}" if tail else ""), True)
+
+
 def _run_shell(args: dict, ctx: ToolContext, argv: list[str], shell_label: str) -> ToolResult:
     """Shared shell runner (bash / powershell): same timeout, head+tail capping,
     and error shape for every platform."""
@@ -90,8 +140,9 @@ def _run_shell(args: dict, ctx: ToolContext, argv: list[str], shell_label: str) 
         return text_result("error: command is required", True)
     timeout = float(args.get("timeout") or 120)
     try:
-        proc = subprocess.run(argv, cwd=ctx.cwd,
-                              capture_output=True, text=True, timeout=timeout)
+        proc = run_cancellable(argv, cwd=ctx.cwd, timeout=timeout, stop=ctx.stop_event)
+    except ToolCancelled as exc:
+        return _cancelled_result(exc)
     except subprocess.TimeoutExpired:
         return text_result(f"error: command timed out after {timeout}s", True)
     except FileNotFoundError:
@@ -730,8 +781,10 @@ def _test(args: dict, ctx: ToolContext) -> ToolResult:
         labels = ", ".join(r.label for r in ctx.chain.test_runners)
         return text_result(f"error: unknown runner '{label}' (detected: {labels})", True)
     try:
-        proc = subprocess.run(runner.command, cwd=ctx.cwd, capture_output=True, text=True,
-                              timeout=float(args.get("timeout") or 900))
+        proc = run_cancellable(runner.command, cwd=ctx.cwd, timeout=float(args.get("timeout") or 900),
+                               stop=ctx.stop_event)
+    except ToolCancelled as exc:
+        return _cancelled_result(exc)
     except subprocess.TimeoutExpired:
         return text_result(f"error: {runner.label} timed out", True)
     combined = (proc.stdout + "\n" + proc.stderr).strip()
@@ -809,10 +862,11 @@ def _container_run(args: dict, ctx: ToolContext) -> ToolResult:
             "error: action must be list|run|exec|logs|build|compose|stop|rm|images", True)
 
     try:
-        proc = subprocess.run(cmd, cwd=ctx.cwd, capture_output=True, text=True,
-                              input=args.get("stdin") if action == "exec" and args.get("stdin") is not None
-                              else None,
-                              timeout=float(args.get("timeout") or 120))
+        proc = run_cancellable(cmd, cwd=ctx.cwd, timeout=float(args.get("timeout") or 120), stop=ctx.stop_event,
+                               input=args.get("stdin") if action == "exec" and args.get("stdin") is not None
+                               else None)
+    except ToolCancelled as exc:
+        return _cancelled_result(exc)
     except subprocess.TimeoutExpired:
         return text_result(f"error: container command timed out: {shlex.join(cmd)}", True)
     out = proc.stdout + ("\n" + proc.stderr if proc.stderr.strip() else "")

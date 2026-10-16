@@ -162,3 +162,59 @@ def test_stop_while_a_long_tool_call_is_being_written():
     s._stream_once(provider, [])
     assert time.time() - t0 < 4
     assert server.sent > 5 and server.hung_up.wait(3)
+
+
+# ---------------------------------------------------------------- cancelling a running command
+
+def _ctx(tmp_path, stop):
+    from hexiel.tools import ToolContext
+    from hexiel.tooling import Toolchain
+    return ToolContext(cwd=str(tmp_path), chain=Toolchain(), stop_event=stop)
+
+
+def _alive(marker: str) -> bool:
+    import subprocess
+    return subprocess.run(["pgrep", "-f", marker], capture_output=True).returncode == 0
+
+
+def test_cancel_kills_a_long_running_bash_command_and_its_children(tmp_path):
+    from hexiel.tools import _run_bash
+    stop = threading.Event()
+    marker = "sleep 31337"                      # a child process we can look for afterwards
+    threading.Timer(0.6, stop.set).start()
+    t0 = time.time()
+    out = _run_bash({"command": f"{marker} && echo ALL-DONE-MARKER", "timeout": 120}, _ctx(tmp_path, stop))
+    assert time.time() - t0 < 3
+    assert out.is_error and "cancelled by the user" in out.text and "ALL-DONE-MARKER" not in out.text
+    time.sleep(0.3)
+    assert not _alive(marker)                   # the sleep itself was killed, not just the shell
+
+
+def test_cancel_keeps_the_output_produced_so_far(tmp_path):
+    from hexiel.tools import _run_bash
+    stop = threading.Event()
+    threading.Timer(0.8, stop.set).start()
+    out = _run_bash({"command": "echo partial-result; sleep 30"}, _ctx(tmp_path, stop))
+    assert "partial-result" in out.text and "cancelled" in out.text
+
+
+def test_timeout_also_kills_children(tmp_path):
+    from hexiel.tools import _run_bash
+    t0 = time.time()
+    out = _run_bash({"command": "sleep 31338 && echo no", "timeout": 1}, _ctx(tmp_path, threading.Event()))
+    assert "timed out" in out.text and time.time() - t0 < 4
+    time.sleep(0.3)
+    assert not _alive("sleep 31338")
+
+
+def test_commands_without_cancel_still_work_normally(tmp_path):
+    from hexiel.tools import _run_bash
+    ok = _run_bash({"command": "echo hi; echo oops >&2; exit 3"}, _ctx(tmp_path, threading.Event()))
+    assert "hi" in ok.text and "oops" in ok.text and "exit code 3" in ok.text and ok.is_error
+
+
+def test_session_wires_its_stop_flag_into_the_tool_context(tmp_path):
+    s = make_session()
+    ctx = _ctx(tmp_path, None)
+    s.bind_tool_ctx(ctx)
+    assert ctx.stop_event is s._stop

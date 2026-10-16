@@ -69,9 +69,9 @@ class ApproveScreen(ModalScreen):
             yield Label(f"[b]{self.TITLES.get(self._tool_name) or f'Allow {self._tool_name}?'}[/b]")
             if self._tool_name in self.TITLES:       # a whole plan: let it scroll instead of clipping it
                 with VerticalScroll(id="approve-scroll"):
-                    yield Static(self._args_preview, id="approve-args")
+                    yield Static(self._args_preview, id="approve-args", markup=False)
             else:
-                yield Static(self._args_preview, id="approve-args")
+                yield Static(self._args_preview, id="approve-args", markup=False)
             with Horizontal(id="approve-buttons"):
                 yield Button("Yes  \\[y]", variant="primary", id="btn-yes")
                 yield Button(f"Always allow {self._always_rule.replace('[', chr(92) + '[')}  \\[a]"
@@ -1442,7 +1442,7 @@ class HexielTUI(App):
             self.finalize_stream()
             error = payload[0].get("error") if payload and isinstance(payload[0], dict) else None
             if error:
-                chat.mount(Static(f"[red]provider error:[/red] {error}", classes="note"))
+                chat.mount(Static(f"[red]provider error:[/red] {_literal(error)}", classes="note"))
         elif event == "tool_call":
             # seal this step's text so the next step's reply renders *below* the
             # tool calls — chronological order instead of one growing blob on top
@@ -1478,7 +1478,7 @@ class HexielTUI(App):
         elif event == "usage":
             self._refresh_status()
         elif event == "ship_done":
-            chat.mount(Static(f"[green]{payload[0]}[/green]", classes="note"))
+            chat.mount(Static(f"[green]{_literal(payload[0])}[/green]", classes="note"))
         chat.scroll_end(animate=False)
 
     def finalize_stream(self, placeholder: bool = True) -> None:
@@ -1499,7 +1499,7 @@ class HexielTUI(App):
 
     def add_note(self, text: str) -> None:
         chat = self.query_one("#chat", VerticalScroll)
-        chat.mount(Static(text, classes="note"))
+        chat.mount(Static(safe_markup(text), classes="note"))
         chat.scroll_end(animate=False)
 
     def _tick(self) -> None:
@@ -1732,7 +1732,7 @@ class HexielTUI(App):
             self.notify_user("hexiel needs your approval", f"allow {tool_name}?")
             from .permissions import always_rule
             if tool_name in ApproveScreen.TITLES and isinstance(args, dict) and "text" in args:
-                preview = str(args["text"])[:1800].replace("[", "\\[")
+                preview = str(args["text"])[:1800]
                 rule = "for this session"
             else:
                 preview = json.dumps(args, indent=2)[:1400]
@@ -1761,6 +1761,22 @@ class HexielTUI(App):
 
     def action_clear_chat(self) -> None:
         self.cmd_clear("")
+
+
+def _literal(text) -> str:
+    """Text from a model, a tool or a server, shown as-is (square brackets are not formatting)."""
+    return str(text).replace("[", "\\[")
+
+
+def safe_markup(text: str) -> str:
+    """Notes may carry simple formatting like [b]…[/b]; if the text isn't valid markup (a traceback, JSON, a
+    shell snippet full of [brackets]) show it literally instead of letting the renderer crash the whole UI."""
+    try:
+        from textual.content import Content
+        Content.from_markup(text)
+        return text
+    except Exception:  # noqa: BLE001 - any parse failure means "treat it as plain text"
+        return _literal(text)
 
 
 def call_short(call: dict) -> str:

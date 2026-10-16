@@ -247,3 +247,59 @@ def test_status_line_shows_the_model_that_is_working_now(tmp_path):
             return during, str(app.status.content)
     during, after = run(go())
     assert "m · planning" in during and "planning" not in after
+
+
+# ---------------------------------------------------------------- square brackets in text must never crash the UI
+
+NASTY = ('python3 -c "import json; streams = [s for s in data.get(\'streams\', []) if s.get(\'codec_type\') == \'video\']; '
+         'cmd = [\'ffprobe\', \'-of\', \'json\', str(f)]; x = d[0]" [/b] [bold')
+
+
+def test_approval_dialog_shows_code_with_square_brackets_literally(tmp_path):
+    """Regression: approving a command containing Python like ['ffprobe', '-of', ...] raised MarkupError and
+    took the whole terminal UI down."""
+    import json
+    from hexiel.tui import ApproveScreen
+
+    async def go():
+        app = make_app(tmp_path)
+        async with app.run_test(size=(110, 40)) as pilot:
+            app.push_screen(ApproveScreen("bash", json.dumps({"command": NASTY}, indent=2), "Bash(python3:*)"))
+            await pilot.pause(0.4)
+            text = str(app.screen.query_one("#approve-args").content)
+            app.screen.action_no()
+            await pilot.pause(0.2)
+            return text
+    shown = run(go())
+    assert "ffprobe" in shown and "streams = [s for s in" in shown and "[/b]" in shown
+
+
+def test_plan_approval_text_with_brackets_is_literal(tmp_path):
+    from hexiel.tui import ApproveScreen
+
+    async def go():
+        app = make_app(tmp_path)
+        async with app.run_test(size=(110, 40)) as pilot:
+            app.push_screen(ApproveScreen("delegate-plan", "1. fix [x]\n   check: grep -q '[a-z]' f", "for this session"))
+            await pilot.pause(0.4)
+            return str(app.screen.query_one("#approve-args").content)
+    assert "fix [x]" in run(go()) and "\\[" not in run(go())
+
+
+def test_notes_and_errors_with_brackets_do_not_crash(tmp_path):
+    async def go():
+        app = make_app(tmp_path)
+        async with app.run_test(size=(110, 40)) as pilot:
+            app.add_note(NASTY)                                   # not valid markup: shown literally
+            app.add_note("[b]bold[/b] still works")               # valid markup stays formatted
+            app.handle_event("turn_end", {"error": "provider said: " + NASTY})
+            app.handle_event("ship_done", "merged " + NASTY)
+            await pilot.pause(0.5)
+            return len(list(app.query_one("#chat").children))
+    assert run(go()) >= 4                                         # mounted and rendered without raising
+
+
+def test_safe_markup_keeps_valid_markup_and_escapes_the_rest():
+    from hexiel.tui import safe_markup
+    assert safe_markup("[b]ok[/b] and [green]fine[/green]") == "[b]ok[/b] and [green]fine[/green]"
+    assert safe_markup(NASTY).startswith("python3 -c") and "\\[s for s" in safe_markup(NASTY)

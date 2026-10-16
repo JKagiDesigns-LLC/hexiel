@@ -1,5 +1,6 @@
 """Configuration loading and defaults for hexiel."""
 
+import dataclasses
 import os
 import tomllib
 from dataclasses import dataclass, field
@@ -199,11 +200,38 @@ def load_config(model_override: str | None = None) -> Config:
             raise SystemExit(f"bad config {CONFIG_FILE}: {exc}")
 
     models: dict[str, ModelConfig] = {}
+    allowed = sorted(f.name for f in dataclasses.fields(ModelConfig) if f.name != "name")
     for name, body in raw.get("models", {}).items():
+        if not isinstance(body, dict):
+            raise SystemExit(f"bad config {CONFIG_FILE}: [models.{name}] must be a table, e.g. [models.{name}] on its own line")
+        unknown = sorted(set(body) - set(allowed))
+        if unknown:
+            raise SystemExit(f"bad config {CONFIG_FILE}: [models.{name}] has unknown setting(s): {', '.join(unknown)} "
+                             f"(allowed: {', '.join(allowed)})")
+        missing = [k for k in ("provider", "model") if k not in body]
+        if missing:
+            raise SystemExit(f"bad config {CONFIG_FILE}: [models.{name}] needs {' and '.join(missing)}")
         models[name] = ModelConfig(name=name, **body)
 
     settings_raw = raw.get("settings", {})
-    settings = Settings(
+    try:
+        settings = _settings_from(settings_raw)
+    except (ValueError, TypeError) as exc:
+        raise SystemExit(f"bad config {CONFIG_FILE}: a [settings] value has the wrong type or format ({exc})")
+
+    default_model = model_override or raw.get("default", next(iter(models), "default"))
+    if default_model not in models:
+        have = ", ".join(models) or "none yet"
+        if model_override:    # callers that pass ad-hoc profile names catch this and fall back to the defaults
+            raise ValueError(f"--model {default_model!r} is not one of your [models.*] profiles (you have: {have})")
+        raise SystemExit(f"bad config {CONFIG_FILE}: default = {default_model!r} is not one of your [models.*] profiles "
+                         f"(you have: {have}). Add a [models.NAME] table — see https://hexiel.tech/config/")
+    return Config(default_model=default_model, models=models, settings=settings,
+                  mcp=raw.get("mcp", {}), permissions=raw.get("permissions", {}))
+
+
+def _settings_from(settings_raw: dict) -> "Settings":
+    return Settings(
         auto_approve=bool(settings_raw.get("auto_approve", False)),
         compact_threshold=float(settings_raw.get("compact_threshold", 0.82)),
         request_timeout=int(settings_raw.get("request_timeout", 900)),
@@ -223,9 +251,3 @@ def load_config(model_override: str | None = None) -> Config:
         delegate_approval=bool(settings_raw.get("delegate_approval", True)),
         delegate_retries=max(0, int(settings_raw.get("delegate_retries", 2))),
     )
-
-    default_model = model_override or raw.get("default", next(iter(models), "default"))
-    if default_model not in models:
-        models.setdefault(default_model, ModelConfig(name=default_model, provider="openai"))
-    return Config(default_model=default_model, models=models, settings=settings,
-                  mcp=raw.get("mcp", {}), permissions=raw.get("permissions", {}))

@@ -253,7 +253,10 @@ def main() -> None:
         return
 
     resumed = Session.resume_latest(cwd) if args.continue_ else None
-    session = build_session(cwd, args.model, resumed)
+    try:
+        session = build_session(cwd, args.model, resumed)
+    except ValueError as exc:                 # e.g. `hexiel -m typo`: say so instead of a traceback
+        raise SystemExit(f"hexiel: {exc}")
     memory_mod.ensure_dirs(cwd)
     if args.yes:
         session.auto_approve = True

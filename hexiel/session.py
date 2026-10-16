@@ -47,12 +47,30 @@ preferences. Not task progress. Omit the section if there are none.
 
 Be exhaustive on specifics (paths, flags, names, numbers) — this is not a chat summary,
 it is the replacement for everything that gets dropped.
+
+ACCURACY RULES — the summary replaces your memory, so a wrong line in it becomes a "fact":
+- Record only what the transcript actually shows. Never infer an outcome. A command, test run or
+  process that was started but whose result you did not see is "started, outcome not seen" /
+  "still running" — never "completed" or "passed".
+- Copy numbers exactly as they were printed. Do not compute totals, percentages or counts that
+  nobody printed, and do not turn a guess about a cause into a finding: label guesses
+  "hypothesis (unverified)".
+- If the transcript starts with an earlier <auto-compaction> summary, carry its still-valid facts
+  forward unchanged and mark anything it said that later messages contradicted as superseded. Do not
+  restate its conclusions as new discoveries.
+- Under Key Decisions & User Feedback copy the user's corrections and standing instructions
+  ("stop doing X", "we use Y, not Z") word for word. The user's later messages override anything else.
+- Next Steps: only what the user asked for or what was explicitly in progress. Do not add new
+  ideas, merges, deployments or clean-ups the user did not ask for.
 """
 
 ON_COMPACTION_NOTE = (
     "This session was auto-compacted: everything above this point is a summary of the "
-    "earlier conversation. Its specifics (paths, decisions, promises) are authoritative. "
-    "Continue the work described in Next Steps unless the user says otherwise."
+    "earlier conversation. The user's instructions in it still apply, but the summary can be "
+    "incomplete or wrong about the CURRENT state of processes, containers, files and test runs: "
+    "before acting on a claim about system state, verify it with a quick read-only command. "
+    "The user's messages after this point always override the summary. Continue the work in "
+    "Next Steps unless the user says otherwise."
 )
 
 
@@ -122,6 +140,7 @@ class Session:
         self.total_completion_tokens = 0
         self.auto_approve = settings.auto_approve
         self.compacting = False
+        self._usage_msgs = 0       # len(messages) when the request behind last_usage was sent
         self._stop = threading.Event()
         self._tool_ctx = None  # bind with bind_tool_ctx() before run_turn
 
@@ -399,6 +418,7 @@ class Session:
         final = None
         reasoning: list[str] = []
         streamed: list[str] = []
+        sent = len(self.messages)       # the prompt covers exactly these messages
         try:
             stream = provider.stream(self.messages, self.system_prompt, tool_defs,
                                      model=self.model_config.model,
@@ -426,6 +446,7 @@ class Session:
                     usage = payload[0]
                     if usage:
                         self.last_usage = usage
+                        self._usage_msgs = sent
                         t = self.usage_totals
                         t["requests"] += 1
                         t["prompt_tokens"] += usage.get("prompt_tokens", 0)
@@ -639,14 +660,23 @@ class Session:
     # ---------------------------------------------------------------- token accounting
 
     def tokens_now(self) -> int:
+        """Size of the next request's prompt: the server's exact count for the last request, plus an
+        estimate of everything appended since (the reply and tool results are not in that count)."""
         usage = self.last_usage.get("prompt_tokens") if self.last_usage else 0
         if usage:
-            # usage is one turn stale if messages were appended since; add their estimate
-            return usage
+            return usage + self._msgs_tokens(self.messages[self._usage_msgs:])
         return self.estimate_tokens()
 
     def estimate_tokens(self) -> int:
-        return llm.est_tokens(self.system_prompt) + 300 + self._msgs_tokens(self.messages)  # + tool schemas
+        return llm.est_tokens(self.system_prompt) + self._tool_schema_tokens() + self._msgs_tokens(self.messages)
+
+    def _tool_schema_tokens(self) -> int:
+        key = tuple(t.name for t in self.tools)
+        if getattr(self, "_schema_cache", (None, 0))[0] != key:
+            blob = json.dumps([{"name": t.name, "description": t.description, "parameters": t.parameters}
+                               for t in self.tools])
+            self._schema_cache = (key, max(llm.est_tokens(blob), 300))
+        return self._schema_cache[1]
 
     @staticmethod
     def _msgs_tokens(messages: list[dict]) -> int:
@@ -662,9 +692,7 @@ class Session:
     def compaction_needed(self) -> bool:
         if not self.messages:
             return False
-        floor = self.estimate_tokens()
-        actual = self.last_usage.get("prompt_tokens", 0)
-        current = max(floor, actual)
+        current = max(self.estimate_tokens(), self.tokens_now())
         return current >= self.model_config.context_window * self.settings.compact_threshold
 
     # ---------------------------------------------------------------- compaction

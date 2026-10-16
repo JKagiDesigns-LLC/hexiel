@@ -464,7 +464,6 @@ class StatusLine(Static):
             threshold = self._session.settings.compact_threshold
             pct = 100 * tokens_now // max(window, 1)
             compact_at = int(100 * threshold)
-            until = max(compact_at - pct, 0)
             model = self._session.model_config.model
             from . import todo as todo_mod
             todo_line = todo_mod.summary_line(self._session.cwd)
@@ -476,9 +475,9 @@ class StatusLine(Static):
             # first so the line always fits the window instead of running off it
             segments = [
                 (model, model),
-                (f"ctx {pct}% ({tokens_now // 1000}k/{window // 1000}k)",) * 2,
+                (f"ctx {pct}% used ({tokens_now // 1000}k/{window // 1000}k)",) * 2,
                 approve,
-                (f"compacts at {compact_at}% ({until}% left)",) * 2,
+                (f"auto-compacts at {compact_at}%",) * 2,
             ] + ([(todo_line, todo_line)] if todo_line else [])
             width = max(self.size.width - 4, 20) if self.size.width else 200
             shown, used = [], 0

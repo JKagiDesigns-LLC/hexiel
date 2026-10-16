@@ -228,3 +228,32 @@ def test_one_huge_turn_compacts_inside_the_turn_and_does_not_loop():
     assert session.messages[1]["role"] == "assistant"          # never starts on an orphaned tool result
     assert session.messages[-1]["content"] == "x" * 400 and session.messages[-2]["content"] == "step 149"
     assert seen["chars"] < 20000 * 0.7 * 4                      # the summarizer prompt fits its window
+
+
+def test_context_size_counts_what_was_appended_since_the_last_request():
+    """The status bar and the compaction trigger used the previous request's token count, so big tool
+    results added since were invisible until the next request."""
+    mc = ModelConfig(name="t", provider="openai", model="fake", base_url="http://x", context_window=10000)
+    s = Session(mc, Settings(True), cwd="/tmp", tools=[], system_prompt="system")
+    s.messages += [{"role": "user", "content": "hi"}]
+    s.last_usage, s._usage_msgs = {"prompt_tokens": 5000}, 1
+    assert s.tokens_now() == 5000
+    s.messages += [{"role": "assistant", "content": ""}, {"role": "tool", "content": "x" * 8000}]
+    assert s.tokens_now() >= 5000 + 2000
+
+
+def test_estimate_includes_tool_schemas():
+    from hexiel.tools import ToolDef
+    mc = ModelConfig(name="t", provider="openai", model="fake", base_url="http://x", context_window=10000)
+    tools = [ToolDef(f"t{i}", "d" * 400, {"type": "object", "properties": {}}, run=lambda a, c: None)
+             for i in range(20)]
+    with_tools = Session(mc, Settings(True), cwd="/tmp", tools=tools, system_prompt="system")
+    without = Session(mc, Settings(True), cwd="/tmp", tools=[], system_prompt="system")
+    assert with_tools.estimate_tokens() > without.estimate_tokens() + 1500
+
+
+def test_compaction_prompts_demand_accuracy_and_distrust_the_summary():
+    from hexiel.session import COMPACT_PROMPT, ON_COMPACTION_NOTE
+    assert "outcome not seen" in COMPACT_PROMPT and "hypothesis (unverified)" in COMPACT_PROMPT
+    assert "word for word" in COMPACT_PROMPT and "earlier <auto-compaction>" in COMPACT_PROMPT
+    assert "authoritative" not in ON_COMPACTION_NOTE and "verify" in ON_COMPACTION_NOTE

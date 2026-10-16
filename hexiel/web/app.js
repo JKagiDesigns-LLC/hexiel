@@ -235,7 +235,7 @@ function applyStatus(status) {
   lastStatus = status;
   busy = status.busy;
   const c = status.context;
-  const label = `${status.model_id} · ctx ${(Math.round(c.pct))}% of ${Math.round(c.window / 1000)}k` +
+  const label = `${status.model_id} · ctx ${(Math.round(c.pct))}% used of ${Math.round(c.window / 1000)}k` +
                 (c.compact_at_pct ? ` (compact @${c.compact_at_pct}%)` : "");
   $("#ctx-label").textContent = label;
   $("#todo-badge").textContent = status.todo || "";

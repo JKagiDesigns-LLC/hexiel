@@ -210,3 +210,21 @@ def test_stopped_turn_does_not_crash_the_agent_thread():
                               activity=SimpleNamespace(stop=lambda: None))
     tui.TurnThread(app_ref, "hi").run()
     assert seen == [("turn_end", (), {"aborted": True})] and not notes   # no "agent crashed" note
+
+
+def test_note_ends_the_streaming_block_so_text_after_it_appears_below():
+    """/delegate emits notes between steps; reply text after a note must start a new block under it."""
+    async def go():
+        app = make_app(Path("/tmp"))
+        async with app.run_test(size=(100, 40)) as pilot:
+            app.handle_event("text", "step one report")
+            app.handle_event("note", "✓ step 1/2 done")
+            app.handle_event("text", "step two report")
+            app.handle_event("turn_end")
+            await pilot.pause()
+            chat = app.query_one("#chat")
+            return [(type(w).__name__, getattr(w, "source", None)) for w in chat.children
+                    if isinstance(w, Markdown) or ("note" in w.classes and type(w).__name__ == "Static")]
+    seen = run(go())
+    assert [kind for kind, _ in seen] == ["Markdown", "Static", "Markdown"]
+    assert seen[0][1] == "step one report" and seen[2][1] == "step two report"

@@ -64,7 +64,11 @@ class ApproveScreen(ModalScreen):
     def compose(self) -> ComposeResult:
         with Vertical(id="approve-box"):
             yield Label(f"[b]{self.TITLES.get(self._tool_name) or f'Allow {self._tool_name}?'}[/b]")
-            yield Static(self._args_preview, id="approve-args")
+            if self._tool_name in self.TITLES:       # a whole plan: let it scroll instead of clipping it
+                with VerticalScroll(id="approve-scroll"):
+                    yield Static(self._args_preview, id="approve-args")
+            else:
+                yield Static(self._args_preview, id="approve-args")
             with Horizontal(id="approve-buttons"):
                 yield Button("Yes  \\[y]", variant="primary", id="btn-yes")
                 yield Button(f"Always allow {self._always_rule.replace('[', chr(92) + '[')}  \\[a]"
@@ -890,6 +894,8 @@ class HexielTUI(App):
     #approve-box { width: 100%; max-width: 90; margin: 1 2; margin-top: 1; padding: 1 2;
                    border: heavy $accent; background: $surface; }
     #approve-args { height: auto; max-height: 12; padding: 1 0; color: $text; }
+    #approve-scroll { height: auto; max-height: 20; }
+    #approve-scroll #approve-args { max-height: 400; }
     #approve-buttons { height: auto; padding: 1 0 0 0; align: center middle; }
     """
 
@@ -1355,6 +1361,7 @@ class HexielTUI(App):
             self.add_note("the model returned an empty reply — nudging it to continue")
             return
         if event == "note":
+            self.finalize_stream(placeholder=False)       # text after the note starts a new block below it
             self.add_note(str(payload[0]).replace("[", "\\["))
             return
         if event == "subagent":

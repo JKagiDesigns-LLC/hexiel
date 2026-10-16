@@ -163,7 +163,13 @@ function connect() {
         const div = document.createElement("div");
         div.className = "note";
         div.textContent = data.text;
-        $("#chat").appendChild(div);
+        if (live) {                       // keep the note in order with the reply it interrupts
+          live.body = null;               // the next text starts a new segment below it
+          live.flow.appendChild(div);
+        } else {
+          $("#chat").appendChild(div);
+        }
+        $("#chat").scrollTop = $("#chat").scrollHeight;
         break;
       }
       case "incident": {

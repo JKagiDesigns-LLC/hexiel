@@ -422,6 +422,21 @@ def make_plan(session, request: str, brief: str) -> Plan:
 
 # ---------------------------------------------------------------- execution
 
+def _short(text: str, limit: int) -> str:
+    """One line, cut at a word boundary."""
+    flat = " ".join(text.split())
+    if len(flat) <= limit:
+        return flat
+    return flat[:limit].rsplit(" ", 1)[0].rstrip(",;:.—-") + "…"
+
+
+def _relative(cwd: str, path) -> str:
+    try:
+        return str(Path(path).resolve().relative_to(Path(cwd).resolve()))
+    except (ValueError, OSError):
+        return str(path)
+
+
 def _ledger(plan: Plan) -> str:
     done = [t for t in plan.tasks if t.status == "done"]
     if not done:
@@ -501,7 +516,7 @@ def _run_task(session, plan: Plan, task: Task, helper_tools: list, system: str) 
                 return False
             report = _last_text(helper)
             task.report = report or task.report
-            task.changed = sorted({str(p) for ck in helper.checkpoints for p, _ in ck})
+            task.changed = sorted({_relative(session.cwd, p) for ck in helper.checkpoints for p, _ in ck})
             if errors:
                 failure = errors[-1]
             else:
@@ -561,11 +576,11 @@ def summary_text(plan: Plan, finished: bool) -> str:
     lines = [head, f"({plan.summary})", ""]
     for t in plan.tasks:
         mark = {"done": "✓", "failed": "✗", "running": "…"}.get(t.status, "·")
-        detail = " ".join(t.report.split())[:160] if t.status in ("done", "failed") else ""
-        lines.append(f"{mark} {t.id}. {t.title}" + (f" — {detail}" if detail else ""))
+        detail = _short(t.report, 110) if t.status in ("done", "failed") else ""
+        lines.append(f"- {mark} {t.id}. {t.title}" + (f" — {detail}" if detail else ""))
     changed = sorted({f for t in plan.tasks for f in t.changed})
     if changed:
-        lines += ["", "Files changed: " + ", ".join(changed[:20])]
+        lines += ["", "Files changed: " + ", ".join(f"`{f}`" for f in changed[:20])]
     return "\n".join(lines)
 
 

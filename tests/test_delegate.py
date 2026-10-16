@@ -333,3 +333,16 @@ def test_new_settings_are_editable_in_the_ui(env):
     assert s.settings.auto_delegate == "ask" and "this session only" in msg
     settings_edit.apply(s, "settings.delegate_retries", "4", "session")
     assert s.settings.delegate_retries == 4
+
+
+def test_summary_is_a_markdown_list_with_short_details():
+    plan = planner.Plan(request="r", summary="do things", tasks=[
+        planner.Task(1, "first", "g", status="done", report="Created the thing in the repo root with two functions " * 5,
+                     changed=["a.py"]),
+        planner.Task(2, "second", "g", status="failed", report="failed: the check failed")])
+    text = planner.summary_text(plan, False)
+    lines = text.splitlines()
+    assert lines[0].startswith("Plan stopped: 1/2") and "/delegate resume" in lines[0]
+    bullets = [ln for ln in lines if ln.startswith("- ")]
+    assert bullets[0].startswith("- ✓ 1. first — Created") and bullets[0].endswith("…") and len(bullets[0]) < 140
+    assert bullets[1].startswith("- ✗ 2. second") and "Files changed: `a.py`" in text

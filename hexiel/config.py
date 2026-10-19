@@ -55,6 +55,8 @@ request_timeout = 900       # seconds per provider request
 search_backend = "duckduckgo"   # "duckduckgo" (no key) or "searxng"
 searxng_url = ""            # e.g. http://localhost:8888 when search_backend = "searxng"
 
+# compact_profile = "anthropic-sonnet"   # who writes compaction summaries: a fast cloud model takes seconds, a slow local one many minutes
+
 # Big tasks: a strong model plans, a cheaper (e.g. local) model does the work. See /delegate.
 # planner_profile = "kimi"      # model that writes the plan ("" = fallback_profile, else the current model)
 # executor_profile = ""         # model that does each task ("" = the current model)
@@ -153,6 +155,7 @@ class Settings:
     auto_approve: bool = False        # run edits and commands without asking (see guard_commits)
     guard_commits: bool = False       # with auto_approve: still ask before anything that commits/pushes (git, svn)
     compact_threshold: float = 0.82
+    compact_profile: str = ""         # model that writes compaction summaries ("" = the current model); a fast cloud model avoids long waits
     request_timeout: int = 900
     search_backend: str = "duckduckgo"
     searxng_url: str = ""
@@ -261,6 +264,7 @@ def _settings_from(settings_raw: dict) -> "Settings":
         auto_approve=mode != "off",
         guard_commits=mode == "except-commits",
         compact_threshold=float(settings_raw.get("compact_threshold", 0.82)),
+        compact_profile=str(settings_raw.get("compact_profile", "")),
         request_timeout=int(settings_raw.get("request_timeout", 900)),
         search_backend=str(settings_raw.get("search_backend", "duckduckgo")),
         searxng_url=str(settings_raw.get("searxng_url", "")),

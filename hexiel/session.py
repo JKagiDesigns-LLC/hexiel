@@ -45,8 +45,9 @@ Bullets of stable facts worth remembering in FUTURE sessions — build/test/run
 commands, project conventions and layout, environment details, the user's stated
 preferences. Not task progress. Omit the section if there are none.
 
-Be exhaustive on specifics (paths, flags, names, numbers) — this is not a chat summary,
-it is the replacement for everything that gets dropped.
+Be dense, not exhaustive: exact paths, flags, names and numbers, but no narration, and leave out
+anything that can simply be read again from the files. This is the replacement for everything that
+gets dropped, but it must stay under about 900 words — a long summary is slow to write and slow to read.
 
 ACCURACY RULES — the summary replaces your memory, so a wrong line in it becomes a "fact":
 - Record only what the transcript actually shows. Never infer an outcome. A command, test run or
@@ -66,6 +67,8 @@ ACCURACY RULES — the summary replaces your memory, so a wrong line in it becom
 
 STEERING_NOTE = ("[The user sent this message while you were working. It takes priority over what you were "
                  "doing: read it now, acknowledge it, and change course if it says to.]\n\n")
+
+COMPACT_MAX_TOKENS = 3000        # hard cap on a summary: on a local model every 1,000 tokens written costs minutes
 
 ON_COMPACTION_NOTE = (
     "This session was auto-compacted: everything above this point is a summary of the "
@@ -821,24 +824,39 @@ class Session:
         before = self.last_usage.get("prompt_tokens") or self.estimate_tokens()
         transcript = self._transcript(head, budget_chars=int(window * 0.6) * 4)
         out_parts = []
+        failure = None
         try:
-            stream = provider.stream(
-                [{"role": "user", "content": transcript}], COMPACT_PROMPT, [],
-                model=self.model_config.model,
-                max_output_tokens=max(self.model_config.max_output_tokens, 8192),
-                extra_body=self.model_config.extra_body,
-                timeout=self.settings.request_timeout)
-            for event, *payload in self._interruptible(stream, provider):
-                if event == "text":
-                    out_parts.append(payload[0])
-        except llm.ProviderError as exc:
-            self.compacting = False
-            self.messages = messages  # uncompacted
-            self.on_event("provider_error", f"compaction failed: {exc}")
-            return
+            for mc, prov in self._compaction_models(provider):
+                out_parts.clear()
+                try:
+                    if mc is not self.model_config:
+                        self.set_active_model(mc, "summarizing")
+                    stream = prov.stream(
+                        [{"role": "user", "content": transcript}], COMPACT_PROMPT, [],
+                        model=mc.model, max_output_tokens=min(mc.max_output_tokens, COMPACT_MAX_TOKENS),
+                        extra_body=mc.extra_body, timeout=self.settings.request_timeout)
+                    for event, *payload in self._interruptible(stream, prov):
+                        if event == "text":
+                            out_parts.append(payload[0])
+                    failure = None
+                    break
+                except (llm.ProviderError, httpx.HTTPError) as exc:
+                    failure = exc
+                    if mc is not self.model_config:        # the faster model failed: try the session's own
+                        self.on_event("note", f"⚠ could not summarize with {mc.name} ({str(exc)[:120]}) — "
+                                              f"using {self.model_config.name} instead")
         except BaseException:
             self.compacting = False
             raise
+        finally:
+            if self.active_model:
+                self.active_model = ""
+                self.on_event("model_active")
+        if failure is not None:
+            self.compacting = False
+            self.messages = messages  # uncompacted
+            self.on_event("provider_error", f"compaction failed: {failure}")
+            return
         if self._stop.is_set():       # cancelled mid-summary: keep the history as it was, never a partial summary
             self.compacting = False
             self.messages = messages
@@ -875,6 +893,22 @@ class Session:
         if len(user_idx) >= 2 and (last - user_idx[-2]) <= 12:
             return user_idx[-2]
         return last
+
+    def _compaction_models(self, provider) -> list:
+        """(model profile, provider) pairs to try, in order: the compact_profile model (usually a fast cloud model,
+        so a summary takes seconds instead of many minutes on slow local hardware), then this session's own."""
+        pairs = []
+        name = getattr(self.settings, "compact_profile", "")
+        if name and name != self.model_config.name:
+            from .config import load_config
+            try:
+                mc = load_config().model(name)
+                pairs.append((mc, llm.make_provider(mc, self.settings)))
+            except (KeyError, ValueError, SystemExit):     # unknown profile or no API key: just use our own model
+                self.on_event("note", f"⚠ compact_profile {name!r} is not usable (unknown profile or missing API key) "
+                                      "— summarizing with the current model")
+        pairs.append((self.model_config, provider))
+        return pairs
 
     def _split_by_budget(self, messages: list[dict], budget: int) -> int:
         """Index where a tail worth about `budget` tokens begins, starting on an assistant message so a

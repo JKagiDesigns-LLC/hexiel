@@ -48,6 +48,11 @@ FIELDS = [
      "help": "/delegate: the strong model that writes the plan (e.g. a cloud model); empty = fallback model, else the current one"},
     {"key": "settings.executor_profile", "label": "Worker model", "kind": "choice",
      "help": "/delegate: the model that does each step (e.g. your local model); empty = the current model"},
+    {"key": "settings.workers", "label": "Parallel steps", "kind": "choice",
+     "options": ["auto", 1, 2, 4, 8],
+     "help": "/delegate: independent steps run at the same time — auto = every CPU core but one"},
+    {"key": "settings.worker_fallback_profile", "label": "Worker when busy", "kind": "choice",
+     "help": "/delegate: model used for a step while the worker model is busy or not answering; empty = always wait for the worker"},
     {"key": "settings.auto_delegate", "label": "Big-task check", "kind": "choice",
      "options": ["off", "ask", "auto"],
      "help": "size up each request: off, ask before delegating big ones, or delegate them automatically"},
@@ -114,7 +119,7 @@ def options_for(session, key: str) -> list | None:
     field = FIELD_BY_KEY[key]
     if key == "profile":
         return list(config_mod.load_config().models)
-    if key in ("settings.planner_profile", "settings.executor_profile", "settings.compact_profile"):
+    if key in ("settings.planner_profile", "settings.executor_profile", "settings.compact_profile", "settings.worker_fallback_profile"):
         return [""] + list(config_mod.load_config().models)
     if key in ("settings.fallback_profile", "settings.subagent_profile"):
         return [""] + [n for n in config_mod.load_config().models if n != session.model_config.name]
@@ -146,6 +151,8 @@ def rows(session, with_options: bool = False) -> list[dict]:
 def coerce(key: str, value):
     if key == "settings.auto_approve":
         return config_mod.parse_auto_approve(value)        # "off" | "except-commits" | "all"
+    if key == "settings.workers":
+        return int(value) if str(value).strip().isdigit() and int(value) >= 1 else "auto"
     kind = FIELD_BY_KEY[key]["kind"]
     if kind == "bool":
         if isinstance(value, str):

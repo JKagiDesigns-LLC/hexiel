@@ -410,3 +410,104 @@ def test_merge_usage_adds_a_helpers_totals():
     a.merge_usage(b)
     assert a.usage_by_model["m"] == {"requests": 2, "prompt": 15, "cached": 3, "completion": 3}
     assert a.usage_by_model["other"]["prompt"] == 7
+
+
+def test_a_busy_worker_is_swapped_for_the_fallback_and_back(tmp_path, monkeypatch):
+    from hexiel import planner
+    from hexiel.config import ModelConfig
+    fb = ModelConfig("cloudfast", "openai", "m2", base_url="http://x/v1")
+    monkeypatch.setattr(planner, "_config_profile",
+                        lambda s, name: {"local": WORKER, "cloudfast": fb}.get(name))
+    s = Session(WORKER, Settings(executor_profile="local", worker_fallback_profile="cloudfast"), str(tmp_path), [], "sys")
+    notes = []
+    s.on_event = lambda e, *p, **k: notes.append(p[0]) if e == "note" else None
+    busy = {"v": True}
+    monkeypatch.setattr(planner, "_is_busy", lambda mc, st: busy["v"])
+    assert planner.choose_worker(s).name == "cloudfast" and "busy" in notes[-1]
+    assert planner.choose_worker(s).name == "cloudfast" and len(notes) == 1        # verdict reused, no repeat note
+    busy["v"] = False
+    s._worker_state["at"] -= 100
+    assert planner.choose_worker(s).name == WORKER.name and "free again" in notes[-1]
+    s.settings.worker_fallback_profile = ""
+    busy["v"] = True
+    s._worker_state["at"] -= 100
+    assert planner.choose_worker(s).name == WORKER.name                             # no fallback configured: always wait
+
+
+def test_busy_probe_detects_a_server_that_does_not_answer(monkeypatch):
+    import httpx
+    from hexiel import planner
+    from hexiel.config import ModelConfig
+    mc = ModelConfig("l", "openai", "m", base_url="http://x/v1")
+    monkeypatch.setattr(httpx, "post", lambda *a, **k: (_ for _ in ()).throw(httpx.ReadTimeout("slow")))
+    assert planner._is_busy(mc, None)
+    class R:
+        def raise_for_status(self): pass
+    monkeypatch.setattr(httpx, "post", lambda *a, **k: R())
+    assert not planner._is_busy(mc, None)
+    assert not planner._is_busy(ModelConfig("a", "anthropic", "m"), None)
+
+
+def _t(i, files, deps=(), status="pending"):
+    return planner.Task(id=i, title=f"t{i}", goal="g", files=list(files), depends_on=list(deps), status=status)
+
+
+def test_independent_steps_run_together_and_clashing_ones_wait():
+    plan = planner.Plan("r", "s", [_t(1, ["a.py"]), _t(2, ["b.py"]), _t(3, ["a.py"]), _t(4, [], []), _t(5, ["c.py"], [2])])
+    assert [t.id for t in planner.runnable(plan)] == [1, 2]       # 3 shares a.py with 1; 4 names no files so it is a barrier
+    plan.tasks[0].status = plan.tasks[1].status = "done"
+    assert [t.id for t in planner.runnable(plan)] == [3]          # 4 still behind 3 (earlier, unfinished); 5 behind 4
+    plan.tasks[2].status = "done"
+    assert [t.id for t in planner.runnable(plan)] == [4]
+    plan.tasks[3].status = "done"
+    assert [t.id for t in planner.runnable(plan)] == [5]
+
+
+def test_a_dependency_blocks_a_step_even_when_files_differ():
+    plan = planner.Plan("r", "s", [_t(1, ["a.py"]), _t(2, ["b.py"], [1])])
+    assert [t.id for t in planner.runnable(plan)] == [1]
+
+
+def test_worker_count_is_every_core_but_one(monkeypatch):
+    import os
+    monkeypatch.setattr(os, "cpu_count", lambda: 16)
+    assert planner.worker_count(type("S", (), {"settings": Settings()})()) == 15
+    assert planner.worker_count(type("S", (), {"settings": Settings(workers=3)})()) == 3
+    monkeypatch.setattr(os, "cpu_count", lambda: 1)
+    assert planner.worker_count(type("S", (), {"settings": Settings()})()) == 1
+
+
+def test_a_plan_with_independent_steps_runs_them_in_parallel(tmp_path, monkeypatch):
+    import threading, time
+    s, *_ = build_plan_session(tmp_path, monkeypatch)
+    live, peak = [0], [0]
+    lock = threading.Lock()
+
+    def fake(session, plan, task, tools, system):
+        with lock:
+            live[0] += 1; peak[0] = max(peak[0], live[0])
+        time.sleep(0.2)
+        with lock:
+            live[0] -= 1
+        return True
+    monkeypatch.setattr(planner, "_run_task", fake)
+    plan = planner.Plan("r", "s", [_t(1, ["a"]), _t(2, ["b"]), _t(3, ["c"]), _t(4, ["a"])])
+    assert planner.execute(s, plan) and peak[0] == 3 and all(t.status == "done" for t in plan.tasks)
+
+
+def test_one_failed_step_stops_new_ones_from_starting(tmp_path, monkeypatch):
+    s, *_ = build_plan_session(tmp_path, monkeypatch)
+    ran = []
+    monkeypatch.setattr(planner, "_run_task", lambda se, p, t, tl, sy: (ran.append(t.id), t.id != 1)[1])
+    s.settings.workers = 1
+    plan = planner.Plan("r", "s", [_t(1, ["a"]), _t(2, ["b"])])
+    assert not planner.execute(s, plan) and ran == [1] and plan.tasks[0].status == "failed" and plan.tasks[1].status == "pending"
+
+
+def build_plan_session(tmp_path, monkeypatch):
+    s = Session(WORKER, Settings(planner_profile="", executor_profile="", workers="auto"), str(tmp_path), [], "sys")
+    s.save = lambda: None
+    s.on_event = lambda *a, **k: None
+    monkeypatch.setattr(planner, "save_plan", lambda *a, **k: None)
+    monkeypatch.setattr(planner, "sync_todo", lambda *a, **k: None)
+    return s, None

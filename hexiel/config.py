@@ -59,6 +59,8 @@ searxng_url = ""            # e.g. http://localhost:8888 when search_backend = "
 
 # Big tasks: a strong model plans, a cheaper (e.g. local) model does the work. See /delegate.
 # planner_profile = "kimi"      # model that writes the plan ("" = fallback_profile, else the current model)
+# workers = "auto"             # steps run at once when independent: "auto" = every core but one, or a number (1 = one at a time)
+# worker_fallback_profile = ""  # used for a step while the worker is busy (e.g. a slow local model serving another session)
 # executor_profile = ""         # model that does each task ("" = the current model)
 # auto_delegate = "ask"         # "off" | "ask" (offer to delegate big requests) | "auto"
 # delegate_approval = true      # show the plan and wait for a yes before running it
@@ -171,6 +173,8 @@ class Settings:
     toolsets: object = "auto"         # optional tool groups: "auto" | "all" | ["data", …]
     planner_profile: str = ""         # /delegate: model that writes the plan ("" = fallback_profile, else the current model)
     executor_profile: str = ""        # /delegate: model that does each task ("" = the current model)
+    workers: object = "auto"          # /delegate: steps run at once when independent — "auto" = every core but one, or a number
+    worker_fallback_profile: str = "" # /delegate: used for a step while the worker model is busy ("" = always wait for the worker)
     auto_delegate: str = "off"        # size up each request: "off" | "ask" (offer to delegate big ones) | "auto"
     delegate_approval: bool = True    # show the plan and wait for a yes before running it
     delegate_retries: int = 2         # fix attempts per task before escalating it to the planner model
@@ -283,6 +287,8 @@ def _settings_from(settings_raw: dict) -> "Settings":
         toolsets=settings_raw.get("toolsets", "auto"),
         planner_profile=str(settings_raw.get("planner_profile", "")),
         executor_profile=str(settings_raw.get("executor_profile", "")),
+        workers=(lambda v: max(1, int(v)) if str(v).isdigit() else "auto")(settings_raw.get("workers", "auto")),
+        worker_fallback_profile=str(settings_raw.get("worker_fallback_profile", "")),
         auto_delegate=(str(settings_raw.get("auto_delegate", "off")).lower()
                        if str(settings_raw.get("auto_delegate", "off")).lower() in ("off", "ask", "auto") else "off"),
         delegate_approval=bool(settings_raw.get("delegate_approval", True)),

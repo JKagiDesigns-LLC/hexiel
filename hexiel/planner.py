@@ -18,6 +18,7 @@ from __future__ import annotations
 import dataclasses
 import datetime
 import json
+import os
 import re
 import subprocess
 import threading
@@ -61,6 +62,8 @@ PLANNER_SYSTEM = (
     '"check": "<one shell command that exits 0 when this task is done, or empty>", "depends_on": [<ids>]}]}\n'
     f"Rules: 2 to {MAX_TASKS} tasks (fewer is better); each task is small enough for one focused session; "
     "use exact file paths from the briefing; order tasks so each depends only on earlier ones; "
+    "tasks that edit different files and do not need each other's result are run AT THE SAME TIME, so always list "
+    "every file a task edits in `files`, and in `depends_on` every earlier task whose result it needs; "
     "a check is a single command such as a test run, a build or a grep, never something that needs the user; "
     "no vague tasks like 'improve' or 'clean up'; do not add work the user did not ask for; "
     "never make a task whose only job is to run tests or verify — put that command in the `check` of the "
@@ -152,6 +155,48 @@ def _config_profile(session, name: str):
 
 def worker_model(session):
     return _config_profile(session, session.settings.executor_profile) or session.model_config
+
+
+BUSY_PROBE_SECONDS = 20       # a worker that can't answer a one-word request in this long is busy with something else
+BUSY_RECHECK_SECONDS = 45     # how long a "busy" verdict is trusted before probing again
+
+
+def _is_busy(mc, settings) -> bool:
+    """True when the model server doesn't answer a tiny request promptly (queued behind another job, hung, or down)."""
+    import httpx
+    if mc.provider != "openai" or not mc.base_url:
+        return False
+    key = os.environ.get(mc.api_key_env, "") if mc.api_key_env else ""
+    body = {"model": mc.model, "messages": [{"role": "user", "content": "Reply with: ok"}], "max_tokens": 1,
+            **{k: v for k, v in (mc.extra_body or {}).items() if k == "reasoning_effort"}}
+    try:
+        httpx.post(mc.base_url.rstrip("/") + "/chat/completions", json=body, timeout=BUSY_PROBE_SECONDS,
+                   headers={"Authorization": f"Bearer {key or 'none'}"}).raise_for_status()
+        return False
+    except httpx.HTTPStatusError:
+        return False                                  # it answered; a real error will surface in the step itself
+    except Exception:
+        return True
+
+
+def choose_worker(session):
+    """The worker for the next step: the preferred one, or worker_fallback_profile while the preferred one is busy."""
+    wmc = worker_model(session)
+    fb = _config_profile(session, session.settings.worker_fallback_profile)
+    if fb is None or fb.name == wmc.name:
+        return wmc
+    now = time.monotonic()
+    state = session.__dict__.setdefault("_worker_state", {"busy": False, "at": -1e9})
+    if state["busy"] and now - state["at"] < BUSY_RECHECK_SECONDS:
+        busy = True
+    else:
+        busy = _is_busy(wmc, session.settings)
+        state["at"] = time.monotonic()
+    if busy != state["busy"]:
+        say(session, f"🔀 {wmc.name} is busy — using {fb.name} for the next steps" if busy
+            else f"🔀 {wmc.name} is free again — back to it")
+    state["busy"] = busy
+    return fb if busy else wmc
 
 
 def planner_model(session):
@@ -373,7 +418,7 @@ def _link_stop(session, helper):
 
 
 def build_brief(session, request: str) -> str:
-    mc = worker_model(session)
+    mc = choose_worker(session)
     session.set_active_model(mc, "gathering context")
     tools = [t for t in session.tools if t.readonly and t.name != "task"]
     helper = make_helper(session, mc, BRIEF_SYSTEM, tools)
@@ -397,7 +442,8 @@ def build_brief(session, request: str) -> str:
             brief = _last_text(helper)
     finally:
         link.set()
-        session.merge_usage(helper)
+        with session.__dict__.setdefault("_usage_lock", threading.Lock()):
+            session.merge_usage(helper)
     return brief[:6000]
 
 
@@ -514,7 +560,7 @@ def run_check(session, task: Task) -> tuple[bool, str]:
 
 def _run_task(session, plan: Plan, task: Task, helper_tools: list, system: str) -> bool:
     """Run one task in a fresh helper. True when its check passes."""
-    wmc, pmc = worker_model(session), planner_model(session)
+    wmc, pmc = choose_worker(session), planner_model(session)
     where = f"step {plan.tasks.index(task) + 1}/{len(plan.tasks)}"
     session.set_active_model(wmc, where)
     helper = make_helper(session, wmc, system, helper_tools)
@@ -576,34 +622,113 @@ def _run_task(session, plan: Plan, task: Task, helper_tools: list, system: str) 
         session.merge_usage(helper)
 
 
+def worker_count(session) -> int:
+    """How many steps may run at once: the `workers` setting, "auto" = every core but one."""
+    v = getattr(session.settings, "workers", "auto")
+    if isinstance(v, int) and v >= 1:
+        return v
+    return max(1, (os.cpu_count() or 2) - 1)
+
+
+def _touch(a: Task, b: Task) -> bool:
+    """True when two steps might step on each other: either doesn't say which files it edits, or they share one."""
+    if not a.files or not b.files:
+        return True
+    for x in a.files:
+        for y in b.files:
+            x, y = str(x).strip("/"), str(y).strip("/")
+            if x == y or x.startswith(y + "/") or y.startswith(x + "/"):
+                return True
+    return False
+
+
+def runnable(plan: Plan) -> list:
+    """Pending steps that can start now: dependencies done, and no clash with a running or earlier unfinished step."""
+    done = {t.id for t in plan.tasks if t.status == "done"}
+    out = []
+    for i, t in enumerate(plan.tasks):
+        if t.status != "pending" or any(d not in done for d in t.depends_on if any(o.id == d for o in plan.tasks)):
+            continue
+        blockers = [o for j, o in enumerate(plan.tasks)
+                    if o is not t and o.status != "done" and (o.status == "running" or j < i)]
+        if any(_touch(t, o) or o.id in t.depends_on for o in blockers):
+            continue
+        out.append(t)
+        t.status = "queued"                  # so later candidates in this pass see it as running
+    for t in out:
+        t.status = "pending"
+    # a step queued in this pass must also not clash with the others picked: keep only a non-clashing prefix set
+    picked: list = []
+    for t in out:
+        if all(not _touch(t, o) for o in picked):
+            picked.append(t)
+    return picked
+
+
 def execute(session, plan: Plan, resumed: bool = False) -> bool:
-    """Run the plan's pending tasks in order. True when every task is done."""
+    """Run the plan's pending tasks, several at once when they are independent. True when every task is done."""
+    from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
     tools = [t for t in session.tools if t.name != "task"]
     total = len(plan.tasks)
-    for task in plan.tasks:
-        if task.status == "done":
-            continue
-        if session._stop.is_set():
-            break
-        if session.has_pending():        # you said something: stop here so it gets read, resume afterwards
-            say(session, "⏸ pausing the plan because you sent a message — /delegate resume continues it")
-            break
-        task.status = "running"
+    lock = threading.RLock()
+    n_workers = worker_count(session)
+    if n_workers > 1 and session.on_approve:
+        inner = session.on_approve
+        session.on_approve = lambda *a, **k: _locked(session, inner, lock, *a, **k)
+
+    def one(task: Task) -> bool:
         n = plan.tasks.index(task) + 1
-        say(session, f"▶ step {n}/{total}: {task.title}")
-        save_plan(session, plan)
-        sync_todo(session, plan, left_off=f"running step {n}/{total}: {task.title}")
+        with lock:
+            say(session, f"▶ step {n}/{total}: {task.title}")
+            save_plan(session, plan)
+            sync_todo(session, plan, left_off=f"running step {n}/{total}: {task.title}")
         ok = _run_task(session, plan, task, tools, session.system_prompt)
-        task.status = "done" if ok else ("pending" if session._stop.is_set() else "failed")
-        save_plan(session, plan)
-        if ok:
-            say(session, f"✓ step {n}/{total} done")
-        else:
-            reason = "cancelled" if session._stop.is_set() else task.report
-            sync_todo(session, plan, left_off=f"stopped at step {n}/{total}: {reason[:120]}")
-            return False
-    sync_todo(session, plan, left_off="plan finished")
+        with lock:
+            task.status = "done" if ok else ("pending" if session._stop.is_set() else "failed")
+            save_plan(session, plan)
+            if ok:
+                say(session, f"✓ step {n}/{total} done")
+            else:
+                reason = "cancelled" if session._stop.is_set() else task.report
+                sync_todo(session, plan, left_off=f"stopped at step {n}/{total}: {reason[:120]}")
+        return ok
+
+    failed = False
+    running: dict = {}
+    try:
+        with ThreadPoolExecutor(max_workers=n_workers, thread_name_prefix="hexiel-step") as pool:
+            while True:
+                if not failed and not session._stop.is_set() and session.has_pending() and not running:
+                    say(session, "⏸ pausing the plan because you sent a message — /delegate resume continues it")
+                    break
+                if not failed and not session._stop.is_set() and not session.has_pending():
+                    with lock:
+                        for task in runnable(plan)[:max(0, n_workers - len(running))]:
+                            task.status = "running"
+                            running[pool.submit(one, task)] = task
+                if not running:
+                    break
+                finished, _ = wait(list(running), return_when=FIRST_COMPLETED)
+                for f in finished:
+                    running.pop(f)
+                    try:
+                        ok = f.result()
+                    except Exception:
+                        ok = False
+                    failed = failed or not ok
+    finally:
+        if n_workers > 1 and session.on_approve and getattr(session.on_approve, "__name__", "") == "<lambda>":
+            session.on_approve = inner
+    with lock:
+        if all(t.status == "done" for t in plan.tasks):
+            sync_todo(session, plan, left_off="plan finished")
     return all(t.status == "done" for t in plan.tasks)
+
+
+def _locked(session, fn, lock, *a, **k):
+    """Approval prompts from parallel steps take turns, so the user answers one dialog at a time."""
+    with session.__dict__.setdefault("_approve_lock", threading.Lock()):
+        return fn(*a, **k)
 
 
 def summary_text(plan: Plan, finished: bool) -> str:

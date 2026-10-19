@@ -1,10 +1,15 @@
-"""Ask the strong model for advice — as a tool the working model can call, and automatically when it is visibly stuck.
+"""Bring in the strong model when the working one is struggling: advice, and — when it keeps going badly — taking over.
 
 The everyday model (usually local and cheap) does the work. When it hits something hard it can `consult`
 the planner model (Sonnet, say): hexiel sends the user's request, the last few steps and the question, and
 the answer comes back as advice the working model reads before its next step. If the working model doesn't
 ask but is clearly going round in circles (three failing tool calls in a row, or the same call three times),
 hexiel asks on its behalf. At most MAX_PER_TURN consultations per turn keeps the cloud bill predictable.
+
+Struggle is a SCORE, not a single rule: failed tool calls, empty or "not found" results, the same call repeated, a very long
+grind, and above all the user correcting the model ("no, it IS on the macmini") all add to it. Past ADVICE_AT the strong model
+gives advice; past ESCALATE_AT the strong model becomes the working model for a short burst of steps, then control returns
+to the cheap model. `/cloud <request>` forces the cloud model for a whole request.
 """
 
 from __future__ import annotations
@@ -14,9 +19,14 @@ import json
 from . import planner
 
 MAX_PER_TURN = 3
-STRUGGLE_ERRORS = 3          # consecutive failing tool calls
-STRUGGLE_REPEATS = 3         # the very same call, again and again
+STRUGGLE_ERRORS = 3          # consecutive failing tool calls (an extra push on the score)
+STRUGGLE_REPEATS = 3         # the very same call, again and again (an extra push on the score)
 CONTEXT_CHARS = 9000
+
+ADVICE_AT = 4.0              # struggle score that gets advice from the strong model
+ESCALATE_AT = 7.0            # ... and that moves the WORKING model to the strong model for a burst of steps
+ESCALATE_STEPS = 8           # length of a burst (model requests)
+MAX_BURSTS_PER_TURN = 2
 
 CONSULT_SYSTEM = (
     "You are a senior engineer advising a coding agent that runs on a smaller model. It will read your advice and then "
@@ -112,54 +122,175 @@ def tool_def(session):
                    readonly=True, always_ok=True, run=run)
 
 
-# ---------------------------------------------------------------- noticing that the agent is stuck
+# ---------------------------------------------------------------- noticing that the agent is struggling
+
+import re
+
+_CORRECTION = [re.compile(p, re.I) for p in (
+    r"\bstop \w+ing\b", r"\bstop (it|that|this|now)\b", r"\bi('m| am)? ?(already |have |'ve )?(told|telling|said|saying|explained)\b",
+    r"\blisten( to me)?\b", r"\bpay attention\b", r"\byou('re| are) (wrong|not listening|ignoring|still)\b",
+    r"\b(that|this|it)('s| is) (wrong|incorrect|not (right|true|it|what))\b", r"\bnot what i (asked|said|meant|want)",
+    r"\bstill (wrong|broken|not|doesn't|isn't|failing)\b", r"\bwhy (are|do|did) you (keep|still|even)\b",
+    r"\bkeep(s)? (doing|asking|saying|trying)\b", r"^\s*no\b[,!. ]", r"\bno[,!.]+\s+(it|that|you|i|the|this)\b",
+    r"\b(does ?n[o']t|not|isn't) (work|working)\b", r"\bignor(e|ing) (me|what)", r"\bget to work\b", r"^\s*stop\W*$", r"\bi assure you\b", r"!{2,}")]
+_EMPHASIS = re.compile(r"\b(NO+|NOT|STOP|NEVER|WRONG|LISTEN|ALREADY|DON'T|DOESN'T|ISN'T|IS|ARE|MUST|ONLY)\b")   # case-sensitive: SHOUTING
+
+
+def looks_like_correction(text: str) -> bool:
+    """True when a user message sounds like correcting or being frustrated with the model (short messages only —
+    a pasted log or file is not a correction)."""
+    text = (text or "").strip()
+    if not text or len(text) > 600:
+        return False
+    if any(p.search(text) for p in _CORRECTION):
+        return True
+    return len(_EMPHASIS.findall(text)) >= 2 or bool(re.search(r"\bNO{3,}\b", text))
+
+
+_NO_INFO = re.compile(r"^\s*(\(no output\)|no such file|not found|no matches?|command not found|cannot access)", re.I)
+
+
+def _fresh_state() -> dict:
+    return {"score": 0.0, "errors": 0, "sig": None, "repeat": 0, "steps": 0, "why": [], "advice_step": -99,
+            "bursts": 0, "burst": None}
+
+
+def _state(session) -> dict:
+    return session.__dict__.setdefault("_struggle", _fresh_state())
+
 
 def reset_turn(session) -> None:
     session.__dict__["_consults"] = 0
-    session.__dict__["_struggle"] = {"errors": 0, "sig": None, "repeat": 0, "asked": False}
+    session.__dict__["_struggle"] = _fresh_state()
 
 
-def record_result(session, call: dict, is_error: bool) -> None:
-    """Called after every tool call: tracks failures in a row and identical repeated calls."""
-    st = session.__dict__.setdefault("_struggle", {"errors": 0, "sig": None, "repeat": 0, "asked": False})
+def _add(session, points: float, why: str) -> None:
+    st = _state(session)
+    st["score"] += points
+    st["why"] = (st["why"] + [why])[-4:]
+
+
+def record_result(session, call: dict, is_error: bool, text: str = "") -> None:
+    """Called after every tool call: failures, empty results, repeats and a long grind raise the struggle score."""
+    st = _state(session)
     if call.get("name") == "consult":
         return
+    st["steps"] += 1
     sig = (call.get("name"), json.dumps(call.get("arguments", {}), sort_keys=True)[:600])
     st["repeat"] = st["repeat"] + 1 if sig == st["sig"] else 1
     st["sig"] = sig
-    st["errors"] = st["errors"] + 1 if is_error else 0
+    if is_error:
+        st["errors"] += 1
+        _add(session, 1.0, "a tool call failed")
+        if st["errors"] == STRUGGLE_ERRORS:
+            _add(session, 3.0, f"{STRUGGLE_ERRORS} tool calls in a row failed")
+    else:
+        st["errors"] = 0
+        if _NO_INFO.match(text or ""):
+            _add(session, 0.4, "several results had nothing in them")     # searching is normal; ten empty ones in a row are not
+        else:
+            st["score"] = max(0.0, st["score"] - 0.5)                    # real progress cools things down
+    if st["repeat"] >= 2:
+        _add(session, 1.0, f"the same {sig[0]} call again")
+    if st["repeat"] == STRUGGLE_REPEATS:
+        _add(session, 3.0, f"the same {sig[0]} call {STRUGGLE_REPEATS} times")
+    if st["steps"] >= 20 and st["steps"] % 10 == 0:
+        _add(session, 2.0, f"{st['steps']} tool calls in one request")
+
+
+def note_user_message(session, text: str) -> None:
+    """The user spoke to the model mid-conversation: if it sounds like a correction, that is the strongest signal there is."""
+    if looks_like_correction(text):
+        _add(session, 4.0, "you corrected it")
 
 
 def struggle_reason(session) -> str:
-    st = session.__dict__.get("_struggle")
-    if not st or st.get("asked"):
-        return ""
-    if st["errors"] >= STRUGGLE_ERRORS:
-        return f"the last {st['errors']} tool calls in a row failed"
-    if st["repeat"] >= STRUGGLE_REPEATS:
-        return f"the same {st['sig'][0]} call was repeated {st['repeat']} times"
-    return ""
+    return "; ".join(_state(session)["why"][-3:]) or "it is struggling"
 
 
-def maybe_auto(session) -> None:
-    """Called before each model request. If the agent is stuck, get advice for it and put it in front of it."""
-    if getattr(session.settings, "consult_mode", "auto") != "auto" or unavailable_reason(session):
-        return
-    if used_this_turn(session) >= MAX_PER_TURN:
-        return
-    reason = struggle_reason(session)
-    if not reason:
-        return
-    st = session.__dict__["_struggle"]
-    st["asked"] = True                         # once per stuck spell; a new streak of failures can ask again
-    session.on_event("note", f"🧭 {reason} — asking {consultant(session).name} for advice")
+# ---------------------------------------------------------------- taking over for a burst of steps
+
+def strong_available(session) -> bool:
+    """Is there a different (stronger) model to hand the work to?"""
+    return consultant(session).name != session.model_config.name and not getattr(session, "_escalated_from", None)
+
+
+def can_escalate(session) -> bool:
+    """Escalation needs a different (stronger) model than the one working now, and the feature switched on."""
+    return (getattr(session.settings, "escalate_mode", "auto") != "off"
+            and not getattr(session, "internal", False)
+            and consultant(session).name != session.model_config.name
+            and not getattr(session, "_escalated_from", None))
+
+
+def escalate(session, reason: str, steps: int = ESCALATE_STEPS) -> bool:
+    """Make the strong model the working model for `steps` requests. False if it can't be done."""
+    from . import llm
+    cm = consultant(session)
     try:
-        advice = ask(session, "", reason=reason)
-    except Exception as exc:  # noqa: BLE001
-        session.on_event("note", f"⚠ could not get advice ({str(exc)[:100] or type(exc).__name__}) — carrying on")
+        provider = llm.make_provider(cm, session.settings)
+    except (SystemExit, ValueError, KeyError) as exc:
+        session.on_event("note", f"⚠ could not switch to {cm.name} ({str(exc)[:100] or type(exc).__name__}) — carrying on")
+        return False
+    st = _state(session)
+    st["bursts"] += 1
+    st["burst"] = {"left": steps}
+    session._escalated_from = session.model_config
+    session.model_config = cm
+    session._provider_override = provider
+    session.set_active_model(cm, "escalated")
+    session.on_event("note", f"⬆ switching to {cm.name} " + ("for this request" if steps >= 10 ** 5 else f"for the next {steps} steps")
+                     + f" — {reason}")
+    return True
+
+
+def end_burst(session, why: str = "") -> None:
+    """Hand the work back to the cheap model."""
+    original = getattr(session, "_escalated_from", None)
+    if not original:
         return
-    if advice:
-        session.messages.append({"role": "user", "content": (
-            f"[Advice from {consultant(session).name}, requested automatically because {reason}. Read it, follow it "
-            f"unless you can see it is wrong, and say what you changed.]\n\n{advice}")})
-        st.update(errors=0, repeat=0, sig=None, asked=False)
+    session.model_config = original
+    session._provider_override = None
+    session._escalated_from = None
+    session.active_model = ""
+    st = _state(session)
+    st["burst"] = None
+    st["score"] = 0.0
+    st["why"] = []
+    session.on_event("model_active")
+    session.on_event("note", f"↩ back on {original.model}" + (f" ({why})" if why else ""))
+
+
+def maybe_help(session) -> None:
+    """Called before every model request: during a burst, count it down; otherwise decide whether the struggle score
+    calls for advice or for the strong model to take over."""
+    st = _state(session)
+    burst = st.get("burst")
+    if burst:
+        burst["left"] -= 1
+        if burst["left"] <= 0:
+            end_burst(session, "burst finished")
+        return
+    if st["score"] >= ESCALATE_AT and st["bursts"] < MAX_BURSTS_PER_TURN and can_escalate(session):
+        if escalate(session, struggle_reason(session)):
+            return
+    if (st["score"] >= ADVICE_AT and getattr(session.settings, "consult_mode", "auto") == "auto"
+            and not unavailable_reason(session)
+            and used_this_turn(session) < MAX_PER_TURN and st["steps"] - st["advice_step"] >= 6):
+        reason = struggle_reason(session)
+        st["advice_step"] = st["steps"]
+        session.on_event("note", f"🧭 {reason} — asking {consultant(session).name} for advice")
+        try:
+            advice = ask(session, "", reason=reason)
+        except Exception as exc:  # noqa: BLE001
+            session.on_event("note", f"⚠ could not get advice ({str(exc)[:100] or type(exc).__name__}) — carrying on")
+            return
+        if advice:
+            session.messages.append({"role": "user", "content": (
+                f"[Advice from {consultant(session).name}, requested automatically because {reason}. Read it, follow it "
+                f"unless you can see it is wrong, and say what you changed.]\n\n{advice}")})
+            st.update(errors=0, repeat=0, sig=None)
+            st["score"] = 2.0                 # trouble that carries on after advice should escalate soon
+
+
+maybe_auto = maybe_help          # (the earlier name)

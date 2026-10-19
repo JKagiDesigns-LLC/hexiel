@@ -55,6 +55,10 @@ FIELDS = [
      "options": [True, False], "help": "show the plan and wait for a yes before the worker model starts"},
     {"key": "settings.delegate_retries", "label": "Step retries", "kind": "number",
      "options": [0, 1, 2, 3, 5], "help": "fix attempts per step before it is handed to the planner model"},
+    {"key": "settings.escalate_mode", "label": "Switch to cloud", "kind": "choice",
+     "options": ["auto", "off"],
+     "help": "when the working model keeps struggling (failures, empty results, repeats, or you correcting it) the planner "
+             "model takes over for a few steps, then the work goes back; /cloud forces it for one request"},
     {"key": "settings.consult_mode", "label": "Ask for advice", "kind": "choice",
      "options": ["auto", "tool", "off"],
      "help": "the planner model gives advice when the working model asks, or (auto) when it is stuck — "

@@ -149,6 +149,7 @@ class Session:
         self.guard_commits = settings.guard_commits       # auto-approve, but still ask before git/svn commits
         self.compacting = False
         self.usage_by_model: dict[str, dict] = {}     # model id -> {requests, prompt, cached, completion}: what each model cost
+        self.internal = False      # True for hexiel's own helper sessions (delegated steps, briefings): their prompts are not the user's
         self.active_model = ""     # "model · role" while a /delegate role (planner/worker) is working; "" otherwise
         self._usage_msgs = 0       # len(messages) when the request behind last_usage was sent
         self._pending: list[str] = []          # messages the user typed while a turn was running
@@ -207,6 +208,7 @@ class Session:
             return
         for text in items:
             self.messages.append({"role": "user", "content": STEERING_NOTE + text})
+            consult.note_user_message(self, text)
         self.on_event("note", "↳ hexiel read your new message" if len(items) == 1
                       else f"↳ hexiel read your {len(items)} new messages")
         self.save()
@@ -229,12 +231,20 @@ class Session:
     def _turn_body(self, user_text: str) -> None:
         from .tools import attach_images
         delegate_mode = None                       # /delegate forces it, /solo opts out of the automatic check
+        cloud_turn = False                         # /cloud: the strong model answers this request itself
+        if user_text == "/cloud" or user_text.startswith("/cloud "):
+            user_text, cloud_turn = user_text[len("/cloud"):].strip(), True
         for prefix, mode in (("/delegate", "force"), ("/solo", "skip")):
             if user_text == prefix or user_text.startswith(prefix + " "):
                 user_text, delegate_mode = user_text[len(prefix):].strip(), mode
                 break
         self._turn_request = user_text            # what consulting the strong model is told the user asked for
         consult.reset_turn(self)
+        if not self.internal and any(m.get("role") == "assistant" for m in self.messages):
+            consult.note_user_message(self, user_text)        # a correction right after hexiel's last answer counts
+        if cloud_turn and user_text:
+            if not (consult.strong_available(self) and consult.escalate(self, "you asked for the cloud model", steps=10 ** 6)):
+                self.on_event("note", "no stronger model is available — set a Planner model in /config; carrying on locally")
         if delegate_mode == "force" and not user_text:
             self.on_event("note", "usage: /delegate <request>  — or /delegate resume to continue an unfinished plan")
             self.on_event("turn_end")
@@ -274,11 +284,11 @@ class Session:
                     return
                 self._deliver_pending()
                 try:
-                    consult.maybe_auto(self)               # stuck? get the strong model's advice before the next step
-                except Exception:  # noqa: BLE001 - advice is a bonus, never a reason to stop
+                    consult.maybe_help(self)               # struggling? advice, or the strong model takes over for a while
+                except Exception:  # noqa: BLE001 - help is a bonus, never a reason to stop
                     pass
                 if self.compaction_needed() and not self.compacting:
-                    self.compact(provider)
+                    self.compact(self._provider_override or provider)
                 tool_defs = [{"name": t.name, "description": t.description, "parameters": t.parameters}
                              for t in self.tools]        # load_tools may have added a group
                 self.on_event("request", self.tokens_now())
@@ -320,6 +330,7 @@ class Session:
                     self._execute_tool(call)
                     self._auto_todo_step(user_text, call, assistant, turn)
         finally:
+            consult.end_burst(self, "request finished")      # always hand the next request back to the cheap model
             self._auto_todo_finish(turn)
             if turn["ok"]:
                 self._auto_commit(user_text)
@@ -654,7 +665,7 @@ class Session:
         if getattr(result, "images", None):
             entry["images"] = result.images
         self.messages.append(entry)
-        consult.record_result(self, call, bool(result.is_error))
+        consult.record_result(self, call, bool(result.is_error), result.text)
         if cache_key is not None and not result.is_error:
             self.tool_ctx.result_cache[cache_key] = result
         self.on_event("tool_result", call, result.text, result.is_error,
@@ -981,7 +992,8 @@ class Session:
             sessions.mkdir(parents=True, exist_ok=True)
             payload = {
                 "id": self.id, "created": self.created, "cwd": self.cwd,
-                "model": self.model_config.name, "messages": self.messages[-400:],
+                "model": (getattr(self, "_escalated_from", None) or self.model_config).name,
+                "messages": self.messages[-400:],
             }
             (sessions / f"{self.id}.json").write_text(json.dumps(payload))
         except OSError:

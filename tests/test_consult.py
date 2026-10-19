@@ -76,7 +76,7 @@ def test_three_failing_calls_in_a_row_get_advice_before_the_next_step(tmp_path, 
     assert not advice_messages(seen[2])                                    # 2 failures: not yet
     assert "make the build pass" in asked[0]["user"] and "(FAILED)" in asked[0]["user"] and "boom" in asked[0]["user"]
     assert asked[0]["mc"] == "cloud" and asked[0]["system"] == consult.CONSULT_SYSTEM
-    assert any(e[0] == "note" and "last 3 tool calls in a row failed" in e[1] for e in events)
+    assert any(e[0] == "note" and "3 tool calls in a row failed" in e[1] for e in events)
     assert any(e[0] == "note" and "advice from cloud (460 tokens)" in e[1] for e in events)
     assert "big · advising" in shown and s.active_model == ""
 
@@ -84,7 +84,7 @@ def test_three_failing_calls_in_a_row_get_advice_before_the_next_step(tmp_path, 
 def test_the_same_call_repeated_three_times_counts_as_stuck(tmp_path, monkeypatch):
     s, ran, events, _, asked, seen = build(tmp_path, monkeypatch, [call("ok", q=1), call("ok", q=1), call("ok", q=1), DONE])
     s.run_turn("go")
-    assert len(asked) == 1 and "repeated 3 times" in asked[0]["user"]
+    assert len(asked) == 1 and "the same ok call 3 times" in asked[0]["user"]
 
 
 def test_progress_is_not_mistaken_for_being_stuck(tmp_path, monkeypatch):

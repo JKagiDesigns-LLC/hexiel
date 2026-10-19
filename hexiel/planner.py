@@ -352,6 +352,7 @@ def make_helper(session, mc, system: str, tools: list):
     helper.bind_tool_ctx(session.tool_ctx)
     helper.hooks = session.hooks
     helper.rules = session.rules
+    helper.internal = True            # its prompts come from hexiel, not the user; and a stuck step is escalated by the plan itself
     helper.auto_approve = session.auto_approve
     helper.guard_commits = session.guard_commits
     helper.save = lambda: None

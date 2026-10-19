@@ -321,7 +321,7 @@ def make_app(session: Session) -> web.Application:
         if cmd == "undo":
             restored = session.undo()
             return ("↶ " + "\n".join(restored)) if restored else "nothing to undo"
-        if cmd in ("delegate", "solo"):
+        if cmd in ("delegate", "solo", "cloud"):
             return "prompt:" + text           # the session parses the prefix
         if cmd == "plan":
             session.plan_mode = not session.plan_mode

@@ -1044,7 +1044,7 @@ class HexielTUI(App):
             return text
         cmd, _, arg = text[1:].partition(" ")
         arg = arg.strip()
-        if cmd in ("delegate", "solo"):       # handled by the session itself (it parses the prefix)
+        if cmd in ("delegate", "solo", "cloud"):       # handled by the session itself (it parses the prefix)
             return text
         handler = {
             "help": self.cmd_help, "clear": self.cmd_clear, "compact": self.cmd_compact,

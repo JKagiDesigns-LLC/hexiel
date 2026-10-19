@@ -63,6 +63,7 @@ searxng_url = ""            # e.g. http://localhost:8888 when search_backend = "
 # auto_delegate = "ask"         # "off" | "ask" (offer to delegate big requests) | "auto"
 # delegate_approval = true      # show the plan and wait for a yes before running it
 # delegate_retries = 2          # fix attempts per task before escalating it to the planner model
+# escalate_mode = "auto"        # when the working model is struggling the planner model takes over for a few steps: "auto" | "off"
 # consult_mode = "auto"         # ask the planner model for advice when stuck: "auto" | "tool" (only if the model asks) | "off"
 # delegate_review = "auto"      # the planner reviews the finished diff and fixes problems: "auto" | "always" | "off"
 
@@ -173,6 +174,7 @@ class Settings:
     auto_delegate: str = "off"        # size up each request: "off" | "ask" (offer to delegate big ones) | "auto"
     delegate_approval: bool = True    # show the plan and wait for a yes before running it
     delegate_retries: int = 2         # fix attempts per task before escalating it to the planner model
+    escalate_mode: str = "auto"       # when the working model is struggling, let the planner model take over for a few steps: "auto" | "off"
     consult_mode: str = "auto"        # ask the planner model for advice: "auto" (the model may ask, and hexiel asks when it is stuck) | "tool" (only when the model asks) | "off"
     delegate_review: str = "auto"     # after a delegated run the planner model reviews the diff: "auto" (when it is a different model than the worker) | "always" | "off"
 
@@ -285,6 +287,7 @@ def _settings_from(settings_raw: dict) -> "Settings":
                        if str(settings_raw.get("auto_delegate", "off")).lower() in ("off", "ask", "auto") else "off"),
         delegate_approval=bool(settings_raw.get("delegate_approval", True)),
         delegate_retries=max(0, int(settings_raw.get("delegate_retries", 2))),
+        escalate_mode="off" if str(settings_raw.get("escalate_mode", "auto")).lower() == "off" else "auto",
         consult_mode=(str(settings_raw.get("consult_mode", "auto")).lower()
                       if str(settings_raw.get("consult_mode", "auto")).lower() in ("off", "tool", "auto") else "auto"),
         delegate_review=(str(settings_raw.get("delegate_review", "auto")).lower()

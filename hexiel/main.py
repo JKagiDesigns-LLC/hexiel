@@ -260,6 +260,7 @@ def main() -> None:
     memory_mod.ensure_dirs(cwd)
     if args.yes:
         session.auto_approve = True
+        session.guard_commits = False          # -y is "everything"; use auto_approve = "except-commits" for the careful mode
 
     if args.print_mode is not None:
         prompts = [args.print_mode]

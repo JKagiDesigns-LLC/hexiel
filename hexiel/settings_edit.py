@@ -26,8 +26,10 @@ FIELDS = [
      "help": "tokens before auto-compaction; keep in sync with the server's limit"},
     {"key": "model.max_output_tokens", "label": "Max output", "kind": "number",
      "options": [4096, 8192, 16384, 32768], "help": "longest single reply"},
-    {"key": "settings.auto_approve", "label": "Auto-approve", "kind": "bool",
-     "options": [False, True], "help": "run edits and commands without asking"},
+    {"key": "settings.auto_approve", "label": "Auto-approve", "kind": "choice",
+     "options": ["off", "except commits", "everything"],
+     "help": "off = ask first; except commits = run everything but ask before git/svn commits and pushes; "
+             "everything = never ask (risky)"},
     {"key": "settings.compact_threshold", "label": "Compact at", "kind": "number",
      "options": [0.7, 0.75, 0.8, 0.82, 0.85, 0.9],
      "help": "share of the context window that triggers auto-compaction"},
@@ -73,13 +75,18 @@ def _live_value(session, key: str):
     if key.startswith("model."):
         return getattr(mc, key.split(".", 1)[1])
     if key == "settings.auto_approve":
-        return bool(session.auto_approve)
+        return _MODE_LABEL[config_mod.approve_mode(session.auto_approve, session.guard_commits)]
     return getattr(st, key.split(".", 1)[1])
+
+
+_MODE_LABEL = {"off": "off", "except-commits": "except commits", "all": "everything"}
 
 
 def _saved_value(cfg, key: str, profile: str):
     if key == "profile":
         return cfg.default_model
+    if key == "settings.auto_approve":
+        return _MODE_LABEL[config_mod.approve_mode(cfg.settings.auto_approve, cfg.settings.guard_commits)]
     mc = cfg.models.get(profile)
     if key == "model.reasoning":
         return (mc.extra_body or {}).get("reasoning_effort", "model default") if mc else None
@@ -122,6 +129,8 @@ def rows(session, with_options: bool = False) -> list[dict]:
 # ---------------------------------------------------------------- coercion
 
 def coerce(key: str, value):
+    if key == "settings.auto_approve":
+        return config_mod.parse_auto_approve(value)        # "off" | "except-commits" | "all"
     kind = FIELD_BY_KEY[key]["kind"]
     if kind == "bool":
         if isinstance(value, str):
@@ -158,15 +167,18 @@ def apply(session, key: str, value, scope: str) -> str:
     elif key.startswith("model."):
         session.model_config = dataclasses.replace(session.model_config,
                                                    **{key.split(".", 1)[1]: value})
+    elif key == "settings.auto_approve":
+        session.auto_approve = value != "off"
+        session.guard_commits = value == "except-commits"
+        session.settings.auto_approve, session.settings.guard_commits = session.auto_approve, session.guard_commits
     else:
         setattr(session.settings, key.split(".", 1)[1], value)
-        if key == "settings.auto_approve":
-            session.auto_approve = value
 
     # 2. config file
     label = FIELD_BY_KEY[key]["label"]
+    shown = _MODE_LABEL[value] if key == "settings.auto_approve" else value
     if scope == "session":
-        return f"{label} → {value} (this session only)"
+        return f"{label} → {shown} (this session only)"
     if key == "profile":
         _write(None, "default", value)
     elif key == "model.reasoning":
@@ -174,9 +186,11 @@ def apply(session, key: str, value, scope: str) -> str:
         _write(f"models.{profile}", "extra_body", extra if extra else None)
     elif key.startswith("model."):
         _write(f"models.{profile}", key.split(".", 1)[1], value)
+    elif key == "settings.auto_approve":
+        _write("settings", "auto_approve", {"off": False, "except-commits": "except-commits", "all": True}[value])
     else:
         _write("settings", key.split(".", 1)[1], value)
-    return f"{label} → {value} (saved to {config_mod.CONFIG_FILE})"
+    return f"{label} → {shown} (saved to {config_mod.CONFIG_FILE})"
 
 
 def add_profile(name: str, fields: dict) -> str:

@@ -476,8 +476,12 @@ class StatusLine(Static):
             model = self._session.active_model or self._session.model_config.model
             from . import todo as todo_mod
             todo_line = todo_mod.summary_line(self._session.cwd)
-            approve = ("[yellow]auto-approve[/]", "auto-approve") if self._session.auto_approve \
-                else ("approving writes", "approving writes")
+            if not self._session.auto_approve:
+                approve = ("approving writes", "approving writes")
+            elif self._session.guard_commits:
+                approve = ("[yellow]auto-approve · asks before commits[/]", "auto-approve · asks before commits")
+            else:
+                approve = ("[b red]AUTO-APPROVE ALL[/]", "AUTO-APPROVE ALL")
             if getattr(self._session, "plan_mode", False):
                 approve = ("[b yellow]PLAN MODE[/]", "PLAN MODE")
             # (markup, plain) segments in priority order; low-priority ones drop
@@ -1299,9 +1303,25 @@ class HexielTUI(App):
         self.push_screen(ScopeScreen(f"Switch to {name} ({fields['model']})"), callback=done)
 
     def cmd_auto(self, arg: str) -> None:
-        self.session.auto_approve = not self.session.auto_approve
-        state = "enabled" if self.session.auto_approve else "disabled"
-        self.add_note(f"auto-approve {state}")
+        """/auto cycles off -> everything except commits -> everything; or name one: /auto off|commits|all."""
+        from . import settings_edit
+        from .config import approve_mode
+        words = {"off": "off", "commits": "except-commits", "except-commits": "except-commits", "safe": "except-commits",
+                 "all": "all", "everything": "all", "on": "all"}
+        now = approve_mode(self.session.auto_approve, self.session.guard_commits)
+        if arg.strip():
+            if arg.strip().lower() not in words:
+                self.add_note("usage: /auto  (cycles)  or  /auto off | commits | all")
+                return
+            new = words[arg.strip().lower()]
+        else:
+            new = {"off": "except-commits", "except-commits": "all", "all": "off"}[now]
+        settings_edit.apply(self.session, "settings.auto_approve", new, "session")
+        self.add_note({"off": "auto-approve OFF — hexiel asks before edits and commands",
+                       "except-commits": "auto-approve ON, except commits — everything runs without asking, but git/svn "
+                                         "commits and pushes still ask first",
+                       "all": "⚠ auto-approve EVERYTHING — nothing asks, including commits, pushes and deletes. "
+                              "/auto again to turn it off."}[new])
         self._refresh_status()
 
     def cmd_memory(self, arg: str) -> None:
@@ -1622,6 +1642,7 @@ class HexielTUI(App):
             healer = build_session(str(ws.path), None)
         healer.model_config = original.model_config
         healer.auto_approve = original.auto_approve
+        healer.guard_commits = original.guard_commits
         self._heal = {"original": original, "ws": ws, "incidents": incidents, "description": description}
         self.session = healer
         self.query_one(Banner).retarget(str(ws.path), "[b yellow]· HEAL MODE[/]")

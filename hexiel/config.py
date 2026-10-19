@@ -49,7 +49,7 @@ DEFAULT_CONFIG = '''\
 default = "glm-flash"
 
 [settings]
-auto_approve = false        # when true, write tools and bash run without approval
+auto_approve = false        # false = ask first | "except-commits" = auto-approve all but git/svn commits | true = everything
 compact_threshold = 0.82    # auto-compact when the prompt reaches this share of the context window
 request_timeout = 900       # seconds per provider request
 search_backend = "duckduckgo"   # "duckduckgo" (no key) or "searxng"
@@ -150,7 +150,8 @@ class ModelConfig:
 
 @dataclass
 class Settings:
-    auto_approve: bool = False
+    auto_approve: bool = False        # run edits and commands without asking (see guard_commits)
+    guard_commits: bool = False       # with auto_approve: still ask before anything that commits/pushes (git, svn)
     compact_threshold: float = 0.82
     request_timeout: int = 900
     search_backend: str = "duckduckgo"
@@ -230,9 +231,35 @@ def load_config(model_override: str | None = None) -> Config:
                   mcp=raw.get("mcp", {}), permissions=raw.get("permissions", {}))
 
 
+APPROVE_MODES = ("off", "except-commits", "all")
+
+
+def parse_auto_approve(value) -> str:
+    """auto_approve = false | "except-commits" | true  ->  "off" | "except-commits" | "all"."""
+    if value is None or value is False:
+        return "off"
+    if value is True:
+        return "all"
+    if isinstance(value, str):
+        v = value.strip().lower().replace("_", "-").replace(" ", "-")
+        if v in ("off", "false", "no", "0", "ask"):
+            return "off"
+        if v in ("except-commits", "no-commits", "except-commit", "safe"):
+            return "except-commits"
+        if v in ("all", "true", "yes", "on", "1", "everything"):
+            return "all"
+    raise ValueError('auto_approve must be false, true or "except-commits"')
+
+
+def approve_mode(auto: bool, guard: bool) -> str:
+    return "off" if not auto else ("except-commits" if guard else "all")
+
+
 def _settings_from(settings_raw: dict) -> "Settings":
+    mode = parse_auto_approve(settings_raw.get("auto_approve", False))
     return Settings(
-        auto_approve=bool(settings_raw.get("auto_approve", False)),
+        auto_approve=mode != "off",
+        guard_commits=mode == "except-commits",
         compact_threshold=float(settings_raw.get("compact_threshold", 0.82)),
         request_timeout=int(settings_raw.get("request_timeout", 900)),
         search_backend=str(settings_raw.get("search_backend", "duckduckgo")),

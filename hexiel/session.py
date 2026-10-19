@@ -142,6 +142,7 @@ class Session:
         self.last_usage: dict = {}
         self.total_completion_tokens = 0
         self.auto_approve = settings.auto_approve
+        self.guard_commits = settings.guard_commits       # auto-approve, but still ask before git/svn commits
         self.compacting = False
         self.active_model = ""     # "model · role" while a /delegate role (planner/worker) is working; "" otherwise
         self._usage_msgs = 0       # len(messages) when the request behind last_usage was sent
@@ -559,9 +560,17 @@ class Session:
             return
         skips_approval = getattr(tool, "always_ok", False) or rule == "allow"
         needs_ask = rule == "ask" or (not tool.readonly and not skips_approval and not self.auto_approve)
+        guarded = False
+        if (not needs_ask and self.auto_approve and self.guard_commits and rule != "allow"
+                and not tool.readonly and not getattr(tool, "always_ok", False)):
+            what = permissions.commit_action(tool.name, call["arguments"])
+            if what:
+                guarded = needs_ask = True
+                self.on_event("note", f"🔒 this would run {what} — asking first "
+                                      "(auto-approve is set to everything except commits)")
         if needs_ask:
             verdict = self.on_approve(tool.name, call["arguments"])
-            if verdict == "always":
+            if verdict == "always" and not guarded:
                 # scoped: "always" for git status means git status, not every command
                 self.rules.allow.append(permissions.always_rule(tool.name, call["arguments"]))
             elif verdict == "no":

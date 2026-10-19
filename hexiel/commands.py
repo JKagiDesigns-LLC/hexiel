@@ -75,7 +75,7 @@ BUILTIN = [
     ("models", "", "list models available on the Ollama server"),
     ("clear", "", "start a fresh conversation"),
     ("compact", "", "summarize history now to free up context"),
-    ("auto", "", "toggle auto-approve for edits and commands"),
+    ("auto", "[off|commits|all]", "auto-approve: cycle off / everything except git+svn commits / everything"),
     ("plan", "", "toggle plan mode: investigate and plan, change nothing"),
     ("delegate", "<request>|resume", "a strong model plans it, your worker model does each step (see /config for the models)"),
     ("solo", "<request>", "run this request normally, skipping the automatic big-task check"),

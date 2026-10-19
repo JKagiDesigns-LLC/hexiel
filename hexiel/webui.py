@@ -17,6 +17,7 @@ from aiohttp import WSMsgType, web
 
 from . import memory as memory_mod
 from . import settings_edit
+from .config import approve_mode
 from . import skills as skills_mod
 from . import todo as todo_mod
 from .config import load_config, home_data_dir
@@ -52,6 +53,7 @@ def status_state(session: Session) -> dict:
                     "pct": min(100, 100 * tokens_now // max(window, 1)),
                     "compact_at_pct": int(100 * session.settings.compact_threshold)},
         "auto_approve": session.auto_approve,
+        "auto_mode": approve_mode(session.auto_approve, session.guard_commits),
         "busy": getattr(session, "_web_busy", False),
         "todo": todo_mod.summary_line(session.cwd) or None,
     }
@@ -275,6 +277,7 @@ def make_app(session: Session) -> web.Application:
                 healer = build_session(str(ws.path), None)
             healer.model_config = session.model_config
             healer.auto_approve = session.auto_approve
+            healer.guard_commits = session.guard_commits
             healer.on_event = state.on_event
             healer.on_approve = state.ask_approval
             with state.lock:
@@ -304,6 +307,17 @@ def make_app(session: Session) -> web.Application:
         cmd, arg = cmd.lower(), arg.strip()
         if cmd == "help":
             return "\n".join(f"/{n} {a}".ljust(24) + d for n, a, d in commands_mod.BUILTIN)
+        if cmd == "auto":
+            words = {"off": "off", "commits": "except-commits", "except-commits": "except-commits",
+                     "safe": "except-commits", "all": "all", "everything": "all", "on": "all"}
+            if arg and arg.lower() not in words:
+                return "usage: /auto (cycles) or /auto off | commits | all"
+            now = approve_mode(session.auto_approve, session.guard_commits)
+            new = words[arg.lower()] if arg else {"off": "except-commits", "except-commits": "all", "all": "off"}[now]
+            settings_edit.apply(session, "settings.auto_approve", new, "session")
+            return {"off": "auto-approve OFF — hexiel asks before edits and commands",
+                    "except-commits": "auto-approve ON, except commits — git/svn commits and pushes still ask first",
+                    "all": "⚠ auto-approve EVERYTHING — nothing asks, including commits, pushes and deletes"}[new]
         if cmd == "undo":
             restored = session.undo()
             return ("↶ " + "\n".join(restored)) if restored else "nothing to undo"

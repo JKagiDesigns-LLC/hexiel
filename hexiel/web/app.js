@@ -242,7 +242,9 @@ function applyStatus(status) {
   busy = status.busy;
   const c = status.context;
   const label = `${status.model_id} · ctx ${(Math.round(c.pct))}% used of ${Math.round(c.window / 1000)}k` +
-                (c.compact_at_pct ? ` (compact @${c.compact_at_pct}%)` : "");
+                (c.compact_at_pct ? ` (compact @${c.compact_at_pct}%)` : "") +
+                (status.auto_mode === "all" ? " · AUTO-APPROVE ALL" :
+                 status.auto_mode === "except-commits" ? " · auto-approve (asks before commits)" : "");
   $("#ctx-label").textContent = label;
   $("#todo-badge").textContent = status.todo || "";
   updateSendButton();

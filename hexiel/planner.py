@@ -335,6 +335,7 @@ def make_helper(session, mc, system: str, tools: list):
     helper.hooks = session.hooks
     helper.rules = session.rules
     helper.auto_approve = session.auto_approve
+    helper.guard_commits = session.guard_commits
     helper.save = lambda: None
     return helper
 
@@ -466,6 +467,9 @@ def _check_allowed(session, command: str) -> bool:
     rule = permissions.decide(session.rules, "bash", {"command": command}, session.cwd)
     if rule == "deny":
         return False
+    from .permissions import commit_action
+    if rule != "allow" and session.auto_approve and session.guard_commits and commit_action("bash", {"command": command}):
+        return session.on_approve("bash", {"command": command}) in ("yes", "always")   # commits are always asked
     if rule == "allow" or session.auto_approve or session.settings.delegate_approval:
         return True
     return session.on_approve("bash", {"command": command}) in ("yes", "always")

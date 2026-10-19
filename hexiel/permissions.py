@@ -136,3 +136,53 @@ def always_rule(tool: str, args: dict) -> str:
         host = urlparse(_argument(tool, args)).hostname
         return f"WebFetch(domain:{host})" if host else name
     return name
+
+
+# ---------------------------------------------------------------- version-control commits
+
+EXEC_TOOLS = {"bash", "powershell", "python", "container", "test"}      # tools that run commands or code
+
+# Words after `git` that record or publish history. `ci` is the usual alias for commit.
+_GIT_WORDS = r"(?:commit|ci|push|merge|rebase|cherry-pick|revert|am)"
+# `git`, then options and arguments (no ; & | or newline in between), then one of those words. Deliberately broad:
+# it also matches Python like subprocess.run(["git", "-C", d, "commit"]) and `bash -c "cd x && git commit"`;
+# when in doubt it asks, which is the safe direction.
+_GIT_RE = re.compile(r"\bgit\b[ \t\"',\[\]()=./:~_@%+\w-]{0,160}?(?<![\w-])" + _GIT_WORDS + r"(?![\w-])")
+_GIT_DASH_RE = re.compile(r"\bgit-" + _GIT_WORDS + r"(?![\w-])")
+# svn: these always write to the repository...
+_SVN_RE = re.compile(r"\bsvn\b[ \t\"',\[\]()=./:~_@%+\w-]{0,160}?(?<![\w-])(?:commit|ci|import)(?![\w-])")
+# ...and these do when pointed at a repository URL (locally they only schedule a change)
+_SVN_URL_RE = re.compile(
+    r"\bsvn\b[ \t\"',\[\]()=./:~_@%+\w-]{0,160}?(?<![\w-])(?:copy|cp|move|mv|rename|ren|delete|del|remove|rm|mkdir|"
+    r"propset|ps|propdel|pd|propedit|pe)(?![\w-])[^;&|\n]*?(?:https?|svn|svn\+ssh|file)://")
+_SVNMUCC_RE = re.compile(r"\bsvnmucc\b")
+
+
+def _flatten(value) -> str:
+    if isinstance(value, dict):
+        return "\n".join(_flatten(v) for v in value.values())
+    if isinstance(value, (list, tuple)):
+        return "\n".join(_flatten(v) for v in value)
+    return str(value)
+
+
+def commit_action(tool: str, args: dict, readonly: bool = False) -> str:
+    """'git commit' / 'svn commit' / ... when this tool call would record or publish version-control history,
+    else ''. Used by the "auto-approve everything except commits" mode. It scans every argument of any tool
+    that can change things (shell, python code, container exec, MCP tools...) and errs on the side of asking."""
+    if readonly:
+        return ""
+    if tool.startswith("mcp__") and re.search(r"(?<![a-z])(commit|push|merge)(?![a-z])", tool.lower()):
+        return tool                                            # e.g. an MCP server's push_files / create_commit
+    runs_commands = tool in EXEC_TOOLS or (tool.startswith("mcp__") and any(
+        k in args for k in ("command", "cmd", "script", "code", "shell")))
+    if not runs_commands:                                      # saving a file that mentions "git commit" is fine
+        return ""
+    text = _flatten(args)
+    m = _GIT_RE.search(text) or _GIT_DASH_RE.search(text)
+    if m:
+        word = re.search(_GIT_WORDS + r"$", m.group(0))
+        return f"git {word.group(0)}" if word else "git commit"
+    if _SVN_RE.search(text) or _SVN_URL_RE.search(text) or _SVNMUCC_RE.search(text):
+        return "svn commit"
+    return ""

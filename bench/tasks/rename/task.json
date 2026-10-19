@@ -1,0 +1,6 @@
+{
+  "title": "Rename across files without touching look-alikes",
+  "prompt": "Rename the class LineItem to OrderLine and the function calc_total to compute_total everywhere in this project: code, tests, docs and user-visible messages. Do NOT rename calc_total_tax or anything else, and keep behaviour identical. Run the tests when you are done.",
+  "verify": "python -m pytest -q hidden_tests",
+  "timeout": 900
+}

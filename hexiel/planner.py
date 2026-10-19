@@ -172,6 +172,7 @@ def complete(session, mc, system: str, user: str, max_tokens: int = 4096) -> tup
             parts.append(payload[0])
         elif event == "done" and payload and payload[0]:
             usage = payload[0]
+    session.record_usage(mc.model, usage)
     return "".join(parts).strip(), usage
 
 
@@ -395,6 +396,7 @@ def build_brief(session, request: str) -> str:
             brief = _last_text(helper)
     finally:
         link.set()
+        session.merge_usage(helper)
     return brief[:6000]
 
 
@@ -570,6 +572,7 @@ def _run_task(session, plan: Plan, task: Task, helper_tools: list, system: str) 
                       "Reply with a short report of what you changed.")
     finally:
         link.set()
+        session.merge_usage(helper)
 
 
 def execute(session, plan: Plan, resumed: bool = False) -> bool:

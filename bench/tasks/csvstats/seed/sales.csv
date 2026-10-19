@@ -1,0 +1,6 @@
+region,product,amount,units
+east,pen,10,2
+east,book,20,1
+north,pen,7.5,3
+north,book,10,
+west,pen,5,5

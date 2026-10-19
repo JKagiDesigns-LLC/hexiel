@@ -391,3 +391,22 @@ def test_status_displays_use_the_active_model(env):
     assert status_state(s)["model_id"] == "big · planning"
     s.active_model = ""
     assert status_state(s)["model_id"] == "small"
+
+
+def test_usage_is_tracked_per_model_across_planner_and_worker(env):
+    s, providers, *_ = env
+    s.run_turn("/delegate make three files")
+    big, small = s.usage_by_model["big"], s.usage_by_model["small"]
+    assert big == {"requests": 1, "prompt": 500, "cached": 0, "completion": 100}      # the one planning call
+    assert small["requests"] >= 7 and small["prompt"] == small["requests"] * 10        # briefing + steps, all folded in
+
+
+def test_merge_usage_adds_a_helpers_totals():
+    mc = ModelConfig(name="t", provider="openai", model="m", base_url="http://x")
+    a, b = Session(mc, Settings(), "/tmp", [], "s"), Session(mc, Settings(), "/tmp", [], "s")
+    a.record_usage("m", {"prompt_tokens": 10, "completion_tokens": 2})
+    b.record_usage("m", {"prompt_tokens": 5, "cached_tokens": 3, "completion_tokens": 1})
+    b.record_usage("other", {"prompt_tokens": 7})
+    a.merge_usage(b)
+    assert a.usage_by_model["m"] == {"requests": 2, "prompt": 15, "cached": 3, "completion": 3}
+    assert a.usage_by_model["other"]["prompt"] == 7

@@ -1,6 +1,7 @@
 """hexiel CLI entry point: TUI, REPL, or one-shot (-p) modes."""
 
 import argparse
+import json
 import os
 import sys
 from pathlib import Path
@@ -158,6 +159,8 @@ def headless_loop(session: Session, prompts: list[str]) -> None:
             sys.stderr.write(f"❯ {text}\n")
             session.run_turn(text)
     sys.stdout.write("\n")
+    if session.usage_by_model:       # one line a script (or the benchmark) can read: tokens per model
+        sys.stderr.write("HEXIEL_USAGE " + json.dumps(session.usage_by_model) + "\n")
 
 
 def repl_loop(session: Session) -> None:

@@ -1,0 +1,6 @@
+{
+  "title": "Build a CSV statistics CLI from a precise spec",
+  "prompt": "Implement stats.py as the command-line tool described in README.md. Follow the README precisely, including the output format, sort rules and error messages with their exit codes. The sample file sales.csv is only an example. Run the visible tests in tests/ when you are done.",
+  "verify": "python -m pytest -q hidden_tests",
+  "timeout": 1200
+}

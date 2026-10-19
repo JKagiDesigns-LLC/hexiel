@@ -1,0 +1,6 @@
+{
+  "title": "Fix interval helpers to match the README",
+  "prompt": "The functions in intervals.py don't behave the way README.md says they should. Fix intervals.py so every function matches the README exactly (including the edge cases it lists). Run the tests in tests/ when you are done.",
+  "verify": "python -m pytest -q hidden_tests",
+  "timeout": 900
+}

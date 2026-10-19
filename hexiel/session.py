@@ -148,6 +148,7 @@ class Session:
         self.auto_approve = settings.auto_approve
         self.guard_commits = settings.guard_commits       # auto-approve, but still ask before git/svn commits
         self.compacting = False
+        self.usage_by_model: dict[str, dict] = {}     # model id -> {requests, prompt, cached, completion}: what each model cost
         self.active_model = ""     # "model · role" while a /delegate role (planner/worker) is working; "" otherwise
         self._usage_msgs = 0       # len(messages) when the request behind last_usage was sent
         self._pending: list[str] = []          # messages the user typed while a turn was running
@@ -159,6 +160,22 @@ class Session:
 
     def stop(self) -> None:
         self._stop.set()
+
+    def record_usage(self, model: str, usage: dict | None) -> None:
+        if not usage:
+            return
+        u = self.usage_by_model.setdefault(model, {"requests": 0, "prompt": 0, "cached": 0, "completion": 0})
+        u["requests"] += 1
+        u["prompt"] += usage.get("prompt_tokens", 0)
+        u["cached"] += usage.get("cached_tokens", 0)
+        u["completion"] += usage.get("completion_tokens", 0)
+
+    def merge_usage(self, other: "Session") -> None:
+        """Fold a helper session's per-model usage into this one (delegated steps, briefings, subagents)."""
+        for model, u in other.usage_by_model.items():
+            mine = self.usage_by_model.setdefault(model, {"requests": 0, "prompt": 0, "cached": 0, "completion": 0})
+            for key, value in u.items():
+                mine[key] += value
 
     def set_active_model(self, mc, role: str = "") -> None:
         """Tell the UIs which model is doing the work right now (the status line shows it)."""
@@ -514,6 +531,7 @@ class Session:
                     if usage:
                         self.last_usage = usage
                         self._usage_msgs = sent
+                        self.record_usage(self.model_config.model, usage)
                         t = self.usage_totals
                         t["requests"] += 1
                         t["prompt_tokens"] += usage.get("prompt_tokens", 0)
@@ -673,6 +691,7 @@ class Session:
                        if m.get("role") == "assistant" and m.get("content")), "")
         for key in self.usage_totals:
             self.usage_totals[key] += helper.usage_totals.get(key, 0)
+        self.merge_usage(helper)
         steps = sum(1 for m in helper.messages if m.get("role") == "tool")
         if not answer:
             return ToolResult(text=f"the subagent finished without an answer after {steps} step(s)",
@@ -846,6 +865,8 @@ class Session:
                     for event, *payload in self._interruptible(stream, prov):
                         if event == "text":
                             out_parts.append(payload[0])
+                        elif event == "done" and payload and payload[0]:
+                            self.record_usage(mc.model, payload[0])
                     failure = None
                     break
                 except (llm.ProviderError, httpx.HTTPError) as exc:

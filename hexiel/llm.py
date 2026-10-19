@@ -192,6 +192,8 @@ class AssistantBuffer:
     def finalize(self) -> dict:
         calls = []
         for i, call in enumerate(self.tool_calls):
+            if not call["name"] and not call["id"]:      # a gap left by a sparse index: not a real call
+                continue
             raw = "".join(self._args_chunks.get(i, []))
             try:
                 args = json.loads(raw) if raw.strip() else {}
@@ -309,7 +311,7 @@ class AnthropicProvider(AbortableHTTP):
                 if resp.status_code >= 400:
                     raise_for_status(resp.status_code, resp.headers, resp.read().decode(), "anthropic")
                 usage = {}
-                kind, idx = "", 0
+                slots: dict[int, int] = {}      # content-block index -> position in the tool-call list
                 for sse in _iter_sse(resp.iter_lines()):
                     data = json.loads(sse)
                     mtype = data.get("type", "")
@@ -323,16 +325,17 @@ class AnthropicProvider(AbortableHTTP):
                     elif mtype == "content_block_start":
                         block = data["content_block"]
                         if block["type"] == "tool_use":
-                            buf.start_call(data["index"], block["id"], block["name"])
-                            kind = "tool"
-                            idx = data["index"]
+                            # block indexes count text and thinking blocks too: a reply that says something and THEN calls
+                            # a tool has the tool at index 1, which must still be the FIRST tool call, not a second one
+                            slots[data["index"]] = len(buf.tool_calls)
+                            buf.start_call(slots[data["index"]], block["id"], block["name"])
                     elif mtype == "content_block_delta":
                         delta = data["delta"]
                         if delta["type"] == "text_delta":
                             buf.add_text(delta["text"])
                             yield ("text", delta["text"])
-                        elif delta["type"] == "input_json_delta":
-                            buf.add_args(idx, delta["partial_json"])
+                        elif delta["type"] == "input_json_delta" and data.get("index") in slots:
+                            buf.add_args(slots[data["index"]], delta["partial_json"])
                     elif mtype == "message_delta":
                         out = data.get("usage", {}).get("output_tokens")
                         if out:

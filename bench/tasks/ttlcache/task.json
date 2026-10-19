@@ -1,0 +1,6 @@
+{
+  "title": "Implement a TTL + LRU cache from a spec",
+  "prompt": "Implement the TTLCache class in ttlcache.py exactly as README.md specifies. The tests in tests/ cover only the basics; the README has more rules than they check, so follow the README. Run the tests when you are done.",
+  "verify": "python -m pytest -q hidden_tests",
+  "timeout": 900
+}

@@ -83,7 +83,8 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setattr(planner, "_config_profile",
                         lambda session, name: {"cloud": PLANNER, "local": WORKER}.get(name))
     tools = [ToolDef("write", "write a file", {"type": "object", "properties": {}}, run=_write_tool)]
-    s = Session(WORKER, Settings(planner_profile="cloud", executor_profile="local"), str(tmp_path), tools, "sys")
+    s = Session(WORKER, Settings(planner_profile="cloud", executor_profile="local", delegate_review="off"),
+                str(tmp_path), tools, "sys")
     s.auto_approve = True
     s.bind_tool_ctx(ToolContext(cwd=str(tmp_path), chain=Toolchain()))
     events, approvals = [], []

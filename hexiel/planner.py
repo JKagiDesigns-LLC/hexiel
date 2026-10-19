@@ -29,6 +29,9 @@ from . import llm
 from . import todo as todo_mod
 
 MAX_TASKS = 12
+REVIEW_DIFF_CHARS = 24000          # how much of the combined diff the reviewer is shown
+REVIEW_FILE_CHARS = 6000           # ... and of any one file
+MAX_REVIEW_ISSUES = 6
 BRIEF_TOOL_CAP = 12
 LEDGER_CHARS = 400
 CHECK_TIMEOUT = 600
@@ -62,6 +65,16 @@ PLANNER_SYSTEM = (
     "no vague tasks like 'improve' or 'clean up'; do not add work the user did not ask for; "
     "never make a task whose only job is to run tests or verify — put that command in the `check` of the "
     "task it verifies, and the plan's last task may carry a final overall check.")
+
+REVIEW_SYSTEM = (
+    "You are a senior engineer reviewing a change that a cheaper model just made, step by step, from a plan you can see. "
+    "You get the user's request, the plan, the result of each step's check and the combined diff. Look for REAL defects: "
+    "requirements from the request that were missed or only half done, bugs, wrong edge cases, broken or missing tests, "
+    "inconsistencies between files, security problems. Ignore style and taste. Reply with ONLY a JSON object:\n"
+    '{"verdict": "ok" or "fix", "summary": "<one sentence>", "issues": [{"file": "<exact path>", '
+    '"problem": "<what is wrong and how it shows>", "fix": "<the exact change to make>"}]}\n'
+    "Use verdict ok with an empty list when the change is correct and complete. List at most 6 issues, most serious first; "
+    "each fix must be specific enough for a junior engineer to apply without asking questions.")
 
 TASK_PROMPT = (
     "You are carrying out ONE step of an approved plan. Do only this step.\n\n"
@@ -108,6 +121,7 @@ class Plan:
     worker: str = ""
     created: str = ""
     path: str = ""
+    review: str = ""                 # "", or what the review found ("no problems", "2 issues found and fixed", ...)
 
     def to_json(self) -> str:
         return json.dumps(dataclasses.asdict(self), indent=2)
@@ -331,6 +345,9 @@ def make_helper(session, mc, system: str, tools: list):
     from .session import Session
     settings = dataclasses.replace(session.settings, auto_delegate="off")
     helper = Session(mc, settings, session.cwd, tools, system)
+    if any(t.name == "consult" for t in tools):            # the helper asks about ITS steps, not the parent's
+        from . import consult
+        helper.tools = [consult.tool_def(helper) if t.name == "consult" else t for t in tools]
     helper.bind_tool_ctx(session.tool_ctx)
     helper.hooks = session.hooks
     helper.rules = session.rules
@@ -525,6 +542,10 @@ def _run_task(session, plan: Plan, task: Task, helper_tools: list, system: str) 
             report = _last_text(helper)
             task.report = report or task.report
             task.changed = sorted({_relative(session.cwd, p) for ck in helper.checkpoints for p, _ in ck})
+            originals = session.__dict__.setdefault("_plan_originals", {})
+            for ck in helper.checkpoints:
+                for path, before in ck:
+                    originals.setdefault(str(path), before)          # the oldest state wins: what the review diffs against
             if errors:
                 failure = errors[-1]
             else:
@@ -590,10 +611,145 @@ def summary_text(plan: Plan, finished: bool) -> str:
         mark = {"done": "✓", "failed": "✗", "running": "…"}.get(t.status, "·")
         detail = _short(t.report, 110) if t.status in ("done", "failed") else ""
         lines.append(f"- {mark} {t.id}. {t.title}" + (f" — {detail}" if detail else ""))
+    if plan.review:
+        lines += ["", f"Review: {plan.review}"]
     changed = sorted({f for t in plan.tasks for f in t.changed})
     if changed:
         lines += ["", "Files changed: " + ", ".join(f"`{f}`" for f in changed[:20])]
     return "\n".join(lines)
+
+
+# ---------------------------------------------------------------- review
+
+def review_enabled(session) -> bool:
+    mode = getattr(session.settings, "delegate_review", "auto")
+    if mode == "off":
+        return False
+    return mode == "always" or planner_model(session).name != worker_model(session).name
+
+
+def _diff_text(rel: str, before: bytes | None, after: bytes | None) -> str:
+    import difflib
+    try:
+        b = (before or b"").decode("utf-8")
+        a = (after or b"").decode("utf-8")
+    except UnicodeDecodeError:
+        return f"(binary file {rel} changed)\n"
+    lines = list(difflib.unified_diff(b.splitlines(True), a.splitlines(True),
+                                      fromfile=f"a/{rel}" if before is not None else "/dev/null",
+                                      tofile=f"b/{rel}" if after is not None else "/dev/null"))
+    text = "".join(lines)
+    if not text.endswith("\n"):
+        text += "\n\\ No newline at end of file\n"
+    if len(text) > REVIEW_FILE_CHARS:
+        text = text[:REVIEW_FILE_CHARS * 2 // 3] + "\n[... diff of this file truncated ...]\n" + text[-REVIEW_FILE_CHARS // 3:]
+    return text
+
+
+def collect_changes(session, plan: Plan) -> str:
+    """The combined diff of every file the plan changed. Uses the originals remembered during this run; for a plan
+    resumed after a restart it falls back to `git diff` (empty outside a repository)."""
+    originals = session.__dict__.get("_plan_originals", {})
+    files = sorted({f for t in plan.tasks for f in t.changed})
+    chunks, missing = [], []
+    for rel in files:
+        path = (Path(session.cwd) / rel).resolve()
+        key = next((k for k in (str(path), str(Path(session.cwd) / rel)) if k in originals), None)
+        if key is None:
+            missing.append(rel)
+            continue
+        try:
+            after = path.read_bytes() if path.is_file() else None
+        except OSError:
+            after = None
+        chunks.append(_diff_text(rel, originals[key], after))
+    if missing:
+        try:
+            out = subprocess.run(["git", "-C", session.cwd, "diff", "HEAD", "--", *missing], capture_output=True,
+                                 text=True, timeout=20).stdout
+        except (OSError, subprocess.SubprocessError):
+            out = ""
+        if out.strip():
+            chunks.append(out)
+    text = "".join(chunks)
+    if len(text) > REVIEW_DIFF_CHARS:
+        text = text[:REVIEW_DIFF_CHARS] + "\n[... the rest of the diff is not shown ...]\n"
+    return text
+
+
+def parse_review(text: str) -> dict:
+    raw = _json_from(text)
+    verdict = str(raw.get("verdict", "")).lower()
+    if verdict not in ("ok", "fix"):
+        raise ValueError("verdict must be ok or fix")
+    issues = []
+    for item in (raw.get("issues") or [])[:MAX_REVIEW_ISSUES]:
+        if isinstance(item, dict) and str(item.get("problem", "")).strip():
+            issues.append({"file": str(item.get("file", "")).strip(), "problem": str(item["problem"]).strip()[:600],
+                           "fix": str(item.get("fix", "")).strip()[:900]})
+    return {"verdict": "fix" if (verdict == "fix" and issues) else "ok",
+            "summary": str(raw.get("summary", "")).strip()[:300], "issues": issues}
+
+
+def review_plan(session, plan: Plan) -> dict | None:
+    """Ask the planner model to review the finished change. None when there is nothing to review or it can't."""
+    diff = collect_changes(session, plan)
+    if not diff.strip():
+        return None
+    pmc = planner_model(session)
+    session.set_active_model(pmc, "reviewing")
+    steps = "\n".join(f"{t.id}. {t.title} — {'check passed' if t.check else 'no check'}"
+                      f"{(': ' + _short(t.report, 160)) if t.report else ''}" for t in plan.tasks)
+    user = (f"## Request\n{plan.request[:4000]}\n\n## Plan: {plan.summary}\n{steps}\n\n## Combined diff\n{diff}")
+    try:
+        text, usage = complete(session, pmc, REVIEW_SYSTEM, user, max_tokens=1800)
+        result = parse_review(text)
+    except Exception as exc:  # noqa: BLE001 - a failed review must never undo a finished plan
+        say(session, f"⚠ the review by {pmc.name} could not be completed ({str(exc)[:100] or type(exc).__name__})")
+        return None
+    used = usage.get("prompt_tokens", 0) + usage.get("completion_tokens", 0)
+    result["tokens"], result["by"] = used, pmc.name
+    return result
+
+
+def fix_tasks_from(plan: Plan, issues: list) -> list:
+    """Turn review issues into steps; each reuses the check of the earlier step that owned the file, if any."""
+    out, next_id = [], max(t.id for t in plan.tasks) + 1
+    for issue in issues:
+        owner = next((t for t in reversed(plan.tasks) if issue["file"] and issue["file"] in t.files and t.check), None)
+        goal = issue["problem"] + (f"\nThe exact change to make: {issue['fix']}" if issue["fix"] else "")
+        out.append(Task(id=next_id, title=f"Fix: {_short(issue['problem'], 70)}", goal=goal,
+                        files=[issue["file"]] if issue["file"] else [], check=owner.check if owner else "",
+                        depends_on=[]))
+        next_id += 1
+    return out
+
+
+def review_and_fix(session, plan: Plan) -> bool:
+    """After every step passed: one review round. True when the plan is (still) fully done."""
+    if not review_enabled(session) or session._stop.is_set():
+        return True
+    say(session, f"🔎 reviewing the change with {planner_model(session).name} …")
+    result = review_plan(session, plan)
+    if result is None:
+        return True
+    tokens = f" ({result['tokens']:,} tokens)" if result.get("tokens") else ""
+    if result["verdict"] == "ok":
+        plan.review = f"no problems found by {result['by']}"
+        say(session, f"✓ review by {result['by']}{tokens}: no problems found")
+        save_plan(session, plan)
+        return True
+    issues = result["issues"]
+    say(session, f"🔎 review by {result['by']}{tokens}: {len(issues)} problem(s) — fixing:\n"
+        + "\n".join(f"  • {_short(i['problem'], 110)}" for i in issues))
+    new = fix_tasks_from(plan, issues)
+    plan.tasks.extend(new)
+    plan.review = f"{len(issues)} problem(s) found by {result['by']}"
+    save_plan(session, plan)
+    ok = execute(session, plan)
+    plan.review += " and fixed" if ok else " — not all fixed"
+    save_plan(session, plan)
+    return ok
 
 
 # ---------------------------------------------------------------- entry points used by the session
@@ -636,6 +792,8 @@ def _run_whole(session, request: str) -> bool:
     save_plan(session, plan)
     sync_todo(session, plan, left_off="starting")
     finished = execute(session, plan)
+    if finished and not session._stop.is_set():
+        finished = review_and_fix(session, plan)
     if session._stop.is_set():
         session.on_event("turn_end", aborted=True)
         return True
@@ -654,6 +812,8 @@ def resume(session) -> bool:
             t.status = "pending"
     say(session, f"▶ resuming: {plan.summary}")
     finished = execute(session, plan, resumed=True)
+    if finished and not session._stop.is_set():
+        finished = review_and_fix(session, plan)
     if session._stop.is_set():
         session.on_event("turn_end", aborted=True)
         return True

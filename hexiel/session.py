@@ -10,6 +10,7 @@ import httpx
 from collections.abc import Callable
 from pathlib import Path
 
+from . import consult
 from . import llm
 from . import todo as todo_mod
 from .config import ModelConfig, Settings, home_data_dir
@@ -215,6 +216,8 @@ class Session:
             if user_text == prefix or user_text.startswith(prefix + " "):
                 user_text, delegate_mode = user_text[len(prefix):].strip(), mode
                 break
+        self._turn_request = user_text            # what consulting the strong model is told the user asked for
+        consult.reset_turn(self)
         if delegate_mode == "force" and not user_text:
             self.on_event("note", "usage: /delegate <request>  — or /delegate resume to continue an unfinished plan")
             self.on_event("turn_end")
@@ -253,6 +256,10 @@ class Session:
                     self.on_event("turn_end", aborted=True)
                     return
                 self._deliver_pending()
+                try:
+                    consult.maybe_auto(self)               # stuck? get the strong model's advice before the next step
+                except Exception:  # noqa: BLE001 - advice is a bonus, never a reason to stop
+                    pass
                 if self.compaction_needed() and not self.compacting:
                     self.compact(provider)
                 tool_defs = [{"name": t.name, "description": t.description, "parameters": t.parameters}
@@ -629,6 +636,7 @@ class Session:
         if getattr(result, "images", None):
             entry["images"] = result.images
         self.messages.append(entry)
+        consult.record_result(self, call, bool(result.is_error))
         if cache_key is not None and not result.is_error:
             self.tool_ctx.result_cache[cache_key] = result
         self.on_event("tool_result", call, result.text, result.is_error,

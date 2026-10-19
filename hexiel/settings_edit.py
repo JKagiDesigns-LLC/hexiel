@@ -55,6 +55,14 @@ FIELDS = [
      "options": [True, False], "help": "show the plan and wait for a yes before the worker model starts"},
     {"key": "settings.delegate_retries", "label": "Step retries", "kind": "number",
      "options": [0, 1, 2, 3, 5], "help": "fix attempts per step before it is handed to the planner model"},
+    {"key": "settings.consult_mode", "label": "Ask for advice", "kind": "choice",
+     "options": ["auto", "tool", "off"],
+     "help": "the planner model gives advice when the working model asks, or (auto) when it is stuck — "
+             "3 failing tool calls in a row or the same call 3 times"},
+    {"key": "settings.delegate_review", "label": "Review plans", "kind": "choice",
+     "options": ["auto", "always", "off"],
+     "help": "after a /delegate run the planner model reviews the diff and the worker fixes what it finds; "
+             "auto = only when the planner is a different model"},
     {"key": "settings.auto_commit", "label": "Git auto-commit", "kind": "bool",
      "options": [False, True], "help": "commit the files hexiel changed after each finished turn"},
     {"key": "settings.notify", "label": "Notifications", "kind": "bool",

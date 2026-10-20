@@ -12,6 +12,8 @@ GROUPS = {
             "Excel read/write, charts",
     "schedule": "scheduled/recurring jobs (cron-like, runs even when hexiel is closed)",
     "docs": "question-answering over PDFs / Word / Markdown documents with page citations",
+    "knowledge": "the user's synced reference documentation library (versioned docs for the "
+                 "technologies they use): knowledge_search",
     "research": "deep web research: many searches + pages read in parallel, cited evidence pack",
 }
 DATA_EXTS = {".csv", ".tsv", ".xlsx", ".xlsm", ".xls", ".parquet", ".db", ".sqlite", ".sqlite3"}
@@ -27,6 +29,9 @@ def _group_tools(group: str) -> list:
     if group == "docs":
         from .docqa import doc_tools
         return doc_tools()
+    if group == "knowledge":
+        from .knowledge import knowledge_tools
+        return knowledge_tools()
     if group == "research":
         from .research import research_tools
         return research_tools()
@@ -70,6 +75,9 @@ DOC_EXTS = {".pdf", ".docx"}
 
 
 def _looks_like(group: str, cwd: str) -> bool:
+    if group == "knowledge":
+        from .knowledge import has_content
+        return has_content()
     if group == "docs":
         exts = DOC_EXTS
     elif group == "data":

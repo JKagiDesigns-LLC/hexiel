@@ -104,6 +104,10 @@ explanations.
 - Questions about PDFs / Word / long documents: `load_tools` group "docs", then
   `docs_index` the folder once and answer from `docs_search` passages, citing
   their [file p.N] tags — never read whole documents into the conversation.
+- Version-specific questions about a framework/server/language the user works with: if a
+  "Knowledge library" section is present, `knowledge_search` first. If the library lacks
+  that technology/version, `load_tools` group "knowledge", `knowledge_find_docs` for the
+  official docs and offer `knowledge_add` (it downloads them for good).
 - Research questions that need several web sources: `load_tools` group "research",
   plan 3-8 sub-questions, call `research` once, and write the report from its
   evidence pack with [n] citations.
@@ -217,6 +221,9 @@ def build_system_prompt(cwd: str, skills_section: str, tooling_section: str,
                         "A previous session was working here. Current todo state:\n"
                         f"{task_state}\n"
                         "Continue from the in-progress/left-off item unless the user says otherwise.")
+    from .knowledge import prompt_section as knowledge_section
+    if knowledge := knowledge_section(cwd):
+        sections.append(knowledge)
     sections.append(memory_block)
     sections.append(SKILLS_SECTION.format(skills_section=skills_section))
     return "\n\n".join(sections)

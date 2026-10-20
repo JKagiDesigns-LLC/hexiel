@@ -1050,7 +1050,7 @@ class HexielTUI(App):
             "help": self.cmd_help, "clear": self.cmd_clear, "compact": self.cmd_compact,
             "config": self.cmd_config, "update": self.cmd_update, "mcp": self.cmd_mcp,
             "plan": self.cmd_plan, "permissions": self.cmd_permissions,
-            "undo": self.cmd_undo, "usage": self.cmd_usage, "jobs": self.cmd_jobs, "inbox": self.cmd_inbox,
+            "undo": self.cmd_undo, "usage": self.cmd_usage, "jobs": self.cmd_jobs, "knowledge": self.cmd_knowledge, "inbox": self.cmd_inbox,
             "model": self.cmd_model, "models": self.cmd_models, "auto": self.cmd_auto,
             "memory": self.cmd_memory, "skills": self.cmd_skills,
             "ship": self.cmd_ship, "heal": self.cmd_heal,
@@ -1569,6 +1569,29 @@ class HexielTUI(App):
         if live:
             self.add_note("switch with /model <name> — any Ollama name works even without "
                           "a config profile; it is created on the fly")
+
+    def cmd_knowledge(self, arg: str) -> None:
+        """Reference-docs library: status, or `sync` in the background."""
+        from . import knowledge
+        if arg.strip() != "sync":
+            self.add_note(knowledge.status() + "\n(add docs to the folder, then /knowledge sync)")
+            return
+        self.add_note(f"syncing {knowledge.knowledge_dir()} …")
+
+        def work() -> None:
+            lines: list[str] = []
+            try:
+                stats = knowledge.sync(say=lines.append)
+                if knowledge.has_content() and "knowledge" not in self.session.loaded_toolsets:
+                    from . import toolsets
+                    toolsets.load(self.session, "knowledge")
+                lines.append(f"{stats['added']} added, {stats['changed']} changed, {stats['removed']} removed, "
+                             f"{stats['embedded']} embedded")
+                lines.append(knowledge.status())
+            except Exception as exc:  # noqa: BLE001 - report, don't crash the UI
+                lines.append(f"sync failed: {exc}")
+            self.call_from_thread(self.add_note, "\n".join(lines[-8:]))
+        threading.Thread(target=work, daemon=True).start()
 
     def cmd_ship(self, arg: str) -> None:
         """Propose all uncommitted work as a GitLab merge request."""

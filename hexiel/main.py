@@ -237,6 +237,9 @@ def jobs_cli(argv: list[str]) -> int:
 
 
 def main() -> None:
+    if len(sys.argv) > 1 and sys.argv[1] in ("knowledge", "rag"):
+        from .knowledge import cli as knowledge_cli
+        raise SystemExit(knowledge_cli(sys.argv[2:]))
     if len(sys.argv) > 1 and sys.argv[1] == "jobs":
         raise SystemExit(jobs_cli(sys.argv[2:]))
     if len(sys.argv) > 1 and sys.argv[1] == "remote":

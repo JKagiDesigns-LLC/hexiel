@@ -81,6 +81,7 @@ BUILTIN = [
     ("solo", "<request>", "run this request normally, skipping the automatic big-task check"),
     ("cloud", "<request>", "answer this request with the cloud (planner) model instead of the local one"),
     ("undo", "", "revert the file changes hexiel made in its last turn"),
+    ("knowledge", "[sync]", "reference-docs library: status, or sync new docs into it"),
     ("jobs", "", "scheduled jobs (ask hexiel to schedule something to create one)"),
     ("inbox", "", "results from scheduled jobs"),
     ("usage", "", "tokens used this session (in / cached / out)"),

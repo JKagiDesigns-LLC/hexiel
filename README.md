@@ -33,6 +33,10 @@
   and OpenWebUI tool/pipe/filter plugins work as-is.
 - **Remembers and keeps track.** File-based memory (`MEMORY.md`), a `todo.md`
   that survives crashes, auto-compaction at a Claude-Code-sized context window.
+- **Knows the versions you use.** A free, local **knowledge library** (RAG): point it at the
+  docs for Java 21, Tomcat 10.1, Angular 18… — downloaded for you or dropped in by hand —
+  and every model answers from *those* docs, with citations, instead of from memory.
+  [Details](docs/KNOWLEDGE.md).
 - **Fixes itself.** Crashes become incident files; `/heal` reproduces, fixes,
   tests and proposes a merge request — you approve it.
 - **Free to use, can't be resold.** GPLv3 + Commons Clause.
@@ -139,6 +143,30 @@ Data and scheduling tools load **only when needed** (automatically when a projec
 contains data files, or on request), so coding sessions don't pay for them in
 every prompt.
 
+### Knowledge library — your docs, your versions (RAG)
+
+Models guess at the version of Java, Angular or Tomcat you actually run. Give hexiel the
+documentation once and it looks things up instead. Free, local, in the open-source core.
+
+```bash
+hexiel knowledge find "Apache Tomcat 10.1 documentation"   # free web search for the official docs
+hexiel knowledge add https://tomcat.apache.org/tomcat-10.1-doc/ -t tomcat-10.1
+# …or just copy files into the folder yourself:  $(hexiel knowledge path)/java-21/*.md|html|pdf|docx
+hexiel knowledge sync                # one command: index what's new, changed or deleted
+hexiel knowledge sync --refresh      # also re-download your web sources first
+hexiel knowledge status              # topics, passages, whether semantic search is on
+```
+
+One subfolder per topic (`java-21/`, `docker-compose/`, `angular-18/`). hexiel then calls
+`knowledge_search` on its own for version-specific questions and cites the file; if you
+ask about something not in the library it can find the official docs and offer to
+download them (`knowledge_add`, with your approval). Search is hybrid — SQLite keyword
+(BM25) plus **Ollama embeddings** (`nomic-embed-text`, pulled automatically on first sync),
+so "how do I encrypt connections?" finds the TLS page. No Ollama? Keyword search still
+works. Pin a project to versions with `.hexiel/knowledge.toml` (`topics = ["java-21"]`).
+The crawler stays on the docs site, honours `robots.txt` and rate-limits itself. In the
+TUI/browser: `/knowledge` and `/knowledge sync`. Full guide: **[docs/KNOWLEDGE.md](docs/KNOWLEDGE.md)**.
+
 ### Browser UI
 
 `hexiel --serve` runs the same agent in a browser (with the same `/` command menu and live model picker): streamed markdown, tool-call
@@ -214,7 +242,7 @@ an Intel iGPU at ~12 tokens/s. Hybrid "thinking" models should run with
 `edit` · `glob` · `grep` · `list` · `map` (cached project tree) · `file_info` ·
 `powershell` · `test` (your detected runner) · `container` (docker/podman +
 compose) · `view_image` / `image_edit` · `web_search` / `web_fetch` (no API key
-needed) · `memory` · `todo` · `gitlab_mr` · `skill` — plus any MCP server's tools and any OpenWebUI plugin in `plugins/`.
+needed) · `memory` · `todo` · `gitlab_mr` · `skill` · `knowledge_search` / `knowledge_find_docs` / `knowledge_add` — plus any MCP server's tools and any OpenWebUI plugin in `plugins/`.
 
 ### Context discipline
 - **Auto-compaction, Claude-Code style:** at 82% of the context window, older

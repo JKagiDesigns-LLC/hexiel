@@ -339,6 +339,25 @@ def make_app(session: Session) -> web.Application:
             box = jobs_mod.inbox_dir()
             files = sorted(box.glob("*.md"), reverse=True)[:3] if box.exists() else []
             return "\n\n".join(f.read_text()[:3000] for f in files) or "the inbox is empty"
+        if cmd == "knowledge":
+            from . import knowledge, toolsets
+            if arg != "sync":
+                return knowledge.status() + "\n(add docs to the folder, then /knowledge sync)"
+
+            def sync_knowledge() -> None:
+                lines: list[str] = []
+                try:
+                    stats = knowledge.sync(say=lines.append)
+                    if knowledge.has_content() and "knowledge" not in session.loaded_toolsets:
+                        toolsets.load(session, "knowledge")
+                    lines.append(f"{stats['added']} added, {stats['changed']} changed, "
+                                 f"{stats['removed']} removed, {stats['embedded']} embedded")
+                    lines.append(knowledge.status())
+                except Exception as exc:  # noqa: BLE001 - report, don't crash the server
+                    lines.append(f"sync failed: {exc}")
+                state.broadcast({"t": "note", "text": "\n".join(lines[-8:])})
+            threading.Thread(target=sync_knowledge, daemon=True).start()
+            return f"syncing {knowledge.knowledge_dir()} …"
         if cmd == "mcp":
             from . import mcp_client
             if arg.startswith("add"):

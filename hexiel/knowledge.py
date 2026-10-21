@@ -317,7 +317,7 @@ def _semantic_ranking(con, qv: array, allowed: list[str] | None, candidates: lis
     if allowed is not None:
         where = f"WHERE p.topic IN ({','.join('?' * len(allowed))})"
         params = allowed
-    rows = con.execute(f"SELECT v.rowid, v.vec FROM vectors v JOIN passages p ON p.rowid = v.rowid {where}", params)
+    rows = con.execute(f"SELECT v.rowid, v.vec FROM vectors v JOIN passages p ON p.rowid = v.rowid {where}", params)  # nosec B608 - only '?' placeholders are interpolated
     try:
         import numpy as np
         ids, blobs = [], []
@@ -359,7 +359,7 @@ def search(query: str, topic: list[str] | None = None, k: int = 6) -> tuple[str,
         filt = f"AND topic IN ({','.join('?' * len(allowed))})"
         params = allowed
     keyword = [r for (r,) in con.execute(
-        f"SELECT rowid FROM passages WHERE passages MATCH ? {filt} ORDER BY bm25(passages) LIMIT 50",
+        f"SELECT rowid FROM passages WHERE passages MATCH ? {filt} ORDER BY bm25(passages) LIMIT 50",  # nosec B608 - only '?' placeholders are interpolated
         [docqa._fts_query(query)] + params)]
     meaning: list[int] = []
     if con.execute("SELECT count(*) FROM vectors").fetchone()[0]:

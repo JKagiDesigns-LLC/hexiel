@@ -34,6 +34,7 @@ class Memory:
         description = type_ = ""
         if match:
             for line in match.group(1).splitlines():
+                line = line.strip()          # Claude's format nests type under `metadata:`
                 if line.startswith("name:"):
                     name = line[5:].strip() or name
                 elif line.startswith("description:"):

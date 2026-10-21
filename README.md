@@ -46,10 +46,15 @@
 The quickest way, from [PyPI](https://pypi.org/project/hexiel/):
 
 ```bash
-pipx install 'hexiel[serve]'          # or: pip install 'hexiel[serve]'
+pipx install 'hexiel[serve]'          # or, inside a virtualenv: pip install 'hexiel[serve]'
 hexiel --doctor                       # preflight checks with copy-paste fixes
 cd ~/code/your-project && hexiel
 ```
+
+No `pipx`, or `pip` says *externally-managed-environment* (Arch, Debian/Ubuntu, Fedora, Homebrew)? Your OS
+protects its system Python on purpose. Install pipx (`sudo pacman -S python-pipx`, `sudo apt install pipx`,
+`sudo dnf install pipx`, `brew install pipx`) and run `pipx ensurepath`, or use a plain virtualenv:
+`python -m venv ~/.hexiel-venv && ~/.hexiel-venv/bin/pip install 'hexiel[serve]'`.
 
 Or from source (to hack on it):
 
@@ -186,6 +191,19 @@ sanitized (control characters, escape sequences and invisible/bidi characters ar
 Copy an image and press `Ctrl+V` (or `Alt+V`) in the terminal UI, or just paste in the browser, to attach it.
 Terminal clipboard images need `wl-clipboard` or `xclip` (Linux) or `pngpaste` (macOS); the browser works everywhere.
 Pasted images are saved under `.hexiel/pastes/` in the project (add it to `.gitignore`).
+
+### Agent instruction files, made small
+
+On first start in a project, hexiel offers (once) to find `CLAUDE.md`, `AGENTS.md`, `.cursorrules`, Copilot/Gemini/Windsurf
+files and Claude Code's project memories, and split them **verbatim** into small topic files under `.hexiel/instructions/`.
+The system prompt then carries only a short `INDEX.md`; topics that match your request are attached for that turn, sized to
+the model's context window. You choose whether to keep it all out of git/svn (`ignore`) or commit it (`commit`: `AGENTS.md`
+becomes the index and other agents' files become pointers; originals are backed up in `.hexiel/imported/`).
+Claude memories are copied both ways, with a note in each tool about the other.
+
+```bash
+hexiel instructions scan | import [--yes [--commit]] | sync | restore
+```
 
 ### Hexiel Remote (optional, paid)
 

@@ -242,6 +242,9 @@ def main() -> None:
         raise SystemExit(knowledge_cli(sys.argv[2:]))
     if len(sys.argv) > 1 and sys.argv[1] == "jobs":
         raise SystemExit(jobs_cli(sys.argv[2:]))
+    if len(sys.argv) > 1 and sys.argv[1] in ("instructions", "import-agents"):
+        from .instructions import cli as instructions_cli
+        raise SystemExit(instructions_cli(sys.argv[2:]))
     if len(sys.argv) > 1 and sys.argv[1] == "remote":
         from .remote import remote_cli
         raise SystemExit(remote_cli(sys.argv[2:]))
@@ -261,6 +264,12 @@ def main() -> None:
         wizard(cwd)
         return
 
+    if args.print_mode is None and not args.serve and sys.stdin.isatty() and sys.stdout.isatty():
+        from .instructions import offer_import
+        try:
+            offer_import(cwd)                 # one-time, prompted; declining is remembered
+        except (EOFError, KeyboardInterrupt, OSError):
+            pass
     resumed = Session.resume_latest(cwd) if args.continue_ else None
     try:
         session = build_session(cwd, args.model, resumed)

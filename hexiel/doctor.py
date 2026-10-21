@@ -99,6 +99,10 @@ def run_checks(cwd: str) -> dict:
     results["test_runner"] = _check(
         "test runner detection", bool(chain.test_runners),
         ", ".join(r.label for r in chain.test_runners) or "none in this project")
+    exe = shutil.which("hexiel")
+    results["path"] = _check(
+        "hexiel on PATH", bool(exe), exe or "not found — a new terminal won't find the command",
+        fix="pipx ensurepath  (then open a new terminal), or add ~/.local/bin to your PATH")
     results["git"] = _check("git", bool(shutil.which("git")),
                             "(needed for the /ship and /heal flows)",
                             fix="sudo pacman -S git")

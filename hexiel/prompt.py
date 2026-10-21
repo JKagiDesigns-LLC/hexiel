@@ -6,6 +6,7 @@ import platform
 import subprocess
 from pathlib import Path
 
+from . import instructions as instructions_mod
 from . import memory as memory_mod
 
 MEMORY_SECTION = """\
@@ -166,7 +167,10 @@ def _find_case_insensitive(cwd: str, names: tuple[str, ...]) -> Path | None:
 
 def _project_docs(cwd: str) -> str:
     parts: list[str] = []
-    path = _find_case_insensitive(cwd, PROJECT_DOC_NAMES)   # first match wins
+    split = instructions_mod.prompt_block(cwd)               # imported + split: index only, topics on demand
+    path = None if split else _find_case_insensitive(cwd, PROJECT_DOC_NAMES)   # first match wins
+    if split:
+        parts.append(f"## Project instructions (follow them)\n\n{split}")
     if path is not None:
         try:
             text = path.read_text().strip()

@@ -254,6 +254,11 @@ class Session:
             [user_text, *notes, *([PLAN_MODE_NOTE] if self.plan_mode else [])])}
         if images:
             entry["images"] = images
+        from . import instructions as instructions_mod
+        topics = instructions_mod.relevant(self.cwd, user_text, self.model_config.context_window,
+                                           self.__dict__.setdefault("_instr_sent", set()))
+        if topics:
+            entry["content"] += f"\n\n[project instructions relevant to this request]\n{topics}"
         self.checkpoints.append([])        # file snapshots taken during this turn
         from . import hooks as hooks_mod
         for out in hooks_mod.run(self.hooks, "UserPromptSubmit", self.cwd, self.id, prompt=user_text):

@@ -1,20 +1,7 @@
-# You can override the included template(s) by including variable overrides
-# SAST customization: https://docs.gitlab.com/user/application_security/sast/#available-cicd-variables
-# Secret Detection customization: https://docs.gitlab.com/user/application_security/secret_detection/pipeline/configure/
-# Dependency Scanning customization: https://docs.gitlab.com/user/application_security/dependency_scanning/dependency_scanning_sbom/#customizing-analyzer-behavior
-# Container Scanning customization: https://docs.gitlab.com/user/application_security/container_scanning/#customizing-analyzer-behavior
-# Note that environment variables can be set in several places
-# See https://docs.gitlab.com/ci/variables/#cicd-variable-precedence
+# Secret scanning, bandit and the test suite run in the git pre-commit hook (.githooks/pre-commit,
+# installed with scripts/install-hooks.sh) rather than here; this pipeline only publishes.
 stages:
-- test
-- secret-detection
 - deploy
-variables:
-  SECRET_DETECTION_ENABLED: 'true'
-secret_detection:
-  stage: secret-detection
-include:
-- template: Security/Secret-Detection.gitlab-ci.yml
 
 # GitLab Pages: the old address now redirects to https://hexiel.tech (the site
 # itself lives in gitlab.com/jkagidesigns1/hexiel-website).

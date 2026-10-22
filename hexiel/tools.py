@@ -664,14 +664,24 @@ def _fetch_cache_path(url: str, ctx: ToolContext) -> Path:
     return Path(ctx.cwd) / ".hexiel" / "webcache" / f"{digest}.txt"
 
 
-def _web_fetch(args: dict, ctx: ToolContext) -> ToolResult:
-    url = args["url"]
-    if not url.startswith(("http://", "https://")):
+def clean_fetch_url(raw) -> str:
+    """The URL the model meant: surrounding whitespace, quotes and angle brackets dropped, and anything after the first
+    whitespace (a second URL, a trailing note) ignored — a stray newline used to raise InvalidURL out of the tool."""
+    parts = str(raw or "").strip().strip("\"'<>").split()
+    url = parts[0] if parts else ""
+    if url and not url.startswith(("http://", "https://")):
         url = "https://" + url
+    return url
+
+
+def _web_fetch(args: dict, ctx: ToolContext) -> ToolResult:
+    url = clean_fetch_url(args.get("url"))
+    if not url:
+        return text_result("error: web_fetch needs a `url`", True)
     try:
         with httpx.Client(timeout=30, follow_redirects=True) as client:
             resp = client.get(url, headers={"user-agent": "hexiel-agent/0.1 (+local)"})
-    except httpx.HTTPError as exc:
+    except (httpx.HTTPError, httpx.InvalidURL) as exc:
         return text_result(f"error: fetch failed: {exc}", True)
     ctype = resp.headers.get("content-type", "")
     body = html_to_text(resp.text) if "html" in ctype else resp.text

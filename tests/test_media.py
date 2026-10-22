@@ -126,3 +126,28 @@ def test_the_terminal_shows_a_chip_for_an_attached_file(tmp_path):
             return [str(c.render()) for c in app.query(AttachmentChip)]
     chips = asyncio.run(go())
     assert any("shot.png" in c for c in chips) and any("spec.pdf · 2 pages" in c for c in chips)
+
+
+def test_web_fetch_survives_a_url_with_a_stray_newline(monkeypatch):
+    """An auto-report from a real run: the model passed 'https://…\\nsecond line' and httpx raised InvalidURL."""
+    from hexiel import tools
+    assert tools.clean_fetch_url("https://example.com/a\nnote about it") == "https://example.com/a"
+    assert tools.clean_fetch_url('  "example.com/x"  ') == "https://example.com/x"
+    assert tools.clean_fetch_url("   ") == "" and tools.clean_fetch_url(None) == ""
+    seen = []
+
+    class Resp:
+        url, status_code, headers, text = "https://example.com/a", 200, {"content-type": "text/plain"}, "hi"
+
+    class Client:
+        def __init__(self, **kw): pass
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def get(self, url, **kw): seen.append(url); return Resp()
+    monkeypatch.setattr(tools.httpx, "Client", Client)
+    ctx = tools.ToolContext(cwd="/tmp", chain=tools.Toolchain()) if hasattr(tools, "Toolchain") else None
+    from hexiel.tooling import Toolchain
+    ctx = tools.ToolContext(cwd="/tmp", chain=Toolchain())
+    out = tools._web_fetch({"url": "https://example.com/a\nsecond line"}, ctx)
+    assert seen == ["https://example.com/a"] and not out.is_error
+    assert tools._web_fetch({"url": ""}, ctx).is_error

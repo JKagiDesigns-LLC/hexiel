@@ -187,7 +187,8 @@ function updateSendButton() {
 function connect() {
   const proto = location.protocol === "https:" ? "wss" : "ws";
   ws = new WebSocket(`${proto}://${location.host}${location.pathname.replace(/[^/]*$/, "")}ws`);
-  ws.onopen = () => { wsQueue.splice(0).forEach(ws.send); };
+  // (ws.send passed unbound throws "Illegal invocation", which used to drop anything typed before the socket opened)
+  ws.onopen = () => { wsQueue.splice(0).forEach((m) => ws.send(m)); };
   ws.onmessage = (ev) => {
     const data = JSON.parse(ev.data);
     switch (data.t) {

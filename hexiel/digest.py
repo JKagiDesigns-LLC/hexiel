@@ -72,17 +72,27 @@ def usable(session, profile: str):
     return mc
 
 
-def model_for(session, tool_name: str):
-    """The model that digests this tool's output, or None (not mapped, unknown profile, key missing, or it is the model
-    already in use — nothing to gain). With several candidates, the first one not busy with another request wins."""
+DOWN_SECONDS = 120            # a helper that just failed is skipped for this long, so a dead one doesn't cost a timeout every call
+
+
+def candidates(session, tool_name: str) -> list:
+    """The models to try for this tool, best first: usable ones that aren't busy with another request, then busy ones.
+    A helper that failed in the last two minutes is left out."""
     rule = rules(session.settings).get(tool_name)
     if not rule:
-        return None
-    candidates = [mc for mc in (usable(session, p) for p in rule["models"]) if mc is not None]
-    for mc in candidates:
-        if not (modelbusy.is_local(mc) and modelbusy.others(mc)):
-            return mc
-    return candidates[0] if candidates else None
+        return []
+    down = session.__dict__.setdefault("_digest_down", {})
+    mcs = [mc for mc in (usable(session, p) for p in rule["models"]) if mc is not None
+           and time.time() - down.get(mc.name, 0) > DOWN_SECONDS]
+    free = [mc for mc in mcs if not (modelbusy.is_local(mc) and modelbusy.others(mc))]
+    return free + [mc for mc in mcs if mc not in free]
+
+
+def model_for(session, tool_name: str):
+    """The first model that would digest this tool's output, or None (not mapped, unknown profile, key missing, or it is
+    the model already in use — nothing to gain)."""
+    found = candidates(session, tool_name)
+    return found[0] if found else None
 
 
 def add_full_param(tool_defs: list, settings) -> list:
@@ -118,53 +128,64 @@ def summary_line(session) -> str:
 
 
 def maybe_digest(session, call: dict, result):
-    """The tool result the main model should see (possibly condensed by the tool's model)."""
+    """The tool result the main model should see (possibly condensed by the tool's model). With several candidate models a
+    failure or timeout moves on to the next one (Pi down -> a cloud model, say); the raw output is the last resort."""
     if result.is_error or getattr(result, "images", None) or (call.get("arguments") or {}).get("full") is True:
         return result
-    mc = model_for(session, call["name"])
+    tried = candidates(session, call["name"])
     rule = rules(session.settings).get(call["name"]) or {}
     limit = rule.get("min_chars") or int(getattr(session.settings, "digest_min_chars", 3000))
     max_input = rule.get("max_input") or MAX_INPUT
     budget = float(rule.get("timeout") or getattr(session.settings, "digest_timeout", 90))
     max_tokens = int(rule.get("max_tokens") or MAX_OUTPUT_TOKENS)
     raw = result.text or ""
-    if mc is None or len(raw) <= limit or len(raw) > max_input:
+    if not tried or len(raw) <= limit or len(raw) > max_input:
         return result
     from .tools import ToolResult
     st = stats(session)
     request = (session.__dict__.get("_turn_request", "") or "")[:2000]
     cache = session.__dict__.setdefault("_digest_cache", {})
-    key = (call["name"], mc.name, hashlib.sha1(f"{request}\n{raw}".encode(), usedforsecurity=False).hexdigest())
-    text = cache.get(key)
-    if text is None:
+    key = (call["name"], hashlib.sha1(f"{request}\n{raw}".encode(), usedforsecurity=False).hexdigest())
+    hit = cache.get(key)
+    if hit is not None:
+        who, text = hit
+        st["cached"] += 1
+    else:
         user = (f"## The request\n{request or '(not stated)'}\n\n## Tool\n{call['name']} {call.get('arguments')}\n\n"
                 f"## Output ({len(raw):,} characters)\n{raw}")
-        slot = modelbusy.enter(mc, lambda t: session.on_event("note", t), "digest")
-        session.set_active_model(mc, "summarizing")
-        began = time.time()
-        try:
-            text, _usage = planner.complete(session, mc, SYSTEM.format(words=max(40, int(max_tokens * 0.7))), user,
-                                            max_tokens=max_tokens, budget=budget)
-        except Exception as exc:  # noqa: BLE001 - the raw output is always a safe fallback
-            st["fallbacks"] += 1
-            why = "took too long" if isinstance(exc, (TimeoutError, OSError)) or "Timeout" in type(exc).__name__ else type(exc).__name__
-            session.on_event("note", f"↩ {mc.name} couldn't summarise the {call['name']} output ({why}) — using it as is")
+        who = text = None
+        for mc in tried:
+            slot = modelbusy.enter(mc, lambda t: session.on_event("note", t), "digest")
+            session.set_active_model(mc, "summarizing")
+            began = time.time()
+            try:
+                text, _usage = planner.complete(session, mc, SYSTEM.format(words=max(40, int(max_tokens * 0.7))), user,
+                                                max_tokens=max_tokens, budget=budget)
+                who = mc
+                break
+            except Exception as exc:  # noqa: BLE001 - try the next candidate, then the raw output
+                st["fallbacks"] += 1
+                session.__dict__.setdefault("_digest_down", {})[mc.name] = time.time()
+                why = "took too long" if isinstance(exc, (TimeoutError, OSError)) or "Timeout" in type(exc).__name__ else type(exc).__name__
+                more = mc is not tried[-1]
+                session.on_event("note", f"↩ {mc.name} couldn't summarise the {call['name']} output ({why}) — "
+                                         + ("trying the next model" if more else "using it as is"))
+            finally:
+                slot.release()
+                session.active_model = ""
+                session.on_event("model_active")
+                st["seconds"] += time.time() - began
+        if who is None or not text or len(text) >= len(raw) * 0.8:
             return result
-        finally:
-            slot.release()
-            session.active_model = ""
-            session.on_event("model_active")
-            st["seconds"] += time.time() - began
-        if not text or len(text) >= len(raw) * 0.8:
-            return result
-        cache[key] = text
+        cache[key] = (who, text)
         st["digested"] += 1
-    else:
-        st["cached"] += 1
+        who = who.name
+    if hit is not None:
+        who = who if isinstance(who, str) else who.name
     st["raw_chars"] += len(raw)
     st["kept_chars"] += len(text)
-    session.on_event("note", f"🔎 {call['name']} output ({len(raw):,} chars) summarised by {mc.name}")
-    return ToolResult(text=f"[summary by {mc.name} of {len(raw):,} characters — call {call['name']} again with full=true "
+    session.on_event("note", f"🔎 {call['name']} output ({len(raw):,} chars) summarised by {who}")
+    return ToolResult(text=f"[summary by {who} of {len(raw):,} characters — call {call['name']} again with full=true "
                            f"for the raw output]\n{text}", is_error=False)
 
 

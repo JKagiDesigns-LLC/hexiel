@@ -225,3 +225,18 @@ def test_toolmodels_command_in_the_web_ui(setup, server):
                 if msg.get("t") == "note":
                     return msg["text"]
     assert "read" in asyncio.run(go()) and "small" in asyncio.run(go())
+
+
+def test_a_dead_first_helper_over_real_http_falls_to_a_live_second_one(setup, server, monkeypatch):
+    from hexiel import planner
+    dead = ModelConfig(name="dead", provider="openai", model="tiny", base_url="http://127.0.0.1:9/v1")        # nothing listens on port 9
+    live = ModelConfig(name="live", provider="openai", model="tiny", base_url=server.base_url)
+    monkeypatch.setattr(planner, "_config_profile", lambda session, name: {"dead": dead, "live": live}.get(name))
+    s = setup()
+    s.settings = Settings(tool_models={"read": ["dead", "live"]}, digest_timeout=20)
+    began = time.time()
+    out = digest.maybe_digest(s, CALL, BIG)
+    assert out.text.startswith("[summary by live") and out.text.endswith("bar() at line 40.")
+    assert time.time() - began < 5                                           # a refused connection fails at once, no timeout wait
+    assert any("dead couldn't summarise" in str(e) and "trying the next model" in str(e) for e in s.events)
+    assert server.requests == 1

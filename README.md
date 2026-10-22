@@ -225,7 +225,8 @@ same request is only summarised once. Tools that *author* changes (`write`, `edi
 since it has to write its own work; for planning, set `planner_profile` (see `/delegate`).
 
 A slow helper (say a Raspberry Pi) should only see small inputs. A value can be a list, tried in order with the first
-model that isn't busy preferred, or a table with limits for that tool:
+model that isn't busy preferred (and, if one fails or times out, the next is tried; a helper that just failed is skipped for two
+minutes), or a table with limits for that tool:
 
 ```toml
 [tool_models]

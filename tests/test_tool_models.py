@@ -260,3 +260,64 @@ def test_a_slow_helper_is_asked_for_a_short_digest(tmp_path, monkeypatch):
                         (seen.update(system=system, max_tokens=max_tokens) or ("short digest", {})))
     digest.maybe_digest(s2, CALL, ToolResult(text="x" * 9000))
     assert seen["max_tokens"] == digest.MAX_OUTPUT_TOKENS and "Under 350 words" in seen["system"]
+
+
+# ---------------------------------------------------------------- falling back to the next helper
+
+def two_helpers(tmp_path, monkeypatch, behave):
+    pi = ModelConfig(name="pi", provider="openai", model="tiny", base_url="http://192.168.4.2:11434/v1")
+    flash = ModelConfig(name="flash", provider="openai", model="fast", base_url="https://cloud.example/v1")
+    s, calls, events = session_with(tmp_path, monkeypatch, {"read": ["pi", "flash"]})
+    monkeypatch.setattr(planner, "_config_profile", lambda session, name: {"pi": pi, "flash": flash}.get(name))
+
+    def complete(session, mc, system, user, max_tokens=0, budget=None):
+        calls.append(mc.name)
+        return behave(mc.name)
+    monkeypatch.setattr(planner, "complete", complete)
+    return s, calls, events
+
+
+def test_a_failing_first_helper_hands_over_to_the_next(tmp_path, monkeypatch):
+    monkeypatch.setenv("HEXIEL_DATA", str(tmp_path / "data"))
+
+    def behave(name):
+        if name == "pi":
+            raise ConnectionRefusedError("pi is down")
+        return "the cloud model's digest", {}
+    s, calls, events = two_helpers(tmp_path, monkeypatch, behave)
+    out = digest.maybe_digest(s, CALL, ToolResult(text="x" * 9000))
+    assert calls == ["pi", "flash"] and out.text.startswith("[summary by flash") and "the cloud model's digest" in out.text
+    notes = [e[1] for e in events if e[0] == "note"]
+    assert any("pi couldn't summarise" in n and "trying the next model" in n for n in notes)
+    assert digest.stats(s)["fallbacks"] == 1 and digest.stats(s)["digested"] == 1
+
+
+def test_a_helper_that_just_failed_is_skipped_for_a_while(tmp_path, monkeypatch):
+    monkeypatch.setenv("HEXIEL_DATA", str(tmp_path / "data"))
+    s, calls, _ = two_helpers(tmp_path, monkeypatch, lambda name: (_ for _ in ()).throw(OSError("down")) if name == "pi" else ("ok digest", {}))
+    digest.maybe_digest(s, CALL, ToolResult(text="x" * 9000))
+    calls.clear()
+    digest.maybe_digest(s, CALL, ToolResult(text="y" * 9000))                  # a different output (not cached)
+    assert calls == ["flash"]                                                  # the Pi isn't tried again straight away
+    s.__dict__["_digest_down"]["pi"] -= digest.DOWN_SECONDS + 1                # …but is retried once the quiet period passes
+    calls.clear()
+    digest.maybe_digest(s, CALL, ToolResult(text="z" * 9000))
+    assert calls[0] == "pi"
+
+
+def test_when_every_helper_fails_the_raw_output_is_used(tmp_path, monkeypatch):
+    monkeypatch.setenv("HEXIEL_DATA", str(tmp_path / "data"))
+    s, calls, events = two_helpers(tmp_path, monkeypatch, lambda name: (_ for _ in ()).throw(TimeoutError("slow")))
+    raw = ToolResult(text="x" * 9000)
+    assert digest.maybe_digest(s, CALL, raw) is raw and calls == ["pi", "flash"]
+    notes = [e[1] for e in events if e[0] == "note"]
+    assert notes[-1].endswith("using it as is") and digest.stats(s)["fallbacks"] == 2
+    assert digest.maybe_digest(s, CALL, ToolResult(text="w" * 9000)).text == "w" * 9000 and calls == ["pi", "flash"]   # both just failed: not retried
+
+
+def test_a_cached_digest_remembers_who_wrote_it(tmp_path, monkeypatch):
+    monkeypatch.setenv("HEXIEL_DATA", str(tmp_path / "data"))
+    s, calls, events = two_helpers(tmp_path, monkeypatch, lambda name: ("a fine digest", {}))
+    first = digest.maybe_digest(s, CALL, ToolResult(text="x" * 9000))
+    second = digest.maybe_digest(s, {**CALL, "id": "c2"}, ToolResult(text="x" * 9000))
+    assert first.text == second.text and second.text.startswith("[summary by pi") and calls == ["pi"]

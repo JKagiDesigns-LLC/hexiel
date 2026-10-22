@@ -15,6 +15,7 @@ from pathlib import Path
 
 from aiohttp import WSMsgType, web
 
+from . import media as media_mod
 from . import memory as memory_mod
 from . import settings_edit
 from .config import approve_mode
@@ -41,6 +42,16 @@ def short_call(call: dict) -> dict:
                     "short": str(args[key]).replace("\n", " ⏎ ")[:80]}
     return {"id": call.get("id", ""), "name": call["name"],
             "short": json.dumps(args)[:80]}
+
+
+def media_items(paths) -> list[dict]:
+    """Attachment cards for the page: id to fetch it by, plus what to caption it with."""
+    out = []
+    for path in paths:
+        info = media_mod.describe(path)
+        if info:
+            out.append({k: info[k] for k in ("kind", "name", "id", "w", "h", "pages") if k in info})
+    return out
 
 
 def status_state(session: Session) -> dict:
@@ -144,9 +155,11 @@ class WebState:
         elif event == "tool_result":
             call, text, is_error = payload[0], payload[1], payload[2]
             elapsed = payload[3] if len(payload) > 3 else 0.0
-            self.broadcast({"t": "tool_done", "id": call.get("id", ""),
-                            "ok": not is_error, "elapsed": round(elapsed, 1),
-                            "preview": _shorten(text)})
+            done = {"t": "tool_done", "id": call.get("id", ""), "ok": not is_error,
+                    "elapsed": round(elapsed, 1), "preview": _shorten(text)}
+            if call.get("name") == "view_image" and not is_error:
+                done["media"] = media_items([self._media_path(call)])
+            self.broadcast(done)
         elif event == "compact_start":
             self.broadcast({"t": "note", "text": "Compacting context (summarizing history)…"})
         elif event == "compact_end":
@@ -181,6 +194,12 @@ class WebState:
 
     # -- history rendering
 
+    def _media_path(self, call: dict) -> str:
+        if call.get("name") != "view_image":
+            return ""
+        raw = Path(str(call.get("arguments", {}).get("path", ""))).expanduser()
+        return str(raw if raw.is_absolute() else Path(self.session.cwd) / raw)
+
     def render_history(self) -> list[dict]:
         items: list[dict] = []
         pending: dict[str, dict] = {}
@@ -191,20 +210,29 @@ class WebState:
                 if body.startswith("<auto-compaction>"):
                     items.append({"t": "note", "text": "— earlier history auto-compacted —"})
                 else:
-                    items.append({"t": "user", "text": body})
+                    item = {"t": "user", "text": body}
+                    shown = media_items(a.get("path", "") for a in msg.get("attachments", []))
+                    if shown:
+                        item["media"] = shown
+                    items.append(item)
             elif role == "assistant":
                 # the model's text precedes the tool calls it then makes
                 text = msg.get("content", "")
                 if text.strip():
                     items.append({"t": "assistant", "text": text})
                 for call in msg.get("tool_calls", []):
-                    pending[call["id"]] = {"id": call["id"], "t": "tool", **short_call(call)}
+                    pending[call["id"]] = {"id": call["id"], "t": "tool", **short_call(call),
+                                       "path": self._media_path(call)}
                     items.append(pending[call["id"]])
             elif role == "tool":
                 entry = pending.get(msg.get("tool_call_id", ""))
                 if entry is not None:
                     entry["ok"] = not msg.get("is_error")
                     entry["preview"] = _shorten(msg.get("content", ""))
+                    if entry["name"] == "view_image" and not msg.get("is_error"):
+                        entry["media"] = media_items([entry.get("path", "")])
+        for item in items:
+            item.pop("path", None)             # a local path is only for finding the file, not for the page
         return items
 
 
@@ -541,14 +569,29 @@ def make_app(session: Session, driver=None) -> web.Application:
         return _json_response({"commands": items})
 
     async def api_paste_image(request):
+        """A pasted or dropped image or PDF: saved under .hexiel/pastes, returned with what the page needs to show it."""
         from .clipboard import save_image
         mime = request.content_type
-        if mime not in ("image/png", "image/jpeg", "image/webp", "image/gif"):
-            return _json_response({"error": "unsupported image type"}, status=400)
+        if mime not in ("image/png", "image/jpeg", "image/webp", "image/gif", "application/pdf"):
+            return _json_response({"error": "unsupported file type (png, jpeg, webp, gif or pdf)"}, status=400)
         data = await request.read()
         if not data or len(data) > 20 * 1024 * 1024:
             return _json_response({"error": "empty or over 20MB"}, status=400)
-        return _json_response({"path": save_image(data, mime, session.cwd)})
+        if mime == "application/pdf" and not data.startswith(b"%PDF"):
+            return _json_response({"error": "not a PDF"}, status=400)
+        path = save_image(data, mime, session.cwd, request.headers.get("x-filename", ""))
+        info = media_mod.describe(path) or {}
+        return _json_response({"path": path, **{k: info[k] for k in ("kind", "name", "id", "w", "h", "pages") if k in info}})
+
+    async def api_media(request):
+        """Serve a file that surfaced in the conversation (see media.py) — nothing else."""
+        path = media_mod.resolve(request.match_info["id"])
+        if path is None:
+            raise web.HTTPNotFound()
+        return web.FileResponse(path, headers={"Content-Type": media_mod.MIME[path.suffix.lower()],
+                                               "Content-Disposition": f'inline; filename="{path.name}"',
+                                               "X-Content-Type-Options": "nosniff",
+                                               "Cache-Control": "private, max-age=3600"})
 
     async def api_state(request):
         cfg = load_config()
@@ -788,6 +831,7 @@ def make_app(session: Session, driver=None) -> web.Application:
     app.router.add_get("/ws", websocket)
     app.router.add_get("/api/state", api_state)
     app.router.add_post("/api/paste-image", api_paste_image)
+    app.router.add_get("/api/media/{id}", api_media)
     app.router.add_post("/api/model", api_model)
     app.router.add_post("/api/settings", api_settings)
     app.router.add_get("/api/commands", api_commands)

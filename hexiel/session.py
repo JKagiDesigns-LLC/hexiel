@@ -320,6 +320,10 @@ class Session:
             [user_text, *notes, *([PLAN_MODE_NOTE] if self.plan_mode else [])])}
         if images:
             entry["images"] = images
+        from . import media as media_mod
+        shown = media_mod.attachments_in(user_text, self.cwd)       # images and PDFs the person can see
+        if shown:
+            entry["attachments"] = [{k: a[k] for k in ("kind", "name", "path", "w", "h", "pages") if k in a} for a in shown]
         from . import instructions as instructions_mod
         topics = instructions_mod.relevant(self.cwd, user_text, self.model_config.context_window,
                                            self.__dict__.setdefault("_instr_sent", set()))

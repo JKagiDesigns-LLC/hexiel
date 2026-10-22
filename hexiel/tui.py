@@ -511,6 +511,38 @@ class RestartScreen(ModalScreen):
         self.dismiss(choice or None)
 
 
+class AttachmentChip(Static):
+    """An image or PDF the person attached or the model looked at: a clickable line that opens it in the system
+    viewer (a terminal cannot show a PDF), under an inline thumbnail when the terminal can draw one."""
+
+    def __init__(self, info: dict) -> None:
+        from . import media
+        super().__init__(f"  {media.label(info)}  [dim]— click to open[/dim]", classes="attachment")
+        self.info = info
+
+    def on_click(self) -> None:
+        from . import media
+        if not media.open_external(self.info["path"]):
+            self.app.notify(f"couldn't open {self.info['name']} — it is at {self.info['path']}", severity="warning")
+
+
+def thumbnail_for(info: dict):
+    """An inline image widget for an attachment, or None (textual-image not installed, or nothing to draw)."""
+    try:
+        from textual_image.widget import Image as InlineImage
+    except Exception:  # noqa: BLE001 - optional extra, and some terminals break its probe
+        return None
+    from . import media
+    source = info["path"] if info["kind"] == "image" else media.pdf_preview(info["path"])
+    if not source:
+        return None
+    try:
+        widget = InlineImage(source, classes="thumb")
+    except Exception:  # noqa: BLE001
+        return None
+    return widget
+
+
 class ToolLine(Static):
     """One tool invocation line: name, args preview, and result preview once done."""
 
@@ -940,6 +972,9 @@ class HexielTUI(App):
     #prompt { width: 1fr; height: 3; border: round $accent; background: $surface; }
     StatusLine { width: 100%; height: 1; padding: 0 2; color: $text-muted; background: $surface; }
     .user-msg { color: $accent; margin: 1 0 0 0; }
+    .attachment { color: $text-muted; }
+    .attachment:hover { color: $accent; text-style: underline; }
+    .thumb { width: auto; max-width: 48; height: auto; max-height: 14; margin: 0 0 0 2; }
     .assistant-msg { margin: 0 0 0 0; }
     ToolLine { color: $secondary-lighten-2; background: transparent; }
     .note { color: $text-muted; text-style: italic; }
@@ -1103,7 +1138,22 @@ class HexielTUI(App):
         if not text:
             return
         self.add_user_msg(text)
+        self.show_attachments(text)
         self._start_turn(text)
+
+    def show_attachments(self, text: str) -> None:
+        """Images and PDFs named in a message appear under it, so you can see what you attached."""
+        from . import media
+        for info in media.attachments_in(text, self.session.cwd):
+            self.mount_attachment(info)
+
+    def mount_attachment(self, info: dict) -> None:
+        chat = self.query_one("#chat", VerticalScroll)
+        thumb = thumbnail_for(info)
+        if thumb is not None:
+            chat.mount(thumb)
+        chat.mount(AttachmentChip(info))
+        chat.scroll_end(animate=False)
 
     def maybe_command(self, text: str) -> str | None:
         if not text.startswith("/"):
@@ -1608,6 +1658,12 @@ class HexielTUI(App):
             wid = self._tool_widgets.pop(call["id"], None)
             if wid:
                 wid.complete(call_short(call), text, is_error, elapsed)
+            if call.get("name") == "view_image" and not is_error:
+                from . import media
+                path = Path(os.path.expanduser(str(call.get("arguments", {}).get("path", ""))))
+                info = media.describe(path if path.is_absolute() else Path(self.session.cwd) / path)
+                if info:
+                    self.mount_attachment(info)
             self._refresh_status()
         elif event == "compact_start":
             self.finalize_stream()

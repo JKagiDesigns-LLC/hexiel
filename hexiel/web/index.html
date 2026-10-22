@@ -36,6 +36,7 @@
 
     <div id="composer">
       <div id="slash-menu" hidden></div>
+      <div id="attached" hidden></div>
       <div class="inner">
         <textarea id="input" placeholder="Ask hexiel to build, fix, research… (Enter to send, Shift+Enter for newline)"></textarea>
         <button id="send">Send</button>
@@ -78,6 +79,14 @@
       <input id="remote-password" type="password" placeholder="password" autocomplete="current-password">
       <div class="row"><button class="yes" id="remote-go">Sign in and connect this chat</button></div>
       <div class="dim" id="remote-msg"></div>
+    </div>
+  </div>
+
+  <div class="modal-back" id="viewer-back">
+    <div class="panel" id="viewer-box">
+      <div class="panel-head"><h4 id="viewer-title"></h4>
+        <span><a id="viewer-open" target="_blank" rel="noopener">Open in a new tab</a> <button id="viewer-close" title="Close (Esc)">✕</button></span></div>
+      <div id="viewer-body"></div>
     </div>
   </div>
 

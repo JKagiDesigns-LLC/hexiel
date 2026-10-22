@@ -38,6 +38,7 @@ hexiel = "hexiel.main:main"
 
 [project.optional-dependencies]
 serve = ["aiohttp>=3.9"]
+view = ["textual-image>=0.8"]     # inline image thumbnails in the terminal (Kitty, Sixel, or block fallback)
 dev = ["pytest", "bandit", "detect-secrets"]
 
 [tool.setuptools.packages.find]

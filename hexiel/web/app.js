@@ -60,6 +60,49 @@ function addTool(toolMsg) {
   return el;
 }
 
+// ---------------------------------------------------------------- images and PDFs
+const mediaUrl = (m) => `api/media/${encodeURIComponent(m.id)}`;
+function mediaCard(m) {
+  const card = document.createElement("div");
+  card.className = "media " + m.kind;
+  if (m.kind === "image") {
+    const img = document.createElement("img");
+    img.src = mediaUrl(m); img.alt = m.name; img.loading = "lazy";
+    img.addEventListener("click", () => openViewer(m));
+    card.append(img);
+    const cap = document.createElement("div");
+    cap.className = "cap"; cap.textContent = m.name + (m.w ? ` · ${m.w}×${m.h}` : "");
+    card.append(cap);
+  } else {
+    card.innerHTML = `<div class="pdfcard"><span class="ico">📄</span><span><b></b><br><small></small></span></div>`;
+    card.querySelector("b").textContent = m.name;
+    card.querySelector("small").textContent = (m.pages ? `${m.pages} page${m.pages === 1 ? "" : "s"} · ` : "") + "click to read";
+    card.addEventListener("click", () => openViewer(m));
+  }
+  return card;
+}
+function mediaStrip(items) {
+  const strip = document.createElement("div");
+  strip.className = "media-strip";
+  for (const m of items || []) strip.append(mediaCard(m));
+  return strip;
+}
+function openViewer(m) {
+  const back = $("#viewer-back"), body = $("#viewer-body");
+  body.innerHTML = "";
+  if (m.kind === "image") {
+    const img = document.createElement("img"); img.src = mediaUrl(m); img.alt = m.name; body.append(img);
+  } else {
+    const frame = document.createElement("iframe"); frame.src = mediaUrl(m); frame.title = m.name; body.append(frame);
+  }
+  $("#viewer-title").textContent = m.name;
+  $("#viewer-open").href = mediaUrl(m);
+  back.classList.add("show");
+}
+$("#viewer-close").addEventListener("click", () => { $("#viewer-back").classList.remove("show"); $("#viewer-body").innerHTML = ""; });
+$("#viewer-back").addEventListener("click", (ev) => { if (ev.target.id === "viewer-back") $("#viewer-close").click(); });
+document.addEventListener("keydown", (ev) => { if (ev.key === "Escape" && $("#viewer-back").classList.contains("show")) $("#viewer-close").click(); });
+
 function toolDone(data) {
   if (!live) return;
   const el = live.byId.get(data.id);
@@ -71,6 +114,7 @@ function toolDone(data) {
   head.innerHTML = `<span style="opacity:.8">${data.ok ? "✓" : "✗"}</span> ${esc(name)} — ${esc(head.textContent.split(" — ").slice(1).join(" — "))}` +
                    `<span style="opacity:.6"> ${data.elapsed}s</span><span class="chev">▸</span>`;
   el.querySelector(".preview").textContent = data.preview || "(no output)";
+  if (data.media && data.media.length) el.append(mediaStrip(data.media));
 }
 
 function renderHistory(items) {
@@ -80,6 +124,7 @@ function renderHistory(items) {
       const div = document.createElement("div");
       div.className = "msg user";
       div.innerHTML = `<div class="bubble">${esc(item.text)}</div>`;
+      if (item.media && item.media.length) div.querySelector(".bubble").append(mediaStrip(item.media));
       $("#chat").appendChild(div);
     } else if (item.t === "assistant") {
       const div = document.createElement("div");
@@ -92,7 +137,7 @@ function renderHistory(items) {
       if (!live) live = newLive();
       live.thinking.style.display = "none";
       addTool(item);
-      if (item.ok !== undefined) toolDone({ id: item.id, ok: item.ok, preview: item.preview, elapsed: 0 });
+      if (item.ok !== undefined) toolDone({ id: item.id, ok: item.ok, preview: item.preview, elapsed: 0, media: item.media });
       const wrap = live.wrap;
       live = null;
       wrap.querySelectorAll(".thinking").forEach(el => el.remove());
@@ -517,18 +562,59 @@ input.addEventListener("keydown", (ev) => {
   }
   if (ev.key === "Enter" && !ev.shiftKey) { ev.preventDefault(); submit(); }
 });
-input.addEventListener("paste", async (ev) => {
-  const file = [...(ev.clipboardData?.files || [])].find(f => f.type.startsWith("image/"));
-  if (!file) return;                              // plain text pastes normally
-  ev.preventDefault();
+const FILE_TYPES = ["image/png", "image/jpeg", "image/webp", "image/gif", "application/pdf"];
+let attached = [];                                  // images and PDFs waiting to be sent with the next message
+async function addFile(file) {
   try {
     const res = await (await fetch("api/paste-image", { method: "POST",
-      headers: { "content-type": file.type }, body: file })).json();
+      headers: { "content-type": file.type, "x-filename": file.name || "" }, body: file })).json();
     if (!res.path) throw new Error(res.error || "upload failed");
     const ref = res.path.includes(" ") ? `"${res.path}" ` : `${res.path} `;
     input.setRangeText(ref, input.selectionStart, input.selectionEnd, "end");
+    attached.push(res);
+    renderAttached();
     input.dispatchEvent(new Event("input"));
-  } catch (e) { alert(`image paste failed: ${e.message}`); }
+  } catch (e) { alert(`could not attach ${file.name || "file"}: ${e.message}`); }
+}
+function renderAttached() {
+  const box = $("#attached");
+  box.innerHTML = "";
+  attached.forEach((m, i) => {
+    const chip = document.createElement("span");
+    chip.className = "chip";
+    if (m.kind === "image") { const img = document.createElement("img"); img.src = mediaUrl(m); chip.append(img); }
+    else chip.append("📄 ");
+    chip.append(m.name);
+    chip.addEventListener("click", () => openViewer(m));
+    const x = document.createElement("button");
+    x.type = "button"; x.textContent = "✕"; x.title = "Remove";
+    x.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      input.value = input.value.replace(m.path.includes(" ") ? `"${m.path}" ` : `${m.path} `, "");
+      attached.splice(i, 1); renderAttached();
+    });
+    chip.append(x);
+    box.append(chip);
+  });
+  box.hidden = attached.length === 0;
+}
+input.addEventListener("paste", async (ev) => {
+  const files = [...(ev.clipboardData?.files || [])].filter(f => FILE_TYPES.includes(f.type));
+  if (!files.length) return;                      // plain text pastes normally
+  ev.preventDefault();
+  for (const f of files) await addFile(f);
+});
+for (const type of ["dragenter", "dragover"]) document.addEventListener(type, (ev) => {
+  if ([...(ev.dataTransfer?.types || [])].includes("Files")) { ev.preventDefault(); document.body.classList.add("dropping"); }
+});
+document.addEventListener("dragleave", (ev) => { if (!ev.relatedTarget) document.body.classList.remove("dropping"); });
+document.addEventListener("drop", async (ev) => {
+  document.body.classList.remove("dropping");
+  const files = [...(ev.dataTransfer?.files || [])].filter(f => FILE_TYPES.includes(f.type));
+  if (!files.length) return;
+  ev.preventDefault();
+  for (const f of files) await addFile(f);
+  input.focus();
 });
 input.addEventListener("input", () => { slashSel = 0; renderSlash(); });
 input.addEventListener("input", () => {
@@ -543,6 +629,9 @@ function submit() {
   const div = document.createElement("div");
   div.className = "msg user";
   div.innerHTML = `<div class="bubble">${esc(text)}</div>`;
+  const sent = attached.filter(m => text.includes(m.path));
+  if (sent.length) div.querySelector(".bubble").append(mediaStrip(sent));
+  attached = []; renderAttached();
   $("#chat").appendChild(div);
   busy = true; updateSendButton();
   sendWs({ t: "send", text });

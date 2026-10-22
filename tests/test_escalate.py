@@ -50,7 +50,7 @@ def build(tmp_path, monkeypatch, replies, escalate="auto", consult_mode="auto", 
     monkeypatch.setattr(llm, "make_provider", fake_make)
     monkeypatch.setattr(planner, "_config_profile", lambda session, name: {"cloud": CLOUD, "local": LOCAL}.get(name))
     asked = []
-    monkeypatch.setattr(planner, "complete", lambda session, mc, system, user, max_tokens=4096: (
+    monkeypatch.setattr(planner, "complete", lambda session, mc, system, user, max_tokens=4096, **kw: (
         asked.append(user) or "ADVICE: look in the VM", {"prompt_tokens": 300, "completion_tokens": 40}))
     return s, events, labels, requests, asked, made
 

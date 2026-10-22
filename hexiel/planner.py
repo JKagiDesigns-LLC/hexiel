@@ -205,11 +205,12 @@ def planner_model(session):
             or session.model_config)
 
 
-def complete(session, mc, system: str, user: str, max_tokens: int = 4096, budget: float | None = None) -> tuple[str, dict]:
-    """One tool-less model call. Returns (text, usage). Stays responsive to Ctrl+C.
-    `budget` (seconds) bounds the whole call: a model that has not answered by then raises TimeoutError."""
+def _complete_once(session, mc, system: str, user: str, max_tokens: int, budget: float | None) -> tuple[str, dict]:
     import time
-    provider = llm.make_provider(mc, session.settings)
+    try:
+        provider = llm.make_provider(mc, session.settings)
+    except SystemExit as exc:                          # a missing API key: a failure like any other, not the end of hexiel
+        raise RuntimeError(str(exc) or f"{mc.name} is not usable") from None
     deadline = time.time() + budget if budget else None
     stream = provider.stream([{"role": "user", "content": user}], system, [], model=mc.model,
                              max_output_tokens=max_tokens, extra_body=mc.extra_body,
@@ -224,6 +225,44 @@ def complete(session, mc, system: str, user: str, max_tokens: int = 4096, budget
             usage = payload[0]
     session.record_usage(mc.model, usage)
     return "".join(parts).strip(), usage
+
+
+def cloud_fallback(session, failed):
+    """The model for a cloud task when `failed` (the planner / summary model) can't be used: settings.cloud_fallback_profile,
+    if it is a different, usable profile. None otherwise."""
+    import os
+    mc = _config_profile(session, getattr(session.settings, "cloud_fallback_profile", ""))
+    if mc is None or (failed is not None and mc.name == failed.name):
+        return None
+    if mc.api_key_env and not os.environ.get(mc.api_key_env) and mc.provider != "anthropic":
+        return None
+    return mc
+
+
+def complete(session, mc, system: str, user: str, max_tokens: int = 4096, budget: float | None = None,
+             cloud: bool = False) -> tuple[str, dict]:
+    """One tool-less model call. Returns (text, usage); usage["_model"] names the model that answered. Stays responsive to Ctrl+C.
+    `budget` (seconds) bounds the whole call: a model that has not answered by then raises TimeoutError.
+    `cloud=True` marks a cloud task (plan, advice, summary): if `mc` fails or is rate-limited the cloud fallback profile
+    answers instead, with a note saying so."""
+    try:
+        text, usage = _complete_once(session, mc, system, user, max_tokens, budget)
+    except Exception as exc:  # noqa: BLE001
+        alt = cloud_fallback(session, mc) if cloud and not session._stop.is_set() else None
+        if alt is None:
+            raise
+        why = str(exc).strip().splitlines()[0][:90] if str(exc).strip() else type(exc).__name__
+        say(session, f"↪ {mc.name} couldn't be used ({why}) — using {alt.name} for this cloud task")
+        session.set_active_model(alt, "cloud fallback")
+        try:
+            text, usage = _complete_once(session, alt, system, user, max_tokens, budget)
+        finally:
+            session.active_model = ""
+            session.on_event("model_active")
+        mc = alt
+    usage = dict(usage or {})
+    usage["_model"] = mc.name
+    return text, usage
 
 
 def _json_from(text: str):
@@ -469,7 +508,7 @@ def make_plan(session, request: str, brief: str) -> Plan:
         session.set_active_model(mc, "planning")
         for attempt in (1, 2):
             try:
-                text, usage = complete(session, mc, PLANNER_SYSTEM, attempt_user, max_tokens=4096)
+                text, usage = complete(session, mc, PLANNER_SYSTEM, attempt_user, max_tokens=4096, cloud=mc is pmc)
             except PlanError:
                 raise
             except Exception as exc:  # noqa: BLE001 - provider down, key missing, limit hit ...
@@ -486,10 +525,11 @@ def make_plan(session, request: str, brief: str) -> Plan:
                 attempt_user = (f"{user}\n\n## Your previous reply was rejected\n{exc}.\n"
                                 "Reply again with ONLY the corrected JSON object.")
                 continue
-            plan.planner, plan.worker = mc.name, wmc.name
+            author = usage.get("_model", mc.name)
+            plan.planner, plan.worker = author, wmc.name
             used = usage.get("prompt_tokens", 0) + usage.get("completion_tokens", 0)
             if used:
-                say(session, f"📐 plan written by {mc.name} ({used:,} tokens)")
+                say(session, f"📐 plan written by {author} ({used:,} tokens)")
             return plan
     raise PlanError(last_error or "no model could produce a valid plan")
 

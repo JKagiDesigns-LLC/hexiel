@@ -51,7 +51,7 @@ def build(tmp_path, monkeypatch, replies, mode="auto", planner_profile="cloud", 
     monkeypatch.setattr("hexiel.llm.make_provider", lambda *a, **k: object())
     monkeypatch.setattr(planner, "_config_profile", lambda session, name: {"cloud": CLOUD, "local": LOCAL}.get(name))
 
-    def fake_complete(session, mc, system, user, max_tokens=4096):
+    def fake_complete(session, mc, system, user, max_tokens=4096, cloud=False, budget=None):
         asked.append({"mc": mc.name, "system": system, "user": user})
         if isinstance(advice, Exception):
             raise advice

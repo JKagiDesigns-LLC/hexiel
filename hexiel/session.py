@@ -1029,6 +1029,14 @@ class Session:
             except (KeyError, ValueError, SystemExit):     # unknown profile or no API key: just use our own model
                 self.on_event("note", f"⚠ compact_profile {name!r} is not usable (unknown profile or missing API key) "
                                       "— summarizing with the current model")
+        fallback = getattr(self.settings, "cloud_fallback_profile", "")
+        if name and fallback and fallback not in (name, self.model_config.name):      # the summary model failed: the cloud fallback is next
+            from .config import load_config
+            try:
+                mc = load_config().model(fallback)
+                pairs.append((mc, llm.make_provider(mc, self.settings)))
+            except (KeyError, ValueError, SystemExit):
+                pass
         pairs.append((self.model_config, provider))
         return pairs
 

@@ -69,6 +69,7 @@ searxng_url = ""            # e.g. http://localhost:8888 when search_backend = "
 # digest_timeout = 90           # (in [settings]) seconds a tool model gets; slower than that and the raw output is used
 
 # Big tasks: a strong model plans, a cheaper (e.g. local) model does the work. See /delegate.
+# cloud_fallback_profile = "glm-flash"   # cloud tasks only (plans, advice, compaction summaries): used when the planner/summary model fails or is limited
 # planner_profile = "kimi"      # model that writes the plan ("" = fallback_profile, else the current model)
 # workers = "auto"             # steps run at once when independent: "auto" = every core but one, or a number (1 = one at a time)
 # worker_fallback_profile = ""  # used for a step while the worker is busy (e.g. a slow local model serving another session)
@@ -193,6 +194,7 @@ class Settings:
     escalate_mode: str = "auto"       # when the working model is struggling, let the planner model take over for a few steps: "auto" | "off"
     consult_mode: str = "auto"        # ask the planner model for advice: "auto" (the model may ask, and hexiel asks when it is stuck) | "tool" (only when the model asks) | "off"
     error_reports: str = "account"    # send hexiel's own errors to remote.hexiel.tech for tracking: "account" (when signed in to Hexiel Remote) | "all" (also anonymously, to the public queue) | "off"
+    cloud_fallback_profile: str = ""  # cloud tasks only (plans, advice, compaction summaries): used when the cloud model fails or is limited
     tool_models: dict = field(default_factory=dict)   # [tool_models]: tool -> profile that condenses its big output (see digest.py)
     digest_min_chars: int = 3000      # tool output shorter than this is never condensed by a tool model
     digest_timeout: int = 90          # seconds a tool model gets to condense one output before hexiel uses the raw text
@@ -294,6 +296,7 @@ def _settings_from(settings_raw: dict) -> "Settings":
         guard_commits=mode == "except-commits",
         compact_threshold=float(settings_raw.get("compact_threshold", 0.82)),
         compact_profile=str(settings_raw.get("compact_profile", "")),
+        cloud_fallback_profile=str(settings_raw.get("cloud_fallback_profile", "")),
         digest_min_chars=max(500, int(settings_raw.get("digest_min_chars", 3000))),
         digest_timeout=max(5, int(settings_raw.get("digest_timeout", 90))),
         request_timeout=int(settings_raw.get("request_timeout", 900)),

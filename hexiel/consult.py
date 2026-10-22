@@ -93,13 +93,13 @@ def ask(session, question: str, reason: str = "") -> str:
             + f"## Question\n{question.strip() or 'The agent is stuck. Diagnose it and say what to do next.'}")
     session.set_active_model(cm, "advising")
     try:
-        text, usage = planner.complete(session, cm, CONSULT_SYSTEM, user, max_tokens=900)
+        text, usage = planner.complete(session, cm, CONSULT_SYSTEM, user, max_tokens=900, cloud=True)
     finally:
         session.active_model = ""
         session.on_event("model_active")
     session.__dict__["_consults"] = used_this_turn(session) + 1
     used = usage.get("prompt_tokens", 0) + usage.get("completion_tokens", 0)
-    session.on_event("note", f"🧭 advice from {cm.name}" + (f" ({used:,} tokens)" if used else ""))
+    session.on_event("note", f"🧭 advice from {usage.get('_model', cm.name)}" + (f" ({used:,} tokens)" if used else ""))
     return text.strip()
 
 
@@ -230,8 +230,16 @@ def escalate(session, reason: str, steps: int = ESCALATE_STEPS) -> bool:
     try:
         provider = llm.make_provider(cm, session.settings)
     except (SystemExit, ValueError, KeyError) as exc:
-        session.on_event("note", f"⚠ could not switch to {cm.name} ({str(exc)[:100] or type(exc).__name__}) — carrying on")
-        return False
+        alt = planner.cloud_fallback(session, cm)
+        try:
+            if alt is None or alt.name == session.model_config.name:
+                raise ValueError("no cloud fallback")
+            provider = llm.make_provider(alt, session.settings)
+            session.on_event("note", f"↪ {cm.name} couldn't be used ({str(exc)[:80] or type(exc).__name__}) — escalating to {alt.name}")
+            cm = alt
+        except (SystemExit, ValueError, KeyError):
+            session.on_event("note", f"⚠ could not switch to {cm.name} ({str(exc)[:100] or type(exc).__name__}) — carrying on")
+            return False
     st = _state(session)
     st["bursts"] += 1
     st["burst"] = {"left": steps}

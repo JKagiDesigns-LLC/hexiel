@@ -36,6 +36,8 @@ FIELDS = [
     {"key": "settings.compact_profile", "label": "Summary model", "kind": "choice",
      "help": "model that writes compaction summaries — a fast cloud model takes seconds, a slow local one many minutes; "
              "empty = the current model"},
+    {"key": "settings.cloud_fallback_profile", "label": "Cloud fallback", "kind": "choice",
+     "help": "used only for cloud tasks (plans, advice, summaries) when the planner/summary model fails or is rate-limited; empty = none"},
     {"key": "settings.request_timeout", "label": "Request timeout", "kind": "number",
      "options": [300, 600, 900, 1800, 3600], "help": "seconds per model request"},
     {"key": "settings.auto_resume", "label": "Auto-resume", "kind": "bool",
@@ -124,7 +126,7 @@ def options_for(session, key: str) -> list | None:
     field = FIELD_BY_KEY[key]
     if key == "profile":
         return list(config_mod.load_config().models)
-    if key in ("settings.planner_profile", "settings.executor_profile", "settings.compact_profile", "settings.worker_fallback_profile"):
+    if key in ("settings.planner_profile", "settings.executor_profile", "settings.compact_profile", "settings.worker_fallback_profile", "settings.cloud_fallback_profile"):
         return [""] + list(config_mod.load_config().models)
     if key in ("settings.fallback_profile", "settings.subagent_profile"):
         return [""] + [n for n in config_mod.load_config().models if n != session.model_config.name]

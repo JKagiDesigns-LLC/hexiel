@@ -188,6 +188,9 @@ class Settings:
     executor_profile: str = ""        # /delegate: model that does each task ("" = the current model)
     workers: object = "auto"          # /delegate: steps run at once when independent — "auto" = every core but one, or a number
     worker_fallback_profile: str = "" # /delegate: used for a step while the worker model is busy ("" = always wait for the worker)
+    router_profile: str = ""          # a small cloud model that sorts each typed message (chat/small/work/big) — "" = no router
+    overflow_profile: str = ""        # while the main model is busy, chat-sized requests run here ("" = queue as usual)
+    overflow_daily_tokens: int = 0    # daily cap on the router model's tokens (routing, chat answers, overflow); 0 = no cap
     auto_delegate: str = "off"        # size up each request: "off" | "ask" (offer to delegate big ones) | "auto"
     delegate_approval: bool = True    # show the plan and wait for a yes before running it
     delegate_retries: int = 2         # fix attempts per task before escalating it to the planner model
@@ -313,6 +316,9 @@ def _settings_from(settings_raw: dict) -> "Settings":
         executor_profile=str(settings_raw.get("executor_profile", "")),
         workers=(lambda v: max(1, int(v)) if str(v).isdigit() else "auto")(settings_raw.get("workers", "auto")),
         worker_fallback_profile=str(settings_raw.get("worker_fallback_profile", "")),
+        router_profile=str(settings_raw.get("router_profile", "")),
+        overflow_profile=str(settings_raw.get("overflow_profile", "")),
+        overflow_daily_tokens=max(0, int(settings_raw.get("overflow_daily_tokens", 0))),
         auto_delegate=(str(settings_raw.get("auto_delegate", "off")).lower()
                        if str(settings_raw.get("auto_delegate", "off")).lower() in ("off", "ask", "auto") else "off"),
         delegate_approval=bool(settings_raw.get("delegate_approval", True)),

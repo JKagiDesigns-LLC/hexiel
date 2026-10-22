@@ -173,6 +173,12 @@ class Session:
         u["prompt"] += usage.get("prompt_tokens", 0)
         u["cached"] += usage.get("cached_tokens", 0)
         u["completion"] += usage.get("completion_tokens", 0)
+        # the daily cloud budget (router.py): routing calls, chat answers and overflow turns all count
+        from . import router as router_mod
+        if self.__dict__.get("_router_charge", None) is None:
+            self._router_charge = router_mod.charge_targets(self)
+        if model in self._router_charge:
+            router_mod.charge_daily(sum(usage.get(k, 0) for k in ("prompt_tokens", "completion_tokens")))
 
     def merge_usage(self, other: "Session") -> None:
         """Fold a helper session's per-model usage into this one (delegated steps, briefings, subagents)."""
@@ -341,15 +347,17 @@ class Session:
         self.messages = [m for m in self.messages if not _is_empty_reply(m)]
         self.messages.append(entry)
         self.save()
-        if delegate_mode != "skip":
-            from . import planner
-            if planner.maybe_delegate(self, user_text, forced=delegate_mode == "force"):
-                return
-        provider = llm.make_provider(self.model_config, self.settings)
-        tool_defs = self._tool_defs()
+        from . import router as router_mod
+        mc, handled = router_mod.route_turn(self, user_text, delegate_mode, cloud_turn)
+        if handled:
+            return
+        prev_mc = self.model_config      # an overflow model for this one request only (router.py)
+        self.model_config = mc
         turn = {"tools": 0, "used_todo": False, "item": None, "ok": False}
         self._provider_override = None   # a fallback switch already changed model_config
         try:
+            provider = llm.make_provider(self.model_config, self.settings)
+            tool_defs = self._tool_defs()
             while True:
                 if self._stop.is_set():
                     self.on_event("turn_end", aborted=True)
@@ -401,6 +409,8 @@ class Session:
                     self._execute_tool(call)
                     self._auto_todo_step(user_text, call, assistant, turn)
         finally:
+            if self.model_config is not prev_mc and self._provider_override is None:
+                self.model_config = prev_mc      # the overflow model ran this request only
             consult.end_burst(self, "request finished")      # always hand the next request back to the cheap model
             self._auto_todo_finish(turn)
             if turn["ok"]:

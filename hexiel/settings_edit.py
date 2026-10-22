@@ -55,6 +55,17 @@ FIELDS = [
      "help": "/delegate: independent steps run at the same time — auto = every CPU core but one"},
     {"key": "settings.worker_fallback_profile", "label": "Worker when busy", "kind": "choice",
      "help": "/delegate: model used for a step while the worker model is busy or not answering; empty = always wait for the worker"},
+    {"key": "settings.router_profile", "label": "Router", "kind": "choice",
+     "help": "a small cloud model that sorts each message before the main model runs it: chats answered directly, "
+             "small tasks to the main model, big ones planned first (e.g. claude-haiku); empty = every message goes "
+             "straight to the main model"},
+    {"key": "settings.overflow_profile", "label": "Overflow when busy", "kind": "choice",
+     "help": "chat-sized requests run here while the main model is busy with another request, instead of waiting "
+             "(e.g. claude-haiku); empty = always wait"},
+    {"key": "settings.overflow_daily_tokens", "label": "Daily cloud cap", "kind": "number",
+     "options": [0, 50000, 100000, 200000, 500000, 1000000],
+     "help": "tokens per day the router model may spend (routing, chat answers, overflow turns), then requests wait "
+             "for the main model again; 0 = no cap"},
     {"key": "settings.auto_delegate", "label": "Big-task check", "kind": "choice",
      "options": ["off", "ask", "auto"],
      "help": "size up each request: off, ask before delegating big ones, or delegate them automatically"},
@@ -126,7 +137,7 @@ def options_for(session, key: str) -> list | None:
     field = FIELD_BY_KEY[key]
     if key == "profile":
         return list(config_mod.load_config().models)
-    if key in ("settings.planner_profile", "settings.executor_profile", "settings.compact_profile", "settings.worker_fallback_profile", "settings.cloud_fallback_profile"):
+    if key in ("settings.planner_profile", "settings.executor_profile", "settings.compact_profile", "settings.worker_fallback_profile", "settings.cloud_fallback_profile", "settings.router_profile", "settings.overflow_profile"):
         return [""] + list(config_mod.load_config().models)
     if key in ("settings.fallback_profile", "settings.subagent_profile"):
         return [""] + [n for n in config_mod.load_config().models if n != session.model_config.name]

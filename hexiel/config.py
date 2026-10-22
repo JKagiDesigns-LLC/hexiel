@@ -88,6 +88,7 @@ base_url = "http://localhost:11434/v1"
 model = "glm-5.3-flash:cloud"
 context_window = 200000     # tokens before auto-compaction kicks in
 max_output_tokens = 16384
+# fallbacks = ["kimi"]      # other profiles to try, in order, when this one is unreachable or hits its usage limit
 
 [models.kimi]
 provider = "openai"
@@ -166,6 +167,14 @@ class ModelConfig:
     extra_body: dict = field(default_factory=dict)
     echo_reasoning: bool = False     # send reasoning back as reasoning_content (DeepSeek, Together, Kimi)
     max_tokens_param: str = ""       # "" = auto (max_completion_tokens for OpenAI/Azure, else max_tokens)
+    fallbacks: tuple[str, ...] = ()  # profiles tried in order when this model is unreachable or over its limit
+
+    def __post_init__(self):
+        # accept "name" as well as ["name", "name2"]
+        if isinstance(self.fallbacks, str):
+            self.fallbacks = (self.fallbacks,)
+        elif isinstance(self.fallbacks, list):
+            self.fallbacks = tuple(self.fallbacks)
 
 
 @dataclass

@@ -12,10 +12,11 @@ e.g. Claude Haiku — one short call, so a routing decision costs a fraction of 
           plan-then-execute path (/delegate)
 
 Overflow (settings.overflow_profile, e.g. Haiku too): while the main model is busy with another
-request, chat- and small-sized requests run on the overflow model instead of waiting; real work
-keeps its place in the queue. A daily token cap (settings.overflow_daily_tokens) counts every
-routed token (routing calls, chat answers, overflow turns) and stops the overflow when it is spent
-— afterwards requests simply queue again. 0 = no cap.
+request, chat- and small-sized requests run on the overflow model instead of waiting, and real
+work runs for that turn on the main model's fallback chain ([models.*] `fallbacks`, Anthropic
+first, an Ollama Cloud model second). A daily token cap (settings.overflow_daily_tokens) counts
+every routed token (routing calls, chat answers, overflow turns) and stops the overflow when it
+is spent — afterwards requests simply queue again. 0 = no cap.
 
 Failures never break a turn: an unusable router or budget file means the message is handled as
 usual. Routing only applies to messages typed by a person — hexiel's own helper sessions (delegated
@@ -201,23 +202,27 @@ def _empty(msg: dict) -> bool:
 # ---------------------------------------------------------------- overflow while the main model is busy
 
 def overflow_or_main(session, prompt: str, route: str = ""):
-    """The model for this turn: the session's own, or the overflow profile while that one is busy
-    with another request. Only chat- and small-sized requests overflow; real work keeps its place
-    in the queue (a task that edits files should run on the model that edits files)."""
+    """The model for this turn: the session's own, or another model while that one is busy with
+    another request. Chat- and small-sized requests run on the overflow profile; real work runs for
+    that one turn on the current model's fallback chain ([models.*] `fallbacks` — whatever the
+    config declares, e.g. a cloud model first with another cloud model second), then the session
+    returns to its own model next turn. With nothing to fall back to, work keeps its place in the
+    queue."""
     from . import planner
     st = session.settings
+    from .session import cooling_down
     main = session.model_config
+    # a failed-over session returns to its primary once the cooldown on it has run out
+    boot = _profile(session, getattr(session, "_failed_over_from", ""))
+    if boot is not None and boot.name != main.name and not cooling_down(boot.name):
+        session.on_event("note", f"✅ {boot.name} is available again — switching back to it")
+        session.__dict__.pop("_failed_over_from", None)
+        return boot
+    if not modelbusy.is_local(main):
+        return main                            # cloud models serve everyone at once
     overflow = _profile(session, st.overflow_profile) if st.overflow_profile else None
-    if overflow is None or overflow.name == main.name or not modelbusy.is_local(main):
-        return main                            # an overflow that isn't a real profile, or no queue to escape
-    if route not in ("chat", "small"):         # no router ran: the rules say if it is simple enough
-        if route:                              # 'work' and 'big' never overflow
-            return main
-        score, _ = planner.triage_score(prompt)
-        if score > 0:
-            return main
-    if over_budget(session):
-        return main
+    if overflow is not None and overflow.name == main.name:
+        overflow = None
 
     state = session.__dict__.setdefault("_overflow_busy", {"busy": False, "at": -1e9})
     now = time.monotonic()
@@ -229,8 +234,22 @@ def overflow_or_main(session, prompt: str, route: str = ""):
         state["busy"], state["at"] = planner._is_busy(main, st), now
     if not state["busy"]:
         return main
-    session.on_event("note", f"🔀 {main.name} is busy — this request runs on {overflow.name} instead of waiting")
-    return overflow
+    if route in ("chat", "small") or (not route and planner.triage_score(prompt)[0] <= 0):
+        if overflow is not None and not over_budget(session) and not cooling_down(overflow.name):
+            session.on_event("note", f"🔀 {main.name} is busy — this request runs on {overflow.name} instead of waiting")
+            return overflow
+        return main                            # chat waits for its own model rather than a paid fallback
+    # real work: the model's own fallback chain, first link first
+    chain = list(main.fallbacks) or ([st.fallback_profile] if st.fallback_profile else [])
+    for name in chain:
+        if cooling_down(name):                  # limited a few minutes ago: use the next link, try again later
+            continue
+        fb = _profile(session, name)
+        if fb is None or fb.name == main.name:
+            continue
+        session.on_event("note", f"🔀 {main.name} is busy — this request runs on {fb.name} instead of waiting in the queue")
+        return fb
+    return main
 
 
 # ---------------------------------------------------------------- the daily token cap

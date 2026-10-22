@@ -116,6 +116,28 @@ def _is_empty_reply(msg: dict) -> bool:
 
 
 MAX_TIMEOUT_RETRIES = 2   # consecutive request timeouts before giving up (each already waited request_timeout)
+FALLBACK_COOLDOWN = 1800.0    # a profile that hit its usage limit is skipped by fallbacks this long —
+                              # retrying it with every request would raise the same error again; try again later.
+                              # (A shorter provider-provided reset time is used instead.)
+_limited_until: dict[str, float] = {}     # profile name -> monotonic time until it is skipped
+
+
+def cool_down(name: str, retry_after: float | None = None) -> None:
+    """Remember that this profile just ran into its usage limit, so the fallback chains skip it
+    for a while instead of hammering it with every request."""
+    wait = FALLBACK_COOLDOWN
+    if retry_after:
+        wait = min(max(float(retry_after), 60.0), FALLBACK_COOLDOWN)
+    _limited_until[name] = time.monotonic() + wait
+
+
+def cooling_down(name: str) -> bool:
+    """True while a profile is deliberately skipped after its own limit."""
+    until = _limited_until.get(name, 0.0)
+    if until and until <= time.monotonic():
+        _limited_until.pop(name, None)
+        return False
+    return bool(until)
 
 
 class Session:
@@ -352,8 +374,10 @@ class Session:
         if handled:
             return
         prev_mc = self.model_config      # an overflow model for this one request only (router.py)
+        self.__dict__["_turn_boot_model"] = prev_mc.name
         self.model_config = mc
         turn = {"tools": 0, "used_todo": False, "item": None, "ok": False}
+        self.__dict__.pop("_fallback_tried", None)  # a new turn starts at the first link again
         self._provider_override = None   # a fallback switch already changed model_config
         try:
             provider = llm.make_provider(self.model_config, self.settings)
@@ -481,16 +505,27 @@ class Session:
             try:
                 return self._stream_once(self._provider_override or provider, tool_defs)
             except llm.RateLimitError as exc:
+                chain_ready = bool(self.model_config.fallbacks) or bool(self.settings.fallback_profile)
                 if isinstance(exc, llm.TransientError):
                     # not a rate limit: the server is down, unreachable or hung. A request that timed out
                     # already waited request_timeout seconds, so don't repeat that more than once.
                     timeouts += exc.timed_out
+                    if chain_ready and (timeouts >= MAX_TIMEOUT_RETRIES or (not exc.timed_out and attempt >= 3)):
+                        # genuinely unreachable (two full-timeout waits, or a run of failed
+                        # connections in a row): fail over instead of failing the turn
+                        cool_down(self.model_config.name, None)       # ...and don't re-probe it every turn
+                        if self._switch_to_fallback(str(exc)):
+                            attempt, timeouts = 0, 0
+                            continue
                     if timeouts >= MAX_TIMEOUT_RETRIES:
                         self._provider_error = (f"{exc} — the model server accepted the request but never answered "
                                                 f"(it may be hung or overloaded). Check it, then send your message again.")
                         return {"role": "assistant", "content": ""}
                     wait = self._limit_wait(exc, attempt)
                     if wait is None:
+                        if chain_ready and self._switch_to_fallback(str(exc)):
+                            attempt, timeouts = 0, 0
+                            continue
                         self._provider_error = str(exc)
                         return {"role": "assistant", "content": ""}
                     self.on_event("model_unreachable", wait, str(exc)[:200])
@@ -500,6 +535,7 @@ class Session:
                     continue
                 wait = self._limit_wait(exc, attempt)
                 if wait is None:
+                    cool_down(self.model_config.name, exc.retry_after)
                     if self._switch_to_fallback(str(exc)):
                         attempt = 0
                         continue
@@ -576,18 +612,31 @@ class Session:
         return wait
 
     def _switch_to_fallback(self, reason: str) -> bool:
-        name = self.settings.fallback_profile
-        if not name or name == self.model_config.name:
-            return False
+        """Switch to the next profile left in this model's fallback chain ([models.*] `fallbacks`;
+        with none set, the old fallback_profile). The tried names pile up for this turn, so a chain
+        is walked in order and a failing round never sends the turn back and forth forever. When
+        the failing model is the session's own (not a per-turn overflow model), it is remembered as
+        the failing primary, so the session returns to it once its cooldown has run out."""
         from .config import load_config
-        try:
-            fallback = load_config().model(name)
-        except (KeyError, SystemExit):
-            return False
-        self.on_event("fallback", self.model_config.name, name, reason[:200])
-        self.model_config = fallback
-        self._provider_override = llm.make_provider(fallback, self.settings)
-        return True
+        boot = self.__dict__.get("_turn_boot_model", self.model_config.name)
+        if self.model_config.name == boot:
+            self.__dict__.setdefault("_failed_over_from", self.model_config.name)
+        chain = list(self.model_config.fallbacks) or (
+            [self.settings.fallback_profile] if self.settings.fallback_profile else [])
+        tried = self.__dict__.setdefault("_fallback_tried", {self.model_config.name})
+        tried.add(self.model_config.name)
+        for name in chain:
+            if name in tried or cooling_down(name):   # a usage limit was just hit: skip until it resets
+                continue
+            try:
+                fallback = load_config().model(name)
+            except (KeyError, SystemExit):
+                continue
+            self.on_event("fallback", self.model_config.name, name, reason[:200])
+            self.model_config = fallback
+            self._provider_override = llm.make_provider(fallback, self.settings)
+            return True
+        return False
 
     def _tool_defs(self) -> list:
         from . import digest

@@ -211,7 +211,7 @@ Paste (Ctrl+V / Alt+V in the terminal, plain paste in the browser), drop a file 
 (`@shot.png`, `~/Downloads/spec.pdf`) and you can see what you attached. In the **web UI** images appear as thumbnails
 in your message and when the model looks at one (`view_image`); click for full size. PDFs get a card that opens a
 reader (with an "open in a new tab" link). In the **terminal**, an attached file shows as a clickable line that opens
-it in your system viewer; install `pip install 'hexiel[view]'` and images (and, with poppler's `pdftoppm`, a PDF's
+it in your system viewer; install the `view` extra (`pipx install 'hexiel[view]'`, or `pipx inject hexiel textual-image`) and images (and, with poppler's `pdftoppm`, a PDF's
 first page) also draw inline in terminals that support it, with a block-character fallback elsewhere. The model gets
 images directly; for PDFs it reads the text. Only files that came up in the conversation are ever served to the
 browser.

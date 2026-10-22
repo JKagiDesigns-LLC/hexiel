@@ -1166,7 +1166,7 @@ class HexielTUI(App):
             "help": self.cmd_help, "clear": self.cmd_clear, "compact": self.cmd_compact,
             "config": self.cmd_config, "update": self.cmd_update, "mcp": self.cmd_mcp,
             "plan": self.cmd_plan, "permissions": self.cmd_permissions,
-            "undo": self.cmd_undo, "usage": self.cmd_usage, "jobs": self.cmd_jobs, "knowledge": self.cmd_knowledge, "inbox": self.cmd_inbox,
+            "undo": self.cmd_undo, "usage": self.cmd_usage, "toolmodels": self.cmd_toolmodels, "jobs": self.cmd_jobs, "knowledge": self.cmd_knowledge, "inbox": self.cmd_inbox,
             "model": self.cmd_model, "models": self.cmd_models, "auto": self.cmd_auto,
             "memory": self.cmd_memory, "skills": self.cmd_skills,
             "ship": self.cmd_ship, "heal": self.cmd_heal,
@@ -1380,6 +1380,19 @@ class HexielTUI(App):
         self.add_note(f"this session: {t['requests']} request(s) · input {t['prompt_tokens']:,} tokens "
                       f"({t['cached_tokens']:,} from cache = {share}%, {fresh:,} fresh) · "
                       f"output {t['completion_tokens']:,} tokens · model {self.session.model_config.model}")
+        from . import digest
+        if digest.summary_line(self.session):
+            self.add_note(digest.summary_line(self.session))
+
+    def cmd_toolmodels(self, arg: str) -> None:
+        from . import digest
+        probe = arg.strip().lower() == "test"
+        if not probe:
+            self.add_note(digest.status_text(self.session))
+            return
+        self.add_note("timing each tool model…")
+        threading.Thread(target=lambda: self.call_from_thread(self.add_note, digest.status_text(self.session, True)),
+                         daemon=True).start()
 
     def cmd_plan(self, arg: str) -> None:
         self.session.plan_mode = not self.session.plan_mode

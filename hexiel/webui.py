@@ -379,8 +379,15 @@ def make_app(session: Session, driver=None) -> web.Application:
             return "📝 plan mode ON — investigate and plan, change nothing" if session.plan_mode else "plan mode OFF"
         if cmd == "usage":
             t = session.usage_totals
+            from . import digest as digest_mod
             return (f"{t['requests']} request(s) · input {t['prompt_tokens']:,} ({t['cached_tokens']:,} cached) · "
-                    f"output {t['completion_tokens']:,} tokens")
+                    f"output {t['completion_tokens']:,} tokens" + ("\n" + digest_mod.summary_line(session) if digest_mod.summary_line(session) else ""))
+        if cmd == "toolmodels":
+            from . import digest as digest_mod
+            if arg.lower() == "test":
+                threading.Thread(target=lambda: state.broadcast({"t": "note", "text": digest_mod.status_text(session, True)}), daemon=True).start()
+                return "timing each tool model…"
+            return digest_mod.status_text(session)
         if cmd == "permissions":
             r = session.rules
             return "\n".join(f"{k}: " + (", ".join(getattr(r, k)) or "—") for k in ("deny", "ask", "allow"))

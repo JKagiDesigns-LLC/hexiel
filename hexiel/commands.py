@@ -85,6 +85,7 @@ BUILTIN = [
     ("jobs", "", "scheduled jobs (ask hexiel to schedule something to create one)"),
     ("inbox", "", "results from scheduled jobs"),
     ("usage", "", "tokens used this session (in / cached / out)"),
+    ("toolmodels", "[test]", "which tools use a helper model, whether it is ready (test = time each one)"),
     ("permissions", "", "show allow / ask / deny rules (incl. this session's 'always')"),
     ("memory", "", "show what hexiel remembers about you and this project"),
     ("skills", "", "list installed skills"),

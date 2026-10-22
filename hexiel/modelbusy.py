@@ -23,6 +23,8 @@ def is_local(mc) -> bool:
     """A model served from this machine or this network (where it is likely shared), not a cloud API."""
     if getattr(mc, "provider", "") == "anthropic" or not getattr(mc, "base_url", ""):
         return False
+    if str(getattr(mc, "model", "")).endswith((":cloud", "-cloud")):      # Ollama Cloud models are routed through a local server
+        return False                                                      # but run (and queue) in the cloud
     host = (urlparse(mc.base_url).hostname or "").lower()
     if host in ("localhost", "host.docker.internal") or host.endswith((".local", ".lan", ".internal", ".home", ".ts.net")) or "." not in host:
         return True

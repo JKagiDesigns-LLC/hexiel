@@ -66,6 +66,7 @@ searxng_url = ""            # e.g. http://localhost:8888 when search_backend = "
 # web_fetch = "small-local"
 # search = "strong-local"       # alias for web_search
 # digest_min_chars = 3000       # (in [settings]) smaller outputs are never summarised
+# digest_timeout = 90           # (in [settings]) seconds a tool model gets; slower than that and the raw output is used
 
 # Big tasks: a strong model plans, a cheaper (e.g. local) model does the work. See /delegate.
 # planner_profile = "kimi"      # model that writes the plan ("" = fallback_profile, else the current model)
@@ -194,6 +195,7 @@ class Settings:
     error_reports: str = "account"    # send hexiel's own errors to remote.hexiel.tech for tracking: "account" (when signed in to Hexiel Remote) | "all" (also anonymously, to the public queue) | "off"
     tool_models: dict = field(default_factory=dict)   # [tool_models]: tool -> profile that condenses its big output (see digest.py)
     digest_min_chars: int = 3000      # tool output shorter than this is never condensed by a tool model
+    digest_timeout: int = 90          # seconds a tool model gets to condense one output before hexiel uses the raw text
     delegate_review: str = "auto"     # after a delegated run the planner model reviews the diff: "auto" (when it is a different model than the worker) | "always" | "off"
 
 
@@ -256,7 +258,7 @@ def load_config(model_override: str | None = None) -> Config:
                          f"(you have: {have}). Add a [models.NAME] table — see https://hexiel.tech/config/")
     tm = raw.get("tool_models", {})
     if isinstance(tm, dict):
-        settings.tool_models = {str(k): str(v) for k, v in tm.items()}
+        settings.tool_models = {str(k): (v if isinstance(v, (dict, list)) else str(v)) for k, v in tm.items()}
     return Config(default_model=default_model, models=models, settings=settings,
                   mcp=raw.get("mcp", {}), permissions=raw.get("permissions", {}))
 
@@ -293,6 +295,7 @@ def _settings_from(settings_raw: dict) -> "Settings":
         compact_threshold=float(settings_raw.get("compact_threshold", 0.82)),
         compact_profile=str(settings_raw.get("compact_profile", "")),
         digest_min_chars=max(500, int(settings_raw.get("digest_min_chars", 3000))),
+        digest_timeout=max(5, int(settings_raw.get("digest_timeout", 90))),
         request_timeout=int(settings_raw.get("request_timeout", 900)),
         search_backend=str(settings_raw.get("search_backend", "duckduckgo")),
         searxng_url=str(settings_raw.get("searxng_url", "")),

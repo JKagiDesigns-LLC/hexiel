@@ -219,9 +219,25 @@ search = "strong-local"    # alias for web_search
 
 When a mapped tool returns more than `digest_min_chars` (default 3000, set in `[settings]`), that model condenses the
 output *for your current request*, and the main model gets the summary with a note; it can ask for the raw text by
-calling the tool again with `full: true`. Small outputs, errors and images pass through, and if the helper model fails
-you get the raw output. Tools that *author* changes (`write`, `edit`, `bash`) always use the main model, since it has
-to write its own work; for planning, set `planner_profile` (see `/delegate`).
+calling the tool again with `full: true`. Small outputs, errors and images pass through. A helper that takes longer than
+`digest_timeout` (default 90 s) is given up on and you get the raw output, as you do if it errors. The same output for the
+same request is only summarised once. Tools that *author* changes (`write`, `edit`, `bash`) always use the main model,
+since it has to write its own work; for planning, set `planner_profile` (see `/delegate`).
+
+A slow helper (say a Raspberry Pi) should only see small inputs. A value can be a list, tried in order with the first
+model that isn't busy preferred, or a table with limits for that tool:
+
+```toml
+[tool_models]
+read = { models = ["pi", "gmktec"], min_chars = 1500, max_input = 6000, timeout = 45 }
+grep = "pi"
+search = ["gmktec"]
+```
+
+`min_chars` / `max_input` / `timeout` override the global values for that tool: smaller outputs aren't touched, bigger ones
+than `max_input` aren't sent (you get the raw text), and `timeout` caps the wait. **`/toolmodels`** shows each tool's models,
+whether they are ready or busy, and the limits; **`/toolmodels test`** times a one-word request on each; **`/usage`** adds
+how many outputs were condensed and roughly how many tokens that kept out of the main model's context.
 
 **Busy notice.** With several hexiel windows (or background runs) sharing one local model, requests queue silently.
 hexiel now says so — "⏳ gmktec is busy with 1 other request from another hexiel window … this one may wait its turn" —

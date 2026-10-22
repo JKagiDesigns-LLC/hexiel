@@ -205,14 +205,19 @@ def planner_model(session):
             or session.model_config)
 
 
-def complete(session, mc, system: str, user: str, max_tokens: int = 4096) -> tuple[str, dict]:
-    """One tool-less model call. Returns (text, usage). Stays responsive to Ctrl+C."""
+def complete(session, mc, system: str, user: str, max_tokens: int = 4096, budget: float | None = None) -> tuple[str, dict]:
+    """One tool-less model call. Returns (text, usage). Stays responsive to Ctrl+C.
+    `budget` (seconds) bounds the whole call: a model that has not answered by then raises TimeoutError."""
+    import time
     provider = llm.make_provider(mc, session.settings)
+    deadline = time.time() + budget if budget else None
     stream = provider.stream([{"role": "user", "content": user}], system, [], model=mc.model,
                              max_output_tokens=max_tokens, extra_body=mc.extra_body,
-                             timeout=session.settings.request_timeout)
+                             timeout=min(session.settings.request_timeout, budget) if budget else session.settings.request_timeout)
     parts, usage = [], {}
     for event, *payload in session._interruptible(stream, provider):
+        if deadline and time.time() > deadline:
+            raise TimeoutError(f"{mc.name} did not finish within {budget:.0f}s")
         if event == "text":
             parts.append(payload[0])
         elif event == "done" and payload and payload[0]:

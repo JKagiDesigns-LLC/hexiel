@@ -271,3 +271,5 @@ body {
   #sidebar { display: none; }
   .msg { padding: 4px 14px; }
 }
+#remote-box { width: min(420px, 92vw); }
+#remote-box input { width: 100%; margin: 4px 0; box-sizing: border-box; }

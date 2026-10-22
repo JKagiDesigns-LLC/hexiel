@@ -15,6 +15,7 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -125,20 +126,290 @@ def remove(job_id: str) -> bool:
 
 # ---------------------------------------------------------------- running
 
-def run_job(job: dict) -> tuple[bool, str]:
-    """Run one job headless; returns (ok, answer)."""
-    from .main import build_session
-    session = build_session(job["cwd"], job.get("model") or None)
+JOB_STALL_SECONDS = 600       # no model output and no tool activity for this long = a hung model server
+JOB_POLL_SECONDS = 5
+JOB_SWITCH_SECONDS = 240      # with a fallback model available, move on after this much silence
+INCOMPLETE_MARK = "COULD NOT COMPLETE:"   # a report that starts with this is a failure, not a success
+JOB_MAX_SECONDS = 25 * 60     # hard cap on one unattended run (the relay gives up on a silent device at 35 min)
+
+
+def _gist(arguments) -> str:
+    """One short line describing a tool call's arguments."""
+    if not isinstance(arguments, dict):
+        return ""
+    for key in ("url", "query", "command", "path", "pattern", "prompt"):
+        if arguments.get(key):
+            return str(arguments[key]).replace("\n", " ")[:140]
+    return json.dumps(arguments, default=str)[:140]
+
+
+class _Progress:
+    """Turns a run's events into a console-style log and hands it to `send` in small, frequent batches,
+    so the account page can show what the machine is doing as it happens.
+
+    Line markers (the page colours them): `▸` a tool call, `✓`/`✗` its result, `~` the model's thinking,
+    `!` a problem (unreachable, rate limited, switching models), `#` context (which model is running);
+    anything else is the model's own words."""
+
+    CAP = 64_000                      # most we send for one run
+    PREVIEW_LINES, PREVIEW_CHARS = 6, 500
+
+    def __init__(self, send, every: float = 0.4) -> None:
+        self.send, self.every = send, every
+        self.buf = ""
+        self.sent = 0
+        self.t0 = time.time()
+        self.last = 0.0
+        self.thinking = ""            # the reasoning being streamed right now
+        self.mid_line = False         # the model's words are part-way through a line
+        self.lock = threading.RLock()
+        self.timer: threading.Timer | None = None
+
+    def _add(self, text: str) -> None:
+        with self.lock:
+            self.buf += text
+            if self.timer is None:    # whatever arrives is sent within `every` seconds, even if the model then goes quiet
+                self.timer = threading.Timer(max(0.0, self.every - (time.time() - self.last)), self.flush)
+                self.timer.daemon = True
+                self.timer.start()
+
+    def _newline(self) -> None:
+        if self.mid_line:
+            self._add("\n")
+            self.mid_line = False
+
+    def _stamp(self) -> str:
+        return f"[{int(time.time() - self.t0)}s]"
+
+    def context(self, text: str) -> None:
+        self._newline()
+        self._add(f"# {text}\n")
+        self.flush()
+
+    def problem(self, text: str) -> None:
+        self._newline()
+        self._add(f"! {text}\n")
+        self.flush()
+
+    def event(self, kind: str, args: tuple) -> None:
+        if kind == "thinking":
+            if not self.thinking:
+                self._newline()
+                self._add(f"~ thinking…\n")
+            self.thinking += str(args[0]) if args else ""
+            return self.maybe()
+        if self.thinking:                          # the thought ended: keep a short trace of it
+            snippet = " ".join(self.thinking.split())[:300]
+            self.thinking = ""
+            if snippet:
+                self._add(f"~ {snippet}\n")
+        if kind == "text" and args:
+            self._add(str(args[0]))
+            self.mid_line = not str(args[0]).endswith("\n")
+        elif kind == "tool_call" and args:
+            self._newline()
+            self._add(f"▸ {self._stamp()} {args[0].get('name', '?')} {_gist(args[0].get('arguments'))}\n")
+        elif kind == "tool_result" and len(args) >= 3:
+            self._newline()
+            body = str(args[1]).strip().splitlines()
+            preview = "\n".join("    " + line[:160] for line in body[: self.PREVIEW_LINES])[: self.PREVIEW_CHARS]
+            took = f" {args[3]:.1f}s" if len(args) > 3 and isinstance(args[3], (int, float)) else ""
+            self._add(f"  {'✗' if args[2] else '✓'}{took}\n{preview}\n" if preview else f"  {'✗' if args[2] else '✓'}{took}\n")
+        elif kind == "note" and args:
+            self.context(str(args[0]))
+        elif kind == "model_unreachable" and len(args) >= 2:
+            self.problem(f"model server not answering ({str(args[1])[:100]}) — retrying")
+        elif kind == "rate_limited" and len(args) >= 2:
+            self.problem(f"rate limited — waiting ({str(args[1])[:100]})")
+        self.maybe()
+
+    def maybe(self) -> None:
+        if time.time() - self.last >= self.every:
+            self.flush()
+
+    def flush(self) -> None:
+        with self.lock:
+            timer, self.timer = self.timer, None
+            if timer is not None:
+                timer.cancel()
+            if not self.buf or self.sent >= self.CAP:
+                self.buf = ""
+                return
+            chunk, self.buf = self.buf[: self.CAP - self.sent], ""
+            self.sent += len(chunk)
+            self.last = time.time()
+        try:
+            self.send(chunk)
+        except Exception:             # noqa: BLE001 - progress is a courtesy; it must never break the run
+            pass
+
+
+class _Watch:
+    """What happened during a headless run, so a failure can say why instead of 'no answer'."""
+
+    def __init__(self, progress: "_Progress | None" = None) -> None:
+        self.progress = progress
+        self.last = time.time()
+        self.tools: list[str] = []
+        self.tool_errors: list[str] = []
+        self.problems: list[str] = []
+        self.finished = False             # the turn ended normally (not an error, not aborted)
+
+    def on_event(self, kind: str, *args, **kwargs) -> None:
+        self.last = time.time()
+        if self.progress is not None:
+            self.progress.event(kind, args)
+        if kind == "tool_call" and args:
+            self.tools.append(str(args[0].get("name", "?")))
+        elif kind == "tool_result" and len(args) >= 3 and args[2]:
+            self.tool_errors.append(f"{args[0].get('name', '?')}: {str(args[1])[:240]}")
+        elif kind == "turn_end":
+            if args and isinstance(args[0], dict) and args[0].get("error"):
+                self.problems.append(str(args[0]["error"]))
+            elif not kwargs.get("aborted"):
+                self.finished = True
+        elif kind == "provider_error" and args:
+            self.problems.append(str(args[0]))
+        elif kind == "model_unreachable" and len(args) >= 2:
+            self.problems.append(f"the model server was unreachable or hung ({args[1]}); hexiel retried")
+        elif kind == "rate_limited" and len(args) >= 2:
+            self.problems.append(f"rate limited ({args[1]}); hexiel waited")
+
+
+def _report(headline: str, watch: _Watch, model: str, started: float, partial: str = "") -> str:
+    lines = [headline, ""]
+    lines.append(f"Model: {model} · ran {int(time.time() - started)}s · {len(watch.tools)} tool call(s)"
+                 + (f" ({', '.join(dict.fromkeys(watch.tools))})" if watch.tools else ""))
+    for problem in dict.fromkeys(watch.problems):
+        lines.append(f"Problem: {problem}")
+    for err in watch.tool_errors[-3:]:
+        lines.append(f"Tool error: {err}")
+    if partial:
+        lines += ["", "Last thing the model said (not a finished report):", partial[:1500]]
+    return "\n".join(lines)
+
+
+def _run_once(job: dict, model: str | None, progress, stall: float) -> tuple[bool, str, bool]:
+    """One attempt on one model: (ok, text, retry). retry = another model might do better (this one stalled,
+    crashed, could not start or answered nothing) — as opposed to a task that is simply not doable."""
+    started = time.time()
+    live = _Progress(progress) if progress else None
+    watch = _Watch(live)
+    name = model or "default model"
+    try:
+        from .main import build_session
+        session = build_session(job["cwd"], model)
+    except (Exception, SystemExit) as exc:        # a bad config or unknown model profile must not kill the caller
+        return False, f"The run could not start: {exc}", True
+    name = f"{model or 'default'} ({session.model_config.model})"
+    if watch.progress is not None:
+        watch.progress.context(f"running on {name}")
     full = job.get("access") == "full"
     session.on_approve = lambda tool, args: "yes" if full else "no"
-    session.on_event = lambda *a, **k: None
-    session.run_turn(f"[scheduled job: {job['name']}] {job['prompt']}\n\n(You are running unattended "
-                     "on a schedule: do the task and end with a clear, self-contained report. "
-                     + ("" if full else "You have read-only access: do not try to change files or "
-                        "run commands that modify anything.") + ")")
-    answer = next((m.get("content", "") for m in reversed(session.messages)
-                   if m.get("role") == "assistant" and m.get("content")), "")
-    return bool(answer), answer or "(the job produced no answer)"
+    session.on_event = watch.on_event
+    failure: list[BaseException] = []
+
+    def work() -> None:
+        try:
+            session.run_turn(f"[scheduled job: {job['name']}] {job['prompt']}\n\n(You are running unattended "
+                             "on a schedule: do the task and end with a clear, self-contained report. "
+                             f"If you could not actually complete the task (a page was blocked, a value could not "
+                             f"be found), start the report with '{INCOMPLETE_MARK}' and say why. "
+                             + ("" if full else "You have read-only access: do not try to change files or "
+                                "run commands that modify anything.") + ")")
+        except BaseException as exc:  # noqa: BLE001 - reported below, never raised into the tunnel
+            failure.append(exc)
+
+    thread = threading.Thread(target=work, daemon=True, name="hexiel-job")
+    thread.start()
+    cut = ""
+    while thread.is_alive():
+        thread.join(JOB_POLL_SECONDS)
+        if live:
+            live.flush()
+        idle, total = time.time() - watch.last, time.time() - started
+        if thread.is_alive() and idle > stall:
+            quiet = f"{int(idle)} seconds" if idle < 120 else f"{int(idle // 60)} minutes"
+            cut = (f"Stopped: nothing happened for {quiet}. The model server is probably hung or "
+                   "far too slow — check it, or pick a different model for this automation.")
+        elif thread.is_alive() and total > JOB_MAX_SECONDS:
+            cut = f"Stopped: the run took longer than {JOB_MAX_SECONDS // 60} minutes."
+        if cut:
+            session.stop()                        # also aborts a request blocked on a silent server
+            thread.join(30)
+            break
+    if live:
+        live.flush()
+    last = next((m for m in reversed(session.messages) if m.get("role") == "assistant"), {})
+    answer = (last.get("content") or "").strip()
+    if cut:
+        return False, _report(cut, watch, name, started, answer), cut.startswith("Stopped: nothing happened")
+    if failure:
+        exc = failure[0]
+        return False, _report(f"The run crashed: {type(exc).__name__}: {exc}", watch, name, started, answer), True
+    if watch.finished and answer and not last.get("tool_calls"):
+        if INCOMPLETE_MARK in answer[:200].upper():
+            return False, _report("The task could not be completed. The model's report:", watch, name, started, answer), False
+        return True, answer, False
+    if watch.finished:
+        return False, _report("The run finished but the model returned nothing — no report was produced.",
+                              watch, name, started), True
+    return False, _report("The run did not complete.", watch, name, started, answer), True
+
+
+def _fallbacks(job: dict, tried: str | None) -> list[str]:
+    """Other model profiles to try, best first: the ones you set as fallbacks, then any other profile.
+    Two at most, so an unattended job can't wander through every (possibly paid) model you have."""
+    try:
+        from .config import load_config
+        cfg = load_config()
+    except (Exception, SystemExit):
+        return []
+    s = cfg.settings
+    names = [s.fallback_profile, s.worker_fallback_profile, s.planner_profile, *cfg.models]
+    skip = {tried or cfg.default_model, ""}
+    out: list[str] = []
+    for name in names:
+        if name in cfg.models and name not in skip and name not in out:
+            key = getattr(cfg.models[name], "api_key_env", "")
+            if key and not os.environ.get(key):          # a model that cannot even start is no fallback
+                continue
+            out.append(name)
+    return out[:2]
+
+
+def run_job(job: dict, progress=None) -> tuple[bool, str]:
+    """Run one job headless; returns (ok, text). ok is True only for a finished report. Anything else —
+    a crash, a hung or unreachable model, an empty reply — comes back as ok=False with the reason, never as
+    a blank or a generic 'no answer'. `progress(text)`, if given, receives the activity log as it happens.
+
+    When a model stalls (typically because another task is using it), the run moves to another model
+    instead of waiting behind it, and the result says which model actually did the work."""
+    first = job.get("model") or None
+    chain: list[str | None] = [first]
+    extra = _fallbacks(job, first)
+    chain += extra
+    attempts: list[str] = []
+    for i, model in enumerate(chain):
+        last_try = i == len(chain) - 1
+        # with somewhere to go, don't sit behind a busy model for the full stall limit
+        stall = JOB_STALL_SECONDS if last_try else min(JOB_STALL_SECONDS, JOB_SWITCH_SECONDS)
+        ok, text, retry = _run_once(job, model, progress, stall)
+        label = model or "the default model"
+        if ok or not retry or last_try:
+            if attempts:
+                tried = "; ".join(attempts)
+                text = (f"{text}\n\n(Ran on {label} after earlier attempts failed: {tried})" if ok
+                        else f"{text}\n\nEarlier attempts: {tried}")
+            return ok, text
+        reason = text.strip().splitlines()[0][:160]
+        attempts.append(f"{label}: {reason}")
+        if progress:
+            try:
+                progress(f"\n! {label} did not work out ({reason}) — switching to {chain[i + 1]}\n")
+            except Exception:                    # noqa: BLE001 - progress is a courtesy
+                pass
+    return False, "The run could not be attempted."
 
 
 def deliver(job: dict, ok: bool, answer: str) -> Path:
@@ -146,8 +417,8 @@ def deliver(job: dict, ok: bool, answer: str) -> Path:
     stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M")
     path = inbox_dir() / f"{stamp}-{re.sub(r'[^a-z0-9]+', '-', job['name'].lower())[:40]}.md"
     path.write_text(f"# {job['name']}\n\n_{datetime.datetime.now():%Y-%m-%d %H:%M} · "
-                    f"{'ok' if ok else 'no answer'} · {job['cwd']}_\n\n{answer}\n")
-    _notify(f"hexiel job: {job['name']}", answer[:180])
+                    f"{'ok' if ok else 'FAILED'} · {job['cwd']}_\n\n{answer}\n")
+    _notify(f"hexiel job: {job['name']}" + ("" if ok else " — FAILED"), answer[:180])
     return path
 
 

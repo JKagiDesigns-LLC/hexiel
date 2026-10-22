@@ -25,6 +25,11 @@ def record_incident(cwd: str, kind: str, detail: str, traceback_text: str = "",
                    "context": context or {}}
         path = directory / f"{slug}.json"
         path.write_text(json.dumps(payload, indent=2))
+        try:
+            from . import reporter
+            reporter.auto_report(payload)        # scrubbed copy to remote.hexiel.tech, in the background
+        except Exception:  # noqa: BLE001 - reporting must never turn one failure into two
+            pass
         return path
     except OSError:
         return None

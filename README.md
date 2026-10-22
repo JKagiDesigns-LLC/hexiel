@@ -212,11 +212,37 @@ Drive the hexiel on your own machine from any browser or phone, and run cloud-tr
 stays free; this client is open source and the subscription is enforced by the relay.
 
 ```bash
-hexiel remote login          # email + password -> revocable device token (stored 0600)
-hexiel --serve --remote      # connects OUT to the relay; nothing is opened locally
+hexiel remote login          # email + password -> revocable device token (stored 0600); offers to keep the machine connected
+hexiel remote status         # is the background service running, and does the relay see this machine?
+hexiel remote install        # (re)install the background service: systemd user unit, launchd agent or Windows scheduled task
+hexiel --serve --remote      # connect in the foreground instead (one connection per machine)
 ```
 
+Signing in only registers the machine; it shows **online** while something holds the connection open. The background
+service (`hexiel remote install`, offered at login) does that whenever the computer is on and you're logged in, so
+automations run without a terminal open. It works in its own folder (`~/.local/share/hexiel/remote-workspace`), not your
+home directory; point it at a project with `hexiel remote install --dir ~/code/project`. Linux: run
+`loginctl enable-linger $USER` to keep it running while nobody is logged in. Logs: `~/.local/share/hexiel/remote.log`.
+
+**Take over a chat you already have open.** In the terminal UI or the local web UI, type `/remote-control`: that same
+live chat (its history, tool output and approvals) becomes drivable from remote.hexiel.tech, and whatever you type
+there lands in the chat on your computer. Not signed in yet? It asks for your login (or sends you to sign up) first.
+While it's on, the background service is paused (one connection per machine) and restarts when you type
+`/remote-control off` or exit. `/remote-control status` shows where it stands. An approval can be answered in the
+terminal or the browser, whichever is first.
+
 Only the web UI's own pages and API cross the tunnel (never `/v1`). The relay can see tunneled traffic (TLS, not end-to-end encrypted).
+
+### Bug reports and error tracking
+
+- `/bug <what happened>` and `/feature <idea>` send a report (your hexiel version and OS attached); `/bugs` lists yours and
+  whether they are resolved. Everything is tracked at <https://hexiel.tech/support>: a public queue anyone can read, and,
+  signed in with your Hexiel Remote login, your own reports and the errors your hexiel sent.
+- When hexiel hits an error it already saves it locally for `/heal`. With `error_reports = "account"` (the default) a
+  **scrubbed** copy is also sent for tracking *if you are signed in to Hexiel Remote*: home paths, API keys, tokens, e-mail
+  addresses and LAN IPs are removed, and your prompts and tool arguments are never included (only their sizes). `"all"` also
+  sends from installs without an account (they appear by title only in the public queue); `"off"` — or `HEXIEL_NO_REPORTS=1` —
+  sends nothing. Reports that can't be delivered are retried later.
 
 ## Models
 

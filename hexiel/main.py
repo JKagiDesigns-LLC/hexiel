@@ -237,6 +237,10 @@ def jobs_cli(argv: list[str]) -> int:
 
 
 def main() -> None:
+    from .remote import ensure_streams
+    ensure_streams()                  # no console (Windows scheduled task): log to a file instead of crashing
+    from .remote import load_service_env
+    load_service_env()                # keys recorded by `hexiel remote install` (a service doesn't see your shell profile)
     if len(sys.argv) > 1 and sys.argv[1] in ("knowledge", "rag"):
         from .knowledge import cli as knowledge_cli
         raise SystemExit(knowledge_cli(sys.argv[2:]))
@@ -276,6 +280,11 @@ def main() -> None:
     except ValueError as exc:                 # e.g. `hexiel -m typo`: say so instead of a traceback
         raise SystemExit(f"hexiel: {exc}")
     memory_mod.ensure_dirs(cwd)
+    from . import reporter
+    if reporter.mode() != "off":
+        reporter.in_background(reporter.flush_outbox)      # reports queued while offline
+    from . import remote
+    remote.resume_if_orphaned()                           # a killed /remote-control chat left the service paused
     if args.yes:
         session.auto_approve = True
         session.guard_commits = False          # -y is "everything"; use auto_approve = "except-commits" for the careful mode

@@ -157,6 +157,7 @@ function connect() {
         live.thinking.textContent = "thinking" + "…";
         break;
       case "heal_review": showHealReview(data); break;
+      case "remote_login": $("#remote-back").classList.add("show"); $("#remote-email").focus(); break;
       case "tool": addTool(data); break;
       case "tool_done": toolDone(data); break;
       case "note": {
@@ -582,3 +583,26 @@ checkUpdate();
 // deep link: /#settings opens the settings panel (bookmarks, screenshots)
 if (location.hash === "#settings") $("#settings-btn").click();
 if (location.hash === "#models") openPicker();
+
+
+// ---------------------------------------------------------------- /remote-control sign-in
+function closeRemoteLogin() { $("#remote-back").classList.remove("show"); $("#remote-password").value = ""; }
+$("#remote-close").addEventListener("click", closeRemoteLogin);
+async function remoteLogin() {
+  const msg = $("#remote-msg");
+  msg.textContent = "signing in…";
+  try {
+    const res = await fetch("/api/remote/login", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ email: $("#remote-email").value, password: $("#remote-password").value }),
+    });
+    const r = await res.json();
+    if (r.error) { msg.textContent = "⚠ " + r.error; return; }
+    closeRemoteLogin(); msg.textContent = "";
+    const div = document.createElement("div");
+    div.className = "note"; div.textContent = "✓ " + r.message;
+    $("#chat").appendChild(div);
+  } catch (e) { msg.textContent = "⚠ " + e; }
+}
+$("#remote-go").addEventListener("click", remoteLogin);
+$("#remote-password").addEventListener("keydown", (ev) => { if (ev.key === "Enter") remoteLogin(); });

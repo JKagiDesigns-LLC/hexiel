@@ -72,6 +72,11 @@ FIELDS = [
      "options": ["auto", "always", "off"],
      "help": "after a /delegate run the planner model reviews the diff and the worker fixes what it finds; "
              "auto = only when the planner is a different model"},
+    {"key": "settings.error_reports", "label": "Send error reports", "kind": "choice",
+     "options": ["account", "all", "off"],
+     "help": "hexiel's own errors (paths, keys and e-mails scrubbed) go to remote.hexiel.tech so they can be tracked: "
+             "account = only when signed in to Hexiel Remote (see them at hexiel.tech/support), all = also without an "
+             "account (public queue), off = never. /bug always sends"},
     {"key": "settings.auto_commit", "label": "Git auto-commit", "kind": "bool",
      "options": [False, True], "help": "commit the files hexiel changed after each finished turn"},
     {"key": "settings.notify", "label": "Notifications", "kind": "bool",

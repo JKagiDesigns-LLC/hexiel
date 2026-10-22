@@ -49,7 +49,9 @@ def test_powershell_missing_gives_install_hint_forced(tmp_path, monkeypatch):
     assert r.is_error and "winget install Microsoft.PowerShell" in r.text
 
 
-def test_powershell_needs_command(tmp_path):
+def test_powershell_needs_command(tmp_path, monkeypatch):
+    import hexiel.tools as T
+    monkeypatch.setattr(T, "_pwsh_argv", lambda: "pwsh")      # the check must not depend on PowerShell being installed
     r = _run_powershell({}, ctx(tmp_path))
     assert r.is_error and "command is required" in r.text
 

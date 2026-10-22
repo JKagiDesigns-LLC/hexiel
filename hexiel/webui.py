@@ -62,15 +62,30 @@ def status_state(session: Session) -> dict:
 class WebState:
     """Server-side canonical chat view, shared by all browser tabs."""
 
-    def __init__(self, session: Session) -> None:
+    def __init__(self, session: Session, driver=None) -> None:
         self.session = session
+        self.driver = driver       # a terminal UI that owns the chat: it runs the turns, we only mirror it
         self.clients: dict[web.WebSocketResponse, asyncio.AbstractEventLoop] = {}
         self.approvals: dict[int, dict] = {}   # id -> {"event": Event, "verdict": str}
         self.lock = threading.Lock()
         self.busy = False
         self.queue: "queue.Queue[bytes]" = __import__("queue").Queue()
-        session.on_event = self.on_event
-        session.on_approve = self.ask_approval
+        if driver is None:
+            session.on_event = self.on_event
+            session.on_approve = self.ask_approval
+        else:
+            session.add_mirror(self)
+
+    def has_viewers(self) -> bool:
+        return bool(self.clients)
+
+    def cancel_approvals(self) -> None:
+        for holder in list(self.approvals.values()):
+            holder["verdict"] = "no"
+            holder["event"].set()
+
+    def is_busy(self) -> bool:
+        return self.driver.busy() if self.driver is not None else self.busy
 
     def broadcast(self, message: dict) -> None:
         # called from worker threads: serialize onto the queue; the drain task
@@ -198,8 +213,8 @@ def _json_response(data: dict, status: int = 200) -> web.Response:
                         status=status)
 
 
-def make_app(session: Session) -> web.Application:
-    state = WebState(session)
+def make_app(session: Session, driver=None) -> web.Application:
+    state = WebState(session, driver)
     app = web.Application(client_max_size=32 * 1024 * 1024)
     app["state"] = state
 
@@ -318,6 +333,14 @@ def make_app(session: Session) -> web.Application:
             return {"off": "auto-approve OFF — hexiel asks before edits and commands",
                     "except-commits": "auto-approve ON, except commits — git/svn commits and pushes still ask first",
                     "all": "⚠ auto-approve EVERYTHING — nothing asks, including commits, pushes and deletes"}[new]
+        if cmd == "remote-control":
+            return remote_control_command(arg)
+        if cmd in ("bug", "feature"):
+            from . import heal as heal_mod, reporter
+            return reporter.file_report(cmd, arg, heal_mod.unhealed(session.cwd, 3))
+        if cmd == "bugs":
+            from . import reporter
+            return reporter.my_reports_text()
         if cmd == "undo":
             restored = session.undo()
             return ("↶ " + "\n".join(restored)) if restored else "nothing to undo"
@@ -394,10 +417,40 @@ def make_app(session: Session) -> web.Application:
             return f"/{cmd} isn't available in the browser yet — use the terminal UI"
         return f"unknown command /{cmd} — /help lists them"
 
+    def remote_control_command(arg: str) -> str:
+        """/remote-control [off|status] typed in the browser (the local web UI, not through the relay)."""
+        from . import remote_control
+        if arg.lower() in ("off", "stop"):
+            return remote_control.stop(session)
+        if arg.lower() == "status":
+            return remote_control.status_text(session)
+        if remote_control.active(session):
+            return remote_control.status_text(session)
+        if not remote_control.signed_in():
+            state.broadcast({"t": "remote_login"})
+            return ("Hexiel Remote needs an account: sign in below, or sign up at "
+                    "https://remote.hexiel.tech first, then type /remote-control again.")
+        note = remote_control.start(session, local_base=session.web_base, say=lambda m: state.broadcast({"t": "note", "text": m}))
+        return note
+
+    async def api_remote_login(request):
+        """Local only (path_allowed keeps /api/remote/ off the tunnel): sign this machine in to Hexiel Remote."""
+        from . import remote_control
+        data = await request.json()
+        loop = asyncio.get_running_loop()
+        try:
+            await loop.run_in_executor(None, lambda: remote_control.sign_in(
+                str(data.get("email", "")).strip(), str(data.get("password", ""))))
+        except (RuntimeError, OSError) as exc:
+            return _json_response({"error": str(exc)}, 400)
+        note = await loop.run_in_executor(None, lambda: remote_control.start(
+            session, local_base=session.web_base, say=lambda m: state.broadcast({"t": "note", "text": m})))
+        return _json_response({"ok": True, "message": note})
+
     def handle_ws_message(data: dict) -> None:
         if data.get("t") == "send":
             text = str(data.get("text", "")).strip()
-            if text.startswith("/") and not state.busy:
+            if text.startswith("/") and not state.is_busy():
                 reply = web_command(text)
                 if reply and not reply.startswith("prompt:"):
                     state.broadcast({"t": "note", "text": reply})
@@ -405,6 +458,10 @@ def make_app(session: Session) -> web.Application:
                     return
                 if reply:
                     text = reply[len("prompt:"):]
+            if state.driver is not None:
+                if text:
+                    state.driver.submit(text)       # the terminal UI shows it and runs the turn
+                return
             with state.lock:
                 if not text:
                     return
@@ -742,6 +799,7 @@ def make_app(session: Session) -> web.Application:
     app.router.add_get("/api/config", api_config_get)
     app.router.add_post("/api/config", api_config_set)
     app.router.add_post("/api/approve", api_approve)
+    app.router.add_post("/api/remote/login", api_remote_login)
     app.router.add_post("/api/clear", api_clear)
     app.router.add_post("/api/compact", api_compact)
     app.router.add_post("/v1/chat/completions", v1_chat)
@@ -772,6 +830,7 @@ def banner(host: str, port: int, session: Session) -> None:
 async def _serve_and_wait(host: str, port: int, session: Session) -> None:
     runner = web.AppRunner(make_app(session))
     await runner.setup()
+    session.web_base = f"http://127.0.0.1:{port}"       # /remote-control tunnels this page
     site = web.TCPSite(runner, host, port)
     await site.start()
     try:

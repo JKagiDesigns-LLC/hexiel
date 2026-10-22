@@ -242,10 +242,19 @@ class AnthropicProvider(AbortableHTTP):
         for msg in messages:
             role = msg["role"]
             if role == "tool":
-                converted.append({
-                    "role": "user",
-                    "content": cls._tool_result_blocks(msg),
-                })
+                blocks = cls._tool_result_blocks(msg)
+                prev = converted[-1] if converted else None
+                if prev and prev["role"] == "user" and isinstance(prev["content"], list) \
+                        and prev["content"] and prev["content"][0]["type"] == "tool_result":
+                    # parallel tool calls: every result must ride in the ONE user message that
+                    # follows the assistant turn, or Anthropic rejects the earlier tool_use ids
+                    # (tool_result blocks first, then any images)
+                    at = next((i for i, b in enumerate(prev["content"]) if b["type"] != "tool_result"),
+                              len(prev["content"]))
+                    prev["content"][at:at] = blocks[:1]
+                    prev["content"].extend(blocks[1:])
+                else:
+                    converted.append({"role": "user", "content": blocks})
             elif role == "assistant":
                 blocks = []
                 if msg.get("content"):

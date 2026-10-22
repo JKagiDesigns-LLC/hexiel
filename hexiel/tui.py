@@ -97,6 +97,71 @@ class ApproveScreen(ModalScreen):
         self._finish("always")
 
 
+class RemoteLoginScreen(ModalScreen):
+    """/remote-control when this machine isn't signed in to Hexiel Remote yet."""
+
+    BINDINGS = [("escape", "cancel", "Cancel")]
+    DEFAULT_CSS = """
+    RemoteLoginScreen { align: center middle; }
+    #remote-login { width: 64; height: auto; padding: 1 2; border: round #c8b6ff; background: $surface; }
+    #remote-login Input { margin: 1 0 0 0; }
+    #remote-login Horizontal { height: auto; margin-top: 1; }
+    #remote-login Button { margin-right: 1; }
+    """
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="remote-login"):
+            yield Label("[b]Sign in to Hexiel Remote[/b]")
+            yield Label("[dim]Use your remote.hexiel.tech login. No account yet? Choose Sign up.[/dim]")
+            yield Input(placeholder="email", id="rl-email")
+            yield Input(placeholder="password", password=True, id="rl-password")
+            with Horizontal():
+                yield Button("Sign in", id="rl-go", variant="primary")
+                yield Button("Sign up", id="rl-signup")
+                yield Button("Cancel", id="rl-cancel")
+
+    def on_mount(self) -> None:
+        self.query_one("#rl-email").focus()
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        event.stop()
+        if event.input.id == "rl-email":
+            self.query_one("#rl-password").focus()
+        else:
+            self._go()
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        event.stop()
+        if event.button.id == "rl-go":
+            self._go()
+        elif event.button.id == "rl-signup":
+            import webbrowser
+            webbrowser.open("https://remote.hexiel.tech")
+            self.query_one("#rl-email").focus()
+        else:
+            self.dismiss(None)
+
+    def _go(self) -> None:
+        self.dismiss((self.query_one("#rl-email").value.strip(), self.query_one("#rl-password").value))
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+
+class _RemoteDriver:
+    """What Hexiel Remote needs from the terminal UI that owns the chat."""
+
+    def __init__(self, tui: "HexielTUI") -> None:
+        self.tui = tui
+
+    def busy(self) -> bool:
+        thread = self.tui._thread
+        return bool(thread and thread.is_alive())
+
+    def submit(self, text: str) -> None:
+        self.tui.call_from_thread(self.tui.submit_text, text)      # typed in the browser: shown and run here
+
+
 class ScopeScreen(ModalScreen):
     """Ask whether a settings change is for this session or permanent."""
 
@@ -909,6 +974,7 @@ class HexielTUI(App):
     def __init__(self, session, skills, slash_skills) -> None:
         super().__init__()
         self.session = session
+        session.dismiss_approval = self._dismiss_approval
         self.skills = skills
         self.slash_skills = slash_skills   # lowercase name -> skill
         self._thread = None
@@ -1054,6 +1120,8 @@ class HexielTUI(App):
             "model": self.cmd_model, "models": self.cmd_models, "auto": self.cmd_auto,
             "memory": self.cmd_memory, "skills": self.cmd_skills,
             "ship": self.cmd_ship, "heal": self.cmd_heal,
+            "remote-control": self.cmd_remote_control,
+            "bug": self.cmd_bug, "feature": self.cmd_feature, "bugs": self.cmd_bugs,
             "setup-gitlab": self.cmd_setup_gitlab,
             "exit": self.cmd_exit, "quit": self.cmd_exit,
         }.get(cmd)
@@ -1194,6 +1262,66 @@ class HexielTUI(App):
             return
         self.add_note("↶ undid the last turn's file changes:\n" + "\n".join(restored)
                       + "\n(changes made by shell commands aren't tracked)")
+
+    def cmd_remote_control(self, arg: str) -> None:
+        """/remote-control [off|status] — drive this same chat from remote.hexiel.tech."""
+        from . import remote_control as rc
+        word = arg.lower()
+        if word in ("off", "stop"):
+            threading.Thread(target=lambda: self.call_from_thread(self.add_note, rc.stop(self.session)),
+                             daemon=True).start()
+        elif word == "status" or rc.active(self.session):
+            self.add_note(rc.status_text(self.session))
+        elif not rc.signed_in():
+            self.add_note("Hexiel Remote needs an account first — sign in below (or choose Sign up).")
+            self.push_screen(RemoteLoginScreen(), callback=self._remote_login_done)
+        else:
+            self._remote_on()
+
+    def _remote_login_done(self, creds) -> None:
+        if not creds:
+            self.add_note("remote control not started")
+            return
+        from . import remote_control as rc
+
+        def work() -> None:
+            try:
+                rc.sign_in(*creds)
+            except (RuntimeError, OSError) as exc:
+                self.call_from_thread(self.add_note, f"sign-in failed: {exc}")
+                return
+            self.call_from_thread(self._remote_on)
+        self.add_note("signing in…")
+        threading.Thread(target=work, daemon=True).start()
+
+    def _remote_on(self) -> None:
+        from . import remote_control as rc
+        self.add_note("connecting to Hexiel Remote…")
+        say = lambda text: self.call_from_thread(self.add_note, "remote: " + text)      # noqa: E731
+        threading.Thread(target=lambda: self.call_from_thread(
+            self.add_note, rc.start(self.session, driver=_RemoteDriver(self), say=say)), daemon=True).start()
+
+    def _dismiss_approval(self) -> None:
+        """A browser answered the approval first: close the terminal's prompt."""
+        def close() -> None:
+            if isinstance(self.screen, ApproveScreen):
+                self.screen.dismiss("no")
+        self.call_from_thread(close)
+
+    def cmd_bug(self, arg: str, kind: str = "bug") -> None:
+        """/bug <what happened> and /feature <idea> — send it to the hexiel team."""
+        from . import heal as heal_mod, reporter
+        recent = heal_mod.unhealed(self.session.cwd, 3)
+        threading.Thread(target=lambda: self.call_from_thread(
+            self.add_note, reporter.file_report(kind, arg, recent)), daemon=True).start()
+
+    def cmd_feature(self, arg: str) -> None:
+        self.cmd_bug(arg, "feature")
+
+    def cmd_bugs(self, arg: str) -> None:
+        from . import reporter
+        threading.Thread(target=lambda: self.call_from_thread(
+            self.add_note, reporter.my_reports_text()), daemon=True).start()
 
     def cmd_usage(self, arg: str) -> None:
         t = self.session.usage_totals

@@ -31,7 +31,7 @@ dependencies = [
 Homepage = "https://hexiel.tech"
 Designer = "https://www.jkagidesigns.com"
 Source = "https://gitlab.com/jkagidesigns1/public/applications/hexiel"
-Issues = "https://gitlab.com/jkagidesigns1/public/applications/hexiel/-/issues"
+Issues = "https://hexiel.tech/support/"
 
 [project.scripts]
 hexiel = "hexiel.main:main"

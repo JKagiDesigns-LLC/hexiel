@@ -94,3 +94,18 @@ def test_a_conversation_with_text_then_tool_is_accepted_when_sent_back(monkeypat
                                                       {"role": "tool", "tool_call_id": "toolu_1", "content": "done"}])
     uses = [b for m in blocks for b in (m["content"] if isinstance(m["content"], list) else []) if b.get("type") == "tool_use"]
     assert len(uses) == 1 and uses[0]["name"] == "bash"
+
+
+def test_parallel_tool_results_share_one_user_message_with_results_before_images():
+    """Anthropic rejects a tool_use whose result isn't in the very next message."""
+    img = {"media_type": "image/png", "data": "AAAA"}
+    out = llm.AnthropicProvider._convert_messages([
+        {"role": "user", "content": "go"},
+        {"role": "assistant", "content": "", "tool_calls": [
+            {"id": "t1", "name": "view_image", "arguments": {}}, {"id": "t2", "name": "bash", "arguments": {}}]},
+        {"role": "tool", "tool_call_id": "t1", "content": "png", "images": [img]},
+        {"role": "tool", "tool_call_id": "t2", "content": "ls"},
+    ])
+    assert [m["role"] for m in out] == ["user", "assistant", "user"]
+    assert [b["type"] for b in out[2]["content"]] == ["tool_result", "tool_result", "image"]
+    assert [b.get("tool_use_id") for b in out[2]["content"][:2]] == ["t1", "t2"]

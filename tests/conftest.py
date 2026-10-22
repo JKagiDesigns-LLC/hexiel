@@ -10,5 +10,6 @@ def isolated_dirs(tmp_path_factory, monkeypatch):
     home = tmp_path_factory.mktemp("hexiel-home")
     monkeypatch.setenv("HEXIEL_DATA", str(data))
     monkeypatch.setenv("HEXIEL_HOME", str(home))
+    monkeypatch.setenv("HEXIEL_NO_REPORTS", "1")        # tests must never send error reports anywhere
     import hexiel.config as config
     monkeypatch.setattr(config, "CONFIG_FILE", home / "config.toml")   # resolved at import time

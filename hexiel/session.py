@@ -127,8 +127,11 @@ class Session:
         self.cwd = cwd
         self.tools = tools
         self.system_prompt = system_prompt
-        self.on_event = on_event or (lambda *_a, **_k: None)
-        self.on_approve = on_approve or (lambda *_: "yes")
+        self._on_event = on_event or (lambda *_a, **_k: None)
+        self._on_approve = on_approve or (lambda *_: "yes")
+        self.web_base = ""                       # the local web UI's address, once one is serving this session
+        self.mirrors: list = []                  # other views of this chat (Hexiel Remote): see add_mirror
+        self.dismiss_approval = lambda: None     # the primary UI closes its approval prompt when a mirror answers first
         self.id = uuid.uuid4().hex[:12]
         self.created = time.time()
         self.messages: list[dict] = []
@@ -212,6 +215,69 @@ class Session:
         self.on_event("note", "↳ hexiel read your new message" if len(items) == 1
                       else f"↳ hexiel read your {len(items)} new messages")
         self.save()
+
+    # The primary UI (terminal or web) owns on_event / on_approve and swaps them freely. Mirrors — a browser
+    # driving this same chat through Hexiel Remote — see every event too, and may answer an approval.
+    @property
+    def on_event(self):
+        primary, mirrors = self._on_event, self.mirrors
+        if not mirrors:
+            return primary
+
+        def fan_out(event, *payload, **kw):
+            primary(event, *payload, **kw)
+            for mirror in list(mirrors):
+                try:
+                    mirror.on_event(event, *payload, **kw)
+                except Exception:  # noqa: BLE001 - a broken mirror must not break the chat
+                    pass
+        return fan_out
+
+    @on_event.setter
+    def on_event(self, fn) -> None:
+        self._on_event = fn
+
+    @property
+    def on_approve(self):
+        primary, mirrors = self._on_approve, self.mirrors
+        if not any(m.has_viewers() for m in mirrors):
+            return primary
+        return lambda *args: self._ask_everywhere(primary, list(mirrors), args)
+
+    @on_approve.setter
+    def on_approve(self, fn) -> None:
+        self._on_approve = fn
+
+    def add_mirror(self, mirror) -> None:
+        if mirror not in self.mirrors:
+            self.mirrors.append(mirror)
+
+    def remove_mirror(self, mirror) -> None:
+        if mirror in self.mirrors:
+            self.mirrors.remove(mirror)
+
+    def _ask_everywhere(self, primary, mirrors: list, args: tuple) -> str:
+        """Ask the primary UI and every mirror with a viewer at once; the first answer wins and the
+        other prompts are closed."""
+        answers: "queue.Queue[tuple[object, str]]" = queue.Queue()
+
+        def ask(who, fn):
+            try:
+                answers.put((who, fn(*args)))
+            except Exception:  # noqa: BLE001
+                answers.put((who, "no"))
+        askers = [(primary, primary)] + [(m, m.ask_approval) for m in mirrors if m.has_viewers()]
+        for who, fn in askers:
+            threading.Thread(target=ask, args=(who, fn), daemon=True).start()
+        winner, verdict = answers.get()
+        for who, _ in askers:
+            if who is winner:
+                continue
+            if who is primary:
+                self.dismiss_approval()
+            else:
+                who.cancel_approvals()
+        return verdict
 
     def run_turn(self, user_text: str) -> None:
         self._stop.clear()

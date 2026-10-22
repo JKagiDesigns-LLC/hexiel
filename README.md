@@ -205,6 +205,28 @@ Claude memories are copied both ways, with a note in each tool about the other.
 hexiel instructions scan | import [--yes [--commit]] | sync | restore
 ```
 
+### A small model for the small jobs (per-tool models)
+
+Reading a big file or a long web page doesn't need your strongest model. Map tools to cheaper profiles in `config.toml`:
+
+```toml
+[tool_models]
+read = "small-local"       # a quick model condenses big files before the main model sees them
+grep = "small-local"
+web_fetch = "small-local"
+search = "strong-local"    # alias for web_search
+```
+
+When a mapped tool returns more than `digest_min_chars` (default 3000, set in `[settings]`), that model condenses the
+output *for your current request*, and the main model gets the summary with a note; it can ask for the raw text by
+calling the tool again with `full: true`. Small outputs, errors and images pass through, and if the helper model fails
+you get the raw output. Tools that *author* changes (`write`, `edit`, `bash`) always use the main model, since it has
+to write its own work; for planning, set `planner_profile` (see `/delegate`).
+
+**Busy notice.** With several hexiel windows (or background runs) sharing one local model, requests queue silently.
+hexiel now says so — "⏳ gmktec is busy with 1 other request from another hexiel window … this one may wait its turn" —
+for models served from this machine or your network (cloud models serve everyone at once and aren't tracked).
+
 ### Seeing images and PDFs
 
 Paste (Ctrl+V / Alt+V in the terminal, plain paste in the browser), drop a file onto the web UI, or mention a path

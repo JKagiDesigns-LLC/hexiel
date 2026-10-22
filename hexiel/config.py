@@ -57,6 +57,16 @@ searxng_url = ""            # e.g. http://localhost:8888 when search_backend = "
 
 # compact_profile = "anthropic-sonnet"   # who writes compaction summaries: a fast cloud model takes seconds, a slow local one many minutes
 
+# Per-tool models: a small, fast model reads big outputs for the main one (digest_min_chars is the size that triggers it).
+# The main model can ask for the raw text with full=true. Tools that write (write, edit, bash) always use the main model;
+# for planning set planner_profile below.
+# [tool_models]
+# read = "small-local"
+# grep = "small-local"
+# web_fetch = "small-local"
+# search = "strong-local"       # alias for web_search
+# digest_min_chars = 3000       # (in [settings]) smaller outputs are never summarised
+
 # Big tasks: a strong model plans, a cheaper (e.g. local) model does the work. See /delegate.
 # planner_profile = "kimi"      # model that writes the plan ("" = fallback_profile, else the current model)
 # workers = "auto"             # steps run at once when independent: "auto" = every core but one, or a number (1 = one at a time)
@@ -182,6 +192,8 @@ class Settings:
     escalate_mode: str = "auto"       # when the working model is struggling, let the planner model take over for a few steps: "auto" | "off"
     consult_mode: str = "auto"        # ask the planner model for advice: "auto" (the model may ask, and hexiel asks when it is stuck) | "tool" (only when the model asks) | "off"
     error_reports: str = "account"    # send hexiel's own errors to remote.hexiel.tech for tracking: "account" (when signed in to Hexiel Remote) | "all" (also anonymously, to the public queue) | "off"
+    tool_models: dict = field(default_factory=dict)   # [tool_models]: tool -> profile that condenses its big output (see digest.py)
+    digest_min_chars: int = 3000      # tool output shorter than this is never condensed by a tool model
     delegate_review: str = "auto"     # after a delegated run the planner model reviews the diff: "auto" (when it is a different model than the worker) | "always" | "off"
 
 
@@ -242,6 +254,9 @@ def load_config(model_override: str | None = None) -> Config:
             raise ValueError(f"--model {default_model!r} is not one of your [models.*] profiles (you have: {have})")
         raise SystemExit(f"bad config {CONFIG_FILE}: default = {default_model!r} is not one of your [models.*] profiles "
                          f"(you have: {have}). Add a [models.NAME] table — see https://hexiel.tech/config/")
+    tm = raw.get("tool_models", {})
+    if isinstance(tm, dict):
+        settings.tool_models = {str(k): str(v) for k, v in tm.items()}
     return Config(default_model=default_model, models=models, settings=settings,
                   mcp=raw.get("mcp", {}), permissions=raw.get("permissions", {}))
 
@@ -277,6 +292,7 @@ def _settings_from(settings_raw: dict) -> "Settings":
         guard_commits=mode == "except-commits",
         compact_threshold=float(settings_raw.get("compact_threshold", 0.82)),
         compact_profile=str(settings_raw.get("compact_profile", "")),
+        digest_min_chars=max(500, int(settings_raw.get("digest_min_chars", 3000))),
         request_timeout=int(settings_raw.get("request_timeout", 900)),
         search_backend=str(settings_raw.get("search_backend", "duckduckgo")),
         searxng_url=str(settings_raw.get("searxng_url", "")),

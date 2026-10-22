@@ -346,10 +346,7 @@ class Session:
             if planner.maybe_delegate(self, user_text, forced=delegate_mode == "force"):
                 return
         provider = llm.make_provider(self.model_config, self.settings)
-        tool_defs = [
-            {"name": t.name, "description": t.description, "parameters": t.parameters}
-            for t in self.tools
-        ]
+        tool_defs = self._tool_defs()
         turn = {"tools": 0, "used_todo": False, "item": None, "ok": False}
         self._provider_override = None   # a fallback switch already changed model_config
         try:
@@ -364,8 +361,7 @@ class Session:
                     pass
                 if self.compaction_needed() and not self.compacting:
                     self.compact(self._provider_override or provider)
-                tool_defs = [{"name": t.name, "description": t.description, "parameters": t.parameters}
-                             for t in self.tools]        # load_tools may have added a group
+                tool_defs = self._tool_defs()        # load_tools may have added a group
                 self.on_event("request", self.tokens_now())
                 assistant = self._stream_assistant(provider, tool_defs)
                 if _is_empty_reply(assistant) and not getattr(self, "_provider_error", None) \
@@ -583,12 +579,19 @@ class Session:
         self._provider_override = llm.make_provider(fallback, self.settings)
         return True
 
+    def _tool_defs(self) -> list:
+        from . import digest
+        return digest.add_full_param([{"name": t.name, "description": t.description, "parameters": t.parameters}
+                                      for t in self.tools], self.settings)
+
     def _stream_once(self, provider, tool_defs) -> dict:
         """Stream one assistant response; returns the finalized message dict."""
         final = None
         reasoning: list[str] = []
         streamed: list[str] = []
         sent = len(self.messages)       # the prompt covers exactly these messages
+        from . import modelbusy
+        slot = modelbusy.enter(self.model_config, lambda t: self.on_event("note", t), self.id)
         try:
             stream = provider.stream(self.messages, self.system_prompt, tool_defs,
                                      model=self.model_config.model,
@@ -642,6 +645,8 @@ class Session:
                                     f"({type(exc).__name__}) — send your message again to retry")
         except llm.ProviderError as exc:
             self._provider_error = str(exc)
+        finally:
+            slot.release()
         final = final if final is not None else {"role": "assistant", "content": ""}
         if reasoning:
             final["reasoning"] = "".join(reasoning)
@@ -734,7 +739,9 @@ class Session:
             if out.blocked and out.stderr:          # feedback for the model (e.g. lint errors)
                 result = ToolResult(text=f"{result.text}\n\n[PostToolUse hook]\n{out.stderr[:4000]}",
                                     images=result.images, is_error=result.is_error)
-        entry = {"role": "tool", "tool_call_id": call["id"], "content": result.text}
+        from . import digest
+        shown = digest.maybe_digest(self, call, result)           # a tool's own model may condense a big output
+        entry = {"role": "tool", "tool_call_id": call["id"], "content": shown.text}
         if result.is_error:
             entry["is_error"] = True
         if getattr(result, "images", None):

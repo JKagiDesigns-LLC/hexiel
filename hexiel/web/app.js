@@ -87,6 +87,36 @@ function mediaStrip(items) {
   for (const m of items || []) strip.append(mediaCard(m));
   return strip;
 }
+// a weather card hexiel fetched itself (open-meteo) — shown above the model's prose
+function weatherHTML(c) {
+  const cur = c.current || {}, u = c.unit || "";
+  const hours = (c.hours || []).slice(0, 6).map((h) => {
+    const pop = h.pop >= 30 ? `<span class="hpop">☔${h.pop}%</span>` : "";
+    return `<div class="hcell"><span class="ht">${esc(h.t)}</span><span class="he">${h.emoji}</span>` +
+      `<span class="hv">${h.temp}${u}</span>${pop}</div>`;
+  }).join("");
+  const days = (c.days || []).map((d) => {
+    const pop = d.pop >= 30 ? `<span class="dpop">☔${d.pop}%</span>` : "";
+    return `<div class="dcell"><span class="dlab">${esc(d.d)}</span><span class="de">${d.emoji}</span>` +
+      `<span class="hv">${d.hi}° / ${d.lo}°</span>${pop}</div>`;
+  }).join("");
+  return `<div class="wcard"><div class="whead"><span class="wemoji">${cur.emoji}</span>` +
+    `<div class="wtitles"><div class="wplace">${esc(c.place || "")}</div>` +
+    `<div class="wtemp">${cur.temp}${u} <small>feels ${cur.feels}${u} · ${esc(cur.label || "")}</small></div></div>` +
+    `<div class="wmeta">${cur.wind} ${esc(c.wind_unit || "")} wind · 💧 ${cur.humidity}% · ` +
+    `<span class="wupd">updated ${esc(c.updated || "")}</span></div></div>` +
+    `<div class="wstrip whours">${hours}</div>` +
+    `<div class="wstrip wdays">${days}</div></div>`;
+}
+function addGraphic(card) {
+  if (!card || card.kind !== "weather") return;
+  const div = document.createElement("div");
+  div.className = "msg weather";
+  div.innerHTML = weatherHTML(card);
+  if (live) { live.body = null; live.flow.appendChild(div); }
+  else $("#chat").appendChild(div);
+  $("#chat").scrollTop = $("#chat").scrollHeight;
+}
 function openViewer(m) {
   const back = $("#viewer-back"), body = $("#viewer-body");
   body.innerHTML = "";
@@ -131,6 +161,11 @@ function renderHistory(items) {
       div.className = "msg assistant";
       div.innerHTML = `<div class="bubble"><div class="body"></div></div>`;
       div.querySelector(".body").innerHTML = renderMarkdown(item.text);
+      $("#chat").appendChild(div);
+    } else if (item.t === "graphic") {
+      const div = document.createElement("div");
+      div.className = "msg weather";
+      div.innerHTML = weatherHTML(item.card);
       $("#chat").appendChild(div);
     } else if (item.t === "tool") {
       // history tool cards render standalone: no thinking label, no live group
@@ -226,6 +261,7 @@ function connect() {
         $("#chat").appendChild(div);
         break;
       }
+      case "graphic": addGraphic(data.card); break;
       case "turn_end": finishTurn(data); break;
       case "approval": showApproval(data); break;
       case "approval_done": hideApproval(data); break;

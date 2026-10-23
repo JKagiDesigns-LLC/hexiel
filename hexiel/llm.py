@@ -241,6 +241,8 @@ class AnthropicProvider(AbortableHTTP):
         converted = []
         for msg in messages:
             role = msg["role"]
+            if role == "graphic":
+                continue                 # a UI-only card; never a provider message
             if role == "tool":
                 blocks = cls._tool_result_blocks(msg)
                 prev = converted[-1] if converted else None
@@ -369,6 +371,8 @@ class OpenAICompatProvider(AbortableHTTP):
                 converted.extend(cls._convert_messages([{k: v for k, v in msg.items() if k != "reasoning"}]))
                 converted[-1]["reasoning_content"] = msg["reasoning"]
                 continue
+            if msg["role"] == "graphic":
+                continue                 # a UI-only card; never a provider message
             if msg["role"] == "tool":
                 converted.append({
                     "role": "tool",

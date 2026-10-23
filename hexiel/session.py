@@ -322,6 +322,32 @@ class Session:
             self.on_event("incident", "turn", trail[-400:])
             raise
 
+    def _weather_card(self, user_text: str) -> None:
+        """Common asks get a graphic: a weather question shows a live forecast card AND hides
+        the fresh numbers in this turn's context so the model narrates real values. Marks
+        self._weather_prev_system when it did (restored in the finally by _restore_weather_note)."""
+        self._weather_prev_system = None
+        try:
+            from .graphics import card_facts, maybe_weather
+            card = maybe_weather(self, user_text)
+        except Exception:      # noqa: BLE001 - graphics are a bonus, never a blocker
+            card = None
+        if not card:
+            return
+        self.on_event("graphic", card)
+        self.messages.append({"role": "graphic", "graphics": card})    # UI-only; providers skip it
+        self._weather_prev_system = self.system_prompt
+        self.system_prompt = (self._weather_prev_system + "\n\n[weather data for this request]\n"
+                              + card_facts(card)
+                              + "\nUse these measured figures when you answer; they are fresher "
+                                "than anything you already know.")
+
+    def _restore_weather_note(self) -> None:
+        prev = getattr(self, "_weather_prev_system", None)
+        if prev is not None:
+            self.system_prompt = prev            # the weather note rode that one turn only
+            self._weather_prev_system = None
+
     def _turn_body(self, user_text: str) -> None:
         from .tools import attach_images
         delegate_mode = None                       # /delegate forces it, /solo opts out of the automatic check
@@ -373,6 +399,7 @@ class Session:
         mc, handled = router_mod.route_turn(self, user_text, delegate_mode, cloud_turn)
         if handled:
             return
+        self._weather_card(user_text)
         prev_mc = self.model_config      # an overflow model for this one request only (router.py)
         self.__dict__["_turn_boot_model"] = prev_mc.name
         self.model_config = mc
@@ -433,6 +460,7 @@ class Session:
                     self._execute_tool(call)
                     self._auto_todo_step(user_text, call, assistant, turn)
         finally:
+            self._restore_weather_note()
             if self.model_config is not prev_mc and self._provider_override is None:
                 self.model_config = prev_mc      # the overflow model ran this request only
             consult.end_burst(self, "request finished")      # always hand the next request back to the cheap model

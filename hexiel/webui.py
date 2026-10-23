@@ -176,6 +176,8 @@ class WebState:
             self.broadcast({"t": "incident", "text": _shorten(str(payload[-1]), 300)})
         elif event == "usage":
             self.broadcast({"t": "status", "status": status_state(self.session)})
+        elif event == "graphic":
+            self.broadcast({"t": "graphic", "card": payload[0]})
 
     def ask_approval(self, tool_name: str, args) -> str:
         request_id = time.time_ns() % 10 ** 9
@@ -224,6 +226,9 @@ class WebState:
                     pending[call["id"]] = {"id": call["id"], "t": "tool", **short_call(call),
                                        "path": self._media_path(call)}
                     items.append(pending[call["id"]])
+            elif role == "graphic":
+                if msg.get("graphics"):
+                    items.append({"t": "graphic", "card": msg["graphics"]})
             elif role == "tool":
                 entry = pending.get(msg.get("tool_call_id", ""))
                 if entry is not None:

@@ -1032,6 +1032,7 @@ class HexielTUI(App):
     .assistant-msg { margin: 0 0 0 0; }
     ToolLine { color: $secondary-lighten-2; background: transparent; }
     .note { color: $text-muted; text-style: italic; }
+    .weather { color: $accent; text-style: none; border-left: thick $accent; padding: 0 1; margin: 1 0; }
     #scope-box { width: 100%; max-width: 80; height: auto; margin: 2 2; padding: 1 2;
                  border: heavy $accent; background: $surface; }
     #scope-buttons { height: auto; padding: 1 0 0 0; }
@@ -1127,6 +1128,12 @@ class HexielTUI(App):
                     pending[call["id"]] = wid
                     wid.running(call_short(call))
                     chat.mount(wid)
+            elif role == "graphic":
+                card = msg.get("graphics") or {}
+                if card.get("kind") == "weather":
+                    from .graphics import tui_lines
+                    chat.mount(Static("\n".join(tui_lines(card)).replace("[", "\\["),
+                                      classes="note weather"))
             elif role == "tool":
                 wid = pending.get(msg.get("tool_call_id", ""))
                 if wid is not None:
@@ -1638,6 +1645,14 @@ class HexielTUI(App):
             return
         if event == "model_active":
             self.status.refresh_text()
+            return
+        if event == "graphic":
+            card = payload[0] if payload else {}
+            if card and card.get("kind") == "weather":
+                self.finalize_stream(placeholder=False)
+                from .graphics import tui_lines
+                chat.mount(Static("\n".join(tui_lines(card)).replace("[", "\\["),
+                                  classes="note weather"))
             return
         if event == "note":
             self.finalize_stream(placeholder=False)       # text after the note starts a new block below it

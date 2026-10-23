@@ -44,11 +44,12 @@ ROUTE_SYSTEM = (
     "You sort messages sent to hexiel, a coding agent the user runs inside their own project. "
     "Reply with ONLY a JSON object: "
     '{"route": "chat" | "small" | "work" | "big", "reason": "<six words max>"}. '
-    '"chat" = a greeting, thanks, chit-chat, or any question you can answer from this conversation '
-    "and general knowledge alone ('thanks', 'what model are you?') — nothing that needs the "
-    "project.\n"
-    '"small" = needs the project but is ONE simple step: answer a question about one file, change '
-    "one line, run one command or check one thing.\n"
+    '"chat" = a greeting, thanks, chit-chat, or a question answerable from this conversation and '
+    "general knowledge alone with no tools at all ('thanks', 'what model are you?') — nothing that "
+    "needs the project or the outside world.\n"
+    '"small" = ONE simple step, whether it touches the project or needs current information: answer '
+    "a question about one file, change one line, run one command, check one thing — or LOOK "
+    "SOMETHING UP (weather, time, news, prices, scores; anything live is never \"chat\").\n"
     '"work" = real work a capable model should do directly in the project: debugging, editing code, '
     "running and fixing things.\n"
     '"big" = a design, several files, or a list of steps: plan it first and work through the plan.')
@@ -56,9 +57,12 @@ ROUTE_SYSTEM = (
 CHAT_NOTE = (
     "\n\nThe router handed the user's newest message to you for a direct answer, without tools: you "
     "cannot read files, run commands or search. Reply briefly, from the conversation and what you "
-    "know. If it actually needs the project's files or a command, say so and ask them to send it as "
-    "a normal request.")
+    "know. If the message actually needs the project's files, a command or CURRENT data (weather, "
+    "news, prices, time), do not stop at explaining that — end your reply with ⏫⏫ on its own last "
+    "line and hexiel will run the message for real on the main model right away; the user never "
+    "has to resend it.")
 
+ESCALATE_KEY = "⏫⏫"
 CHAT_NUDGE = "(Your last reply was empty. Answer the user's newest message directly, and keep it short.)"
 
 _budget_lock = threading.Lock()
@@ -100,9 +104,9 @@ def route_turn(session, prompt: str, delegate_mode: str | None, cloud_turn: bool
     route, why = classify(session, prompt)
     if route == "chat":
         session.on_event("note", f"🧭 {why} — {route_or_router_name(session)} answers this directly")
-        if answer_chat(session, _router_mc(session)):
+        if answer_chat(session, _router_mc(session)) == "done":
             return session.model_config, True
-        return overflow_or_main(session, prompt), False     # the chat answer failed: run it normally
+        return overflow_or_main(session, prompt), False     # escalated or failed: run it normally
     if route == "big":
         session.on_event("note", f"🧭 {why} — planning it first")
         if planner.maybe_delegate(session, prompt, forced=True):
@@ -162,9 +166,11 @@ def classify(session, prompt: str, mc: ModelConfig | None = None) -> tuple[str, 
 
 # ---------------------------------------------------------------- chat answers
 
-def answer_chat(session, mc) -> bool:
-    """Answer the last user entry straight from `mc`, in one tool-less reply. False when it fails
-    (the turn then runs on the main model as usual, with the entry already in the history)."""
+def answer_chat(session, mc) -> str:
+    """Answer the last user entry straight from `mc`, in one tool-less reply. Returns
+    "done" when a chat reply stands as the turn's answer, "escalate" when the reply says the
+    message needs real tools (the turn then runs on the main model, with tools, as usual —
+    the user never resends), or "fail" when the model couldn't be used at all."""
     prev_mc, prev_system = session.model_config, session.system_prompt
     session.model_config, session.system_prompt = mc, prev_system + CHAT_NOTE
     try:
@@ -173,7 +179,7 @@ def answer_chat(session, mc) -> bool:
         except SystemExit as exc:              # a missing API key and the like
             session.__dict__["_router_broken"] = True
             session.on_event("note", f"↪ the router is off for this session: {exc}")
-            return False
+            return "fail"
         session.set_active_model(mc, "chat")
         assistant = session._stream_assistant(provider, [])   # tools=[]: a reply, not a work turn
         if _empty(assistant):                  # some models end their reply immediately: nudge once
@@ -183,16 +189,30 @@ def answer_chat(session, mc) -> bool:
             finally:
                 session.messages.pop()
         if _empty(assistant):
-            return False
+            return "fail"
+        if ESCALATE_KEY in (assistant.get("content") or "") or _wants_tools(assistant.get("content") or ""):
+            # the chat model knew better than the router: this needs tools — the full turn runs next
+            session.on_event("note", "⏫ needs tools — handing it to the main model, no resend needed")
+            return "escalate"
         session.messages.append(assistant)
         session.save()
         session.on_event("turn_end")
-        return True
+        return "done"
     finally:
         session.model_config = prev_mc
         session.system_prompt = prev_system
         session.active_model = ""
         session.on_event("model_active")
+
+
+def _wants_tools(text: str) -> bool:
+    """Heuristic escalation for models that ignore the ⏫⏫ marker: the fixed CHAT_NOTE makes
+    tool-less refusals use the same stock words, so look for those."""
+    t = (text or "").lower()
+    return any(p in t for p in ("as a normal request", "without tools", "no web access",
+                                "don't have web access", "can't access files",
+                                "cannot access files", "can't run anything",
+                                "cannot run anything", "don't have access"))
 
 
 def _empty(msg: dict) -> bool:

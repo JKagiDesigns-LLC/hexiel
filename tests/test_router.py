@@ -250,3 +250,55 @@ def test_charge_targets_are_the_routed_models(env):
     assert router.charge_targets(s) == {"claude-haiku-5-5"}
     s.settings = Settings()
     assert router.charge_targets(s) == frozenset()
+
+
+# ---------------------------------------------------------------- escalation
+
+def _escalating_provider(monkeypatch, text):
+    """The chat model answers a tool-less 'I can't do that here' — with or without the marker."""
+    def fake_make_provider(mc, settings):
+        class P:
+            def stream(self, messages, system, tools, **kw):
+                yield ("text", text)
+                yield ("assistant", {"role": "assistant", "content": text})
+                yield ("done", {"prompt_tokens": 100, "completion_tokens": 10})
+        return P()
+    monkeypatch.setattr(llm, "make_provider", fake_make_provider)
+
+
+def test_a_chat_reply_that_needs_tools_escalates_automatically(env, monkeypatch):
+    s, events = env
+    classify_script(monkeypatch, "chat")
+    _escalating_provider(monkeypatch, "I don't have web access here — send this as a normal request")
+    mc, handled = router.route_turn(s, "tell me the weather in kingston ma", None, False)
+    assert not handled and mc is GMK             # the full turn runs on the main model, with tools
+    assert any("no resend" in n for n in notes(events))
+    # the tool-less refusal never enters the history: the main model sees just the user's ask
+    assert not any("normal request" in str(m.get("content", "")) for m in s.messages)
+
+
+def test_the_escalation_marker_alone_is_enough(env, monkeypatch):
+    s, events = env
+    classify_script(monkeypatch, "chat")
+    _escalating_provider(monkeypatch, "checking that needs current data\n⏫⏫")
+    mc, handled = router.route_turn(s, "what time is it", None, False)
+    assert not handled and mc is GMK
+    assert not any(m.get("role") == "assistant" and "⏫" in str(m.get("content", ""))
+                   for m in s.messages)
+
+
+def test_a_plain_chat_reply_still_ends_the_turn_without_escalating(env, monkeypatch):
+    s, events = env
+    classify_script(monkeypatch, "chat")
+    served = []
+    serve_with(monkeypatch, served)
+    mc, handled = router.route_turn(s, "thanks!", None, False)
+    assert handled and mc is GMK
+    assert s.messages[-1]["content"] == "here is my answer"
+    assert not any("no resend" in n for n in notes(events))
+
+
+def test_the_router_prompt_sends_live_questions_to_small(env):
+    assert "LIVE" in router.ROUTE_SYSTEM.upper()
+    assert "weather" in router.ROUTE_SYSTEM.lower()
+    assert "look something up" in router.ROUTE_SYSTEM.lower()

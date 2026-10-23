@@ -2,12 +2,13 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>hexiel</title>
 <link rel="stylesheet" href="static/style.css">
   <link rel="icon" type="image/svg+xml" href="static/logo.svg">
 </head>
 <body>
+  <div id="side-back" title=""></div>
   <aside id="sidebar">
     <div id="brand"><img src="static/logo.svg" alt="" class="logo"> hexiel <small>web</small></div>
     <h3>Sessions</h3>
@@ -22,6 +23,7 @@
 
   <div id="main">
     <div id="topbar">
+      <button id="menu-btn" title="Sessions, skills, memory">☰</button>
       <button id="model-btn" title="Switch model (lists what's available right now)">⌘ <span id="model-name">model</span> ▾</button>
       <button id="compact-btn" title="Summarize history now (replaces tokens)">Compact</button>
       <button id="clear-btn" title="Start a fresh conversation">Clear</button>

@@ -696,3 +696,13 @@ async function remoteLogin() {
 }
 $("#remote-go").addEventListener("click", remoteLogin);
 $("#remote-password").addEventListener("keydown", (ev) => { if (ev.key === "Enter") remoteLogin(); });
+
+// ---------------------------------------------------------------- mobile drawer
+// On small screens the sidebar becomes an overlay drawer behind the ☰ button.
+const closeDrawer = () => document.body.classList.remove("side-open");
+$("#menu-btn").addEventListener("click", () => document.body.classList.toggle("side-open"));
+$("#side-back").addEventListener("click", closeDrawer);
+document.addEventListener("keydown", (ev) => { if (ev.key === "Escape") closeDrawer(); });
+// opening any topbar panel also folds the drawer back in
+["#model-btn", "#compact-btn", "#clear-btn", "#settings-btn"].forEach(
+  (sel) => $(sel).addEventListener("click", closeDrawer));

@@ -313,7 +313,8 @@ def main() -> None:
     elif args.repl:
         repl_loop(session)
     else:
-        from .tui import HexielTUI
+        from .tui import HexielTUI, prepare_terminal_graphics
+        prepare_terminal_graphics()   # probe TGP/kitty support before stdin is owned + quiet acks
         result = HexielTUI(session, skills_mod.discover(cwd),
                            skills_mod.command_names(skills_mod.discover(cwd))).run()
         if result == "restart":      # /update installed a new version

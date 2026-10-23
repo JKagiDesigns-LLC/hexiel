@@ -673,18 +673,53 @@ class CommandMenu(OptionList):
         return self._items[self.highlighted]
 
 
-_ANSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[@-Z\\-_]")
+_ANSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]"            # CSI (`ESC[…`)
+                     r"|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)"  # OSC, BEL- or ST-terminated
+                     r"|\x1b[P^_].*?(?:\x1b\\|\x9c)"        # DCS/PM/APC, e.g. kitty graphics chunks
+                     r"|\x1b[@-Z\\-_]")                     # the remaining two-byte escapes
 _CTRL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f\u200b-\u200d\u2060\ufeff\u202a-\u202e\u2066-\u2069]")
+_CHAFF_RE = re.compile(r"^(?=[^\x20\n\r]*$)(?=.*[;=])[\\?=:,;\[\]0-9iKGkOcmtvf]{1,40}$")
 
 
 def sanitize_paste(text: str) -> str:
     """Make pasted text safe for the prompt: unify newlines, drop terminal escape sequences,
     stray control characters, and invisible/bidi-override characters; keep newlines and tabs."""
+    had_escapes = "\x1b" in text
     text = text.replace("\r\n", "\n").replace("\r", "\n")
     text = _ANSI_RE.sub("", text)
     text = text.replace("\x1b", "")
     text = _CTRL_RE.sub("", text)
+    # A paste that was entirely terminal chatter (kitty graphics acks, OSC replies) that our
+    # regexes didn't wake up to degrades to something like `i=3602480111;0K\;52;c` — no spaces,
+    # a couple dozen chars. Such a paste is the "empty" clipboard of an image-only copy.
+    if had_escapes and _CHAFF_RE.fullmatch(text.strip()):
+        return ""
     return text.expandtabs(4) if "\t" in text else text
+
+
+def prepare_terminal_graphics() -> None:
+    """Set up an inline-image-capable terminal before the app takes over stdin.
+
+    textual_image probes TGP/Sixel support and the cell size by writing safety
+    queries and reading the replies — it explicitly insists this happens *before*
+    Textual owns stdin; if the first rendered thumbnail does it instead, the
+    replies race with the app's input thread and get typed into the prompt.
+    Also patches the TGP writer to send `q=2` (send no response at all), so
+    transmitting images unless an ack hits the keyboard buffer mid-typing."""
+    try:
+        import textual_image.renderable.tgp as tgp
+        from textual_image._terminal import probe_terminal
+    except ImportError:                       # no view extra: thumbnails just aren't available
+        return
+    try:
+        probe_terminal()
+    except Exception:                         # noqa: BLE001 - probing is best effort
+        pass
+    send = tgp._send_tgp_message
+    def quiet_send(**kwargs) -> None:
+        kwargs.setdefault("q", 2)             # never ack image transmits to stdin
+        return send(**kwargs)
+    tgp._send_tgp_message = quiet_send
 
 
 class PromptInput(TextArea):
@@ -712,6 +747,7 @@ class PromptInput(TextArea):
 
     def __init__(self, placeholder: str = "", **kwargs) -> None:
         self._pastes: dict[str, str] = {}
+        self._copy_timer = None     # debounced select-to-copy (see _watch_selection)
         super().__init__(placeholder=placeholder, soft_wrap=True, show_line_numbers=False,
                          tab_behavior="focus", **kwargs)
 
@@ -762,7 +798,25 @@ class PromptInput(TextArea):
         if path:
             self.replace(f'"{path}" ' if " " in path else f"{path} ", *self.selection)
         else:
-            self.app.notify("No image on the clipboard (needs wl-paste or xclip)", severity="warning")
+            self.app.notify("No image on the clipboard (needs wl-paste or xclip). "
+                            "Try an update if you use /update: hexiel installs what pasting needs.",
+                            severity="warning")
+
+    def _watch_selection(self, previous_selection, selection) -> None:
+        """Select-to-copy: any text selected in the prompt (mouse drag, double-click,
+        shift+arrows) lands on the system clipboard (OSC 52 — over the terminal, works
+        through SSH). Debounced so a drag copies the final selection, not every step."""
+        super()._watch_selection(previous_selection, selection)
+        if not self.selected_text:
+            return
+        if self._copy_timer:
+            self._copy_timer.stop()
+        self._copy_timer = self.set_timer(0.2, self._copy_selected)
+
+    def _copy_selected(self) -> None:
+        self._copy_timer = None
+        if self.selected_text:
+            self.app.copy_to_clipboard(self.selected_text)
 
     def expanded(self) -> str:
         text = self.text

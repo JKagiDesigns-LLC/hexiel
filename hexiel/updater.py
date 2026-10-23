@@ -88,16 +88,71 @@ def apply_update() -> tuple[bool, str]:
         if pull.returncode != 0:
             return False, "git pull failed:\n" + "\n".join(log)
         _git("fetch", "--tags")
-        cmd = [sys.executable, "-m", "pip", "install", "-q", "-e", f"{REPO}[serve]"]
+        cmd = [sys.executable, "-m", "pip", "install", "-q", "-e", f"{REPO}[serve,view]"]
     else:   # pip install: upgrade from PyPI
-        cmd = [sys.executable, "-m", "pip", "install", "-q", "--upgrade", "hexiel[serve]"]
+        cmd = [sys.executable, "-m", "pip", "install", "-q", "--upgrade", "hexiel[serve,view]"]
     pip = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
     log.append(pip.stdout.strip() or pip.stderr.strip()[-800:] or "dependencies up to date")
     if pip.returncode != 0:
         return False, "install failed:\n" + "\n".join(log)
+    ensure_platform_tools(log)   # clipboard helpers for image pasting (best effort)
     installed = _installed_version()
     log.append(f"installed hexiel {installed} — restart to use it")
     return True, "\n".join(x for x in log if x)
+
+
+def _sudo_available() -> bool:
+    import shutil
+    if not shutil.which("sudo"):
+        return False
+    return subprocess.run(["sudo", "-n", "true"],
+                          capture_output=True, timeout=10).returncode == 0
+
+
+def ensure_platform_tools(log: list[str]) -> None:
+    """Make sure the clipboard helpers image pasting relies on exist (wl-paste or xclip on
+    Linux, pngpaste on macOS). Installs them non-interactively where that is possible and
+    otherwise records the exact command for the user. Best effort — never raises."""
+    import shutil
+    if sys.platform == "win32":
+        log.append("note: pasting images is a Linux/macOS feature (wl-paste/xclip/pngpaste); from Windows use WSL")
+        return
+    if shutil.which("wl-paste") or shutil.which("xclip") or shutil.which("pngpaste"):
+        return
+    pkgs: dict[str, list[str]] = {
+        "apt-get": ["wl-clipboard"],
+        "dnf": ["wl-clipboard"],
+        "pacman": ["wl-clipboard"],
+        "zypper": ["wl-clipboard"],
+    }
+    if sys.platform == "darwin":
+        cmd = [["brew", "install", "pngpaste"]] if shutil.which("brew") else []
+    else:
+        cmd = []
+        for pm, args in pkgs.items():
+            if shutil.which(pm):
+                cmd = [pm, "install", "-y", *args]
+                if pm == "pacman":
+                    cmd = ["pacman", "-S", "--noconfirm", *args]
+                elif pm == "zypper":
+                    cmd = ["zypper", "-n", "install", *args]
+                break
+    if not cmd:
+        tools = ("pngpaste — brew install pngpaste" if sys.platform == "darwin"
+                 else "wl-clipboard — e.g. apt/dnf install wl-clipboard, or xclip")
+        log.append(f"note: pasting images needs a clipboard toolset ({tools}); install it and run /update again")
+        return
+    prefix: list[str] = []
+    if os.geteuid() != 0 and sys.platform != "darwin":
+        if not _sudo_available():
+            log.append(f"note: pasting images needs {' '.join(cmd)} — run it manually (sudo) and /update will detect it")
+            return
+        prefix = ["sudo", "-n"]
+    result = subprocess.run([*prefix, *cmd], capture_output=True, text=True, timeout=180)
+    if result.returncode == 0:
+        log.append(f"installed the clipboard helpers for pasting images ({' '.join([*prefix, *cmd])})")
+    else:
+        log.append(f"could not install clipboard helpers automatically ({' '.join(cmd)}): {result.stderr.strip()[-200:] or result.returncode}")
 
 
 def _installed_version() -> str:

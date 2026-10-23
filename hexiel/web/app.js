@@ -293,7 +293,9 @@ function applyStatus(status) {
                 (status.auto_mode === "all" ? " · AUTO-APPROVE ALL" :
                  status.auto_mode === "except-commits" ? " · auto-approve (asks before commits)" : "");
   $("#ctx-label").textContent = label;
+  $("#ctx-label").title = label;              // hover/long-press reads the whole string
   $("#todo-badge").textContent = status.todo || "";
+  $("#todo-badge").title = status.todo || "";
   updateSendButton();
 }
 
@@ -673,6 +675,12 @@ checkUpdate();
 // deep link: /#settings opens the settings panel (bookmarks, screenshots)
 if (location.hash === "#settings") $("#settings-btn").click();
 if (location.hash === "#models") openPicker();
+
+// on phones the desktop hint row is hidden, so keep the placeholder itself short
+// (it fits the smaller textarea instead of being clipped mid-sentence)
+if (matchMedia("(max-width: 760px)").matches) {
+  $("#input").placeholder = "Ask hexiel to build, fix, research…";
+}
 
 
 // ---------------------------------------------------------------- /remote-control sign-in

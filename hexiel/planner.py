@@ -929,8 +929,8 @@ def review_and_fix(session, plan: Plan) -> bool:
 # ---------------------------------------------------------------- entry points used by the session
 
 def _approve_plan(session, plan: Plan) -> bool:
-    if not session.settings.delegate_approval:
-        return True
+    if not session.settings.delegate_approval or session.auto_approve:
+        return True               # auto-approve means nothing asks (commits are still asked step by step)
     verdict = session.on_approve("delegate-plan", {"text": format_plan(plan, plan.planner, plan.worker)})
     if verdict == "always":
         session.settings.delegate_approval = False      # for this session only
@@ -1012,7 +1012,7 @@ def maybe_delegate(session, request: str, *, forced: bool = False) -> bool:
         if not large:
             return False
         say(session, f"📐 this looks like a large task ({why})")
-        if st.auto_delegate == "ask":
+        if st.auto_delegate == "ask" and not session.auto_approve:
             verdict = session.on_approve("delegate", {"text": (
                 f"This looks like a large task ({why}).\n\n"
                 f"Let {planner_model(session).name} write a plan of small steps and {worker_model(session).name} "

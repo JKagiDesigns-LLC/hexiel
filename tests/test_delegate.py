@@ -85,7 +85,7 @@ def env(tmp_path, monkeypatch):
     tools = [ToolDef("write", "write a file", {"type": "object", "properties": {}}, run=_write_tool)]
     s = Session(WORKER, Settings(planner_profile="cloud", executor_profile="local", delegate_review="off"),
                 str(tmp_path), tools, "sys")
-    s.auto_approve = True
+    s.rules.allow.extend(["Write", "Bash(test *)"])         # the steps' writes run unasked; the plan questions are what these tests watch
     s.bind_tool_ctx(ToolContext(cwd=str(tmp_path), chain=Toolchain()))
     events, approvals = [], []
     s.on_event = lambda e, *p, **k: events.append((e, *p, k) if k else (e, *p))
@@ -225,6 +225,16 @@ def test_plan_approval_can_be_switched_off(env):
     s.settings.delegate_approval = False
     s.run_turn("/delegate make three files")
     assert approvals == [] and (tmp / "c.txt").exists()
+
+
+def test_auto_approve_skips_both_delegate_questions(env):
+    """With auto-approve on, neither "plan this with the strong model?" nor "run this plan?" is asked."""
+    s, providers, events, approvals, tmp = env
+    s.settings.auto_delegate = "ask"
+    s.auto_approve = True
+    s.run_turn(BIG)
+    assert "delegate" not in [a[0] for a in approvals] and "delegate-plan" not in [a[0] for a in approvals]
+    assert (tmp / "a.txt").exists()
 
 
 def test_planner_unreachable_falls_back_to_the_worker_model(env):

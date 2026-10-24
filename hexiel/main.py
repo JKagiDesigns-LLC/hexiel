@@ -10,6 +10,7 @@ from . import __version__
 from . import memory as memory_mod
 from . import openwebui_compat
 from . import prompt as prompt_mod
+from . import settings_edit
 from . import skills as skills_mod
 from . import todo as todo_mod
 from .config import load_config
@@ -97,6 +98,7 @@ def build_session(cwd: str, model_name: str | None, resumed: dict | None = None)
     if resumed:
         session.id = resumed["id"]
         session.messages = resumed.get("messages", [])
+        settings_edit.restore_auto_mode(session, resumed)
     return session
 
 

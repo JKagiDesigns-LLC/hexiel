@@ -203,3 +203,24 @@ def test_delegated_workers_and_plan_checks_inherit_the_guard(tmp_path):
     s.on_approve = lambda tool, args: (asked.append(args["command"]) or "no")
     assert planner._check_allowed(s, "pytest -q") is True and asked == []
     assert planner._check_allowed(s, "git commit -m x") is False and asked == ["git commit -m x"]
+
+
+def test_a_session_choice_survives_a_restart_but_an_untouched_chat_follows_the_config(tmp_path, monkeypatch):
+    import json
+    monkeypatch.setenv("HEXIEL_DATA", str(tmp_path / "data"))
+    first = Session(MC, Settings(), str(tmp_path), [], "sys")
+    first.save()
+    assert "auto_mode" not in json.loads((config.home_data_dir() / "sessions" / f"{first.id}.json").read_text())
+    settings_edit.apply(first, "settings.auto_approve", "except-commits", "session")      # saves by itself
+    saved = json.loads((config.home_data_dir() / "sessions" / f"{first.id}.json").read_text())
+    assert saved["auto_mode"] == "except-commits"
+
+    after_restart = Session(MC, Settings(), str(tmp_path), [], "sys")                     # config says: ask first
+    assert (after_restart.auto_approve, after_restart.guard_commits) == (False, False)
+    settings_edit.restore_auto_mode(after_restart, saved)
+    assert (after_restart.auto_approve, after_restart.guard_commits) == (True, True)
+    assert approve_mode(after_restart.auto_approve, after_restart.guard_commits) == "except-commits"
+
+    untouched = Session(MC, Settings(auto_approve=True), str(tmp_path), [], "sys")
+    settings_edit.restore_auto_mode(untouched, {"id": "x"})                                # no saved mode: config wins
+    assert untouched.auto_approve is True

@@ -1175,6 +1175,8 @@ class Session:
                 "model": (getattr(self, "_escalated_from", None) or self.model_config).name,
                 "messages": self.messages[-400:],
             }
+            if getattr(self, "auto_override", None):       # set for this chat only: resuming it keeps the mode
+                payload["auto_mode"] = self.auto_override
             (sessions / f"{self.id}.json").write_text(json.dumps(payload))
         except OSError:
             pass

@@ -120,6 +120,15 @@ def _live_value(session, key: str):
 _MODE_LABEL = {"off": "off", "except-commits": "except commits", "all": "everything"}
 
 
+def restore_auto_mode(session, saved: dict) -> None:
+    """A resumed chat comes back in the auto-approve mode it was set to for that chat (if it was set at all)."""
+    mode = saved.get("auto_mode")
+    if mode in _MODE_LABEL:
+        session.auto_approve, session.guard_commits = mode != "off", mode == "except-commits"
+        session.settings.auto_approve, session.settings.guard_commits = session.auto_approve, session.guard_commits
+        session.auto_override = mode
+
+
 def _saved_value(cfg, key: str, profile: str):
     if key == "profile":
         return cfg.default_model
@@ -211,6 +220,9 @@ def apply(session, key: str, value, scope: str) -> str:
         session.auto_approve = value != "off"
         session.guard_commits = value == "except-commits"
         session.settings.auto_approve, session.settings.guard_commits = session.auto_approve, session.guard_commits
+        if scope == "session":
+            session.auto_override = value       # remembered with the saved chat: a restart or update resumes in this mode
+            session.save()
     else:
         setattr(session.settings, key.split(".", 1)[1], value)
 

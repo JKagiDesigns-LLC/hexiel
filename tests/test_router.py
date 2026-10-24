@@ -2,6 +2,7 @@
 for the main model (overflowing to the overflow profile while it is busy), big ones delegated —
 and every routed token counts against the daily cap."""
 
+import dataclasses
 import json
 import sys
 from pathlib import Path
@@ -130,7 +131,7 @@ def test_a_broken_router_is_shut_off_once_and_messages_still_run(env, monkeypatc
     def once(*a, **k):
         raise RuntimeError("anthropic: 401")
     monkeypatch.setattr(planner, "_complete_once", once)
-    assert router.classify(s, "hi") == ("", "router failed")
+    assert router.classify(s, "hi") == ("", "anthropic: 401")   # the chain's last failure is the reason
     assert any("can't be used" in e for e in notes(events))
     assert router.classify(s, "hi again") == ("", "router unusable")     # disabled: no further calls
     served = []
@@ -143,8 +144,69 @@ def test_a_missing_api_key_disables_the_router(env, monkeypatch):
     s, events = env
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     route, why = router.classify(s, "hi")
-    assert route == "" and "no api key" in why
+    assert route == "" and why == "no api key"
     assert any("ANTHROPIC_API_KEY is not set" in e for e in notes(events))
+
+
+TEST_LAPTOP = ModelConfig(name="laptop", provider="openai", model="qwen2.5:3b",
+                          base_url="http://localhost:11434/v1")
+
+
+def chain_env(env, monkeypatch):
+    """The router chain: anthropic-haiku first, the laptop's 3B second."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    profiles = {"anthropic-haiku": dataclasses.replace(HAIKU, fallbacks=("laptop",)),
+                "laptop": TEST_LAPTOP, "gmktec": GMK}
+    monkeypatch.setattr(planner, "_config_profile", lambda sess, name: profiles.get(name))
+
+
+def test_a_local_backup_router_takes_over_when_the_cloud_one_fails(env, monkeypatch):
+    s, events = env
+    chain_env(env, monkeypatch)
+    monkeypatch.setattr(modelbusy, "is_local", lambda mc: mc.base_url is not None)
+
+    def once(sess, mc, system, user, max_tokens, budget):
+        if mc.name == "anthropic-haiku":
+            raise RuntimeError("anthropic: 529 overloaded")
+        assert mc.name == "laptop"
+        assert budget == router.ROUTE_BUDGET_LOCAL              # the local router gets room
+        return json.dumps({"route": "small", "reason": "one step"}), BUDGET
+    monkeypatch.setattr(planner, "_complete_once", once)
+    served = []
+    serve_with(monkeypatch, served)
+    mc, handled = router.route_turn(s, "what line ends main.py?", None, False)
+    assert not handled and mc is GMK                            # routed, not broken: normal work
+    assert not s.__dict__.get("_router_broken")                 # the chain stayed alive
+    assert any("trying the next router" in e for e in notes(events))
+    assert any("· laptop" in e for e in notes(events))          # the verdict names the router
+
+
+def test_the_router_stays_broken_when_every_router_in_the_chain_fails(env, monkeypatch):
+    s, events = env
+    chain_env(env, monkeypatch)
+
+    def once(*a, **k):
+        raise RuntimeError("everything is down")
+    monkeypatch.setattr(planner, "_complete_once", once)
+    assert router.classify(s, "hi") == ("", "everything is down")  # the chain's last failure is the reason
+    assert any("trying the next router" in e for e in notes(events))
+    assert router.classify(s, "hi again") == ("", "router unusable")    # disabled: no further calls
+    assert any("messages go to the main model" in e for e in notes(events))
+
+
+def test_a_chat_answer_falls_back_to_the_next_router(env, monkeypatch):
+    s, events = env
+    chain_env(env, monkeypatch)
+    classify_script(monkeypatch, "chat")
+
+    def mp(mc, settings):
+        if mc.name == "anthropic-haiku":
+            raise SystemExit("anthropic is unreachable")
+        return Fake([], text="answered on the laptop")
+    monkeypatch.setattr(llm, "make_provider", mp)
+    mc, handled = router.route_turn(s, "thanks!", None, False)
+    assert handled and s.messages[-1]["content"] == "answered on the laptop"
+    assert any("can't answer chats" in e for e in notes(events))
 
 
 # ---------------------------------------------------------------- overflow

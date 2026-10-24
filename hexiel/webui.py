@@ -81,6 +81,11 @@ class WebState:
         self.lock = threading.Lock()
         self.busy = False
         self.queue: "queue.Queue[bytes]" = __import__("queue").Queue()
+        # What a view that joins mid-turn missed: the live frames since the turn's user message (notes, plan
+        # steps, helper tool calls and the reply being written are not in session.messages until the turn ends).
+        self.turn_base: int | None = None
+        self.replay: list[dict] = []
+        self.replay_lock = threading.Lock()
         if driver is None:
             session.on_event = self.on_event
             session.on_approve = self.ask_approval
@@ -101,10 +106,48 @@ class WebState:
     def broadcast(self, message: dict) -> None:
         # called from worker threads: serialize onto the queue; the drain task
         # (started per app) delivers to every connected tab
+        self._remember(message)
         try:
             self.queue.put(json.dumps(message))
         except Exception:
             pass
+
+    HISTORY_MAX = 400                 # items sent per refresh: a long chat over the relay (a phone) stays quick
+
+    def trim(self, items: list[dict]) -> list[dict]:
+        if len(items) <= self.HISTORY_MAX:
+            return items
+        cut = len(items) - self.HISTORY_MAX
+        return [{"t": "note", "text": f"— {cut} earlier items not shown (the full chat is saved on the machine) —"},
+                *items[cut:]]
+
+    REPLAYED = ("text", "note", "tool", "tool_done", "graphic", "incident")
+    REPLAY_MAX = 800
+
+    def _remember(self, message: dict) -> None:
+        kind = message.get("t")
+        with self.replay_lock:
+            if self.turn_base is None or kind not in self.REPLAYED:
+                return
+            if kind == "text" and self.replay and self.replay[-1].get("t") == "text":
+                self.replay[-1] = {"t": "text", "delta": self.replay[-1]["delta"] + message["delta"]}
+                return
+            self.replay.append(message)
+            if len(self.replay) > self.REPLAY_MAX:
+                del self.replay[:len(self.replay) - self.REPLAY_MAX]
+
+    def catch_up(self) -> dict:
+        """The first frame a view gets: the saved conversation, plus (mid-turn) what happened since it began and
+        any approval still waiting — so a tab opened or woken up later sees exactly what a tab that never left sees."""
+        msgs = list(self.session.messages)
+        with self.replay_lock:
+            base, frames = self.turn_base, list(self.replay)
+        midturn = self.is_busy() and base is not None and base < len(msgs)
+        return {"t": "history",
+                "items": self.trim(self.render_history(msgs[:base + 1] if midturn else msgs)),
+                "replay": frames if midturn else [],
+                "approvals": [h["frame"] for h in list(self.approvals.values()) if "frame" in h],
+                "status": status_state(self.session)}
 
     async def drain(self, app) -> None:
         """Event-loop task: pull messages pushed by worker threads and send them
@@ -144,12 +187,17 @@ class WebState:
         elif event == "fallback":
             self.broadcast({"t": "status", "status": status_state(self.session)})
             self.broadcast({"t": "note", "text": f"↪ {payload[0]} is limited — continuing on {payload[1]}"})
+        elif event == "turn_start":
+            with self.replay_lock:
+                self.turn_base, self.replay = len(self.session.messages) - 1, []
         elif event == "turn_end":
+            with self.replay_lock:
+                self.turn_base, self.replay = None, []
             error = payload[0].get("error") if payload and isinstance(payload[0], dict) else None
             if _kw.get("aborted"):
                 error = "stopped by user"
             self.broadcast({"t": "turn_end", "error": error,
-                            "messages": self.render_history()})
+                            "messages": self.trim(self.render_history())})
         elif event == "tool_call":
             self.broadcast({"t": "tool", **short_call(payload[0])})
         elif event == "tool_result":
@@ -186,9 +234,14 @@ class WebState:
         titles = {"delegate": "plan this with the strong model?", "delegate-plan": "run this plan?"}
         shown = (str(args["text"])[:2400] if tool_name in titles and isinstance(args, dict) and "text" in args
                  else json.dumps(args, indent=2)[:1400])
-        self.broadcast({"t": "approval", "id": request_id, "tool": titles.get(tool_name, tool_name),
-                        "args": shown})
-        holder["event"].wait(timeout=900)
+        holder["frame"] = {"t": "approval", "id": request_id, "tool": titles.get(tool_name, tool_name),
+                           "args": shown}
+        self.broadcast(holder["frame"])
+        # Like the terminal, wait for an answer however long you are away (a reconnecting browser is shown the
+        # prompt again); only Stop gives up. A silent timeout used to deny the step while nobody was looking.
+        while not holder["event"].wait(1):
+            if self.session._stop.is_set():
+                break
         self.approvals.pop(request_id, None)
         verdict = holder["verdict"] if holder["verdict"] in ("yes", "always", "no") else "no"
         self.broadcast({"t": "approval_done", "id": request_id, "verdict": verdict})
@@ -202,10 +255,10 @@ class WebState:
         raw = Path(str(call.get("arguments", {}).get("path", ""))).expanduser()
         return str(raw if raw.is_absolute() else Path(self.session.cwd) / raw)
 
-    def render_history(self) -> list[dict]:
+    def render_history(self, messages: list[dict] | None = None) -> list[dict]:
         items: list[dict] = []
         pending: dict[str, dict] = {}
-        for msg in self.session.messages:
+        for msg in (self.session.messages if messages is None else messages):
             role = msg["role"]
             if role == "user":
                 body = msg.get("content", "")
@@ -279,9 +332,7 @@ def make_app(session: Session, driver=None) -> web.Application:
         await ws.prepare(request)
         state.clients[ws] = asyncio.get_running_loop()
         try:
-            await ws.send_str(json.dumps({"t": "history",
-                                          "items": state.render_history(),
-                                          "status": status_state(session)}))
+            await ws.send_str(json.dumps(state.catch_up()))
             async for msg in ws:
                 if msg.type == WSMsgType.TEXT:
                     try:
@@ -605,15 +656,19 @@ def make_app(session: Session, driver=None) -> web.Application:
                                                "X-Content-Type-Options": "nosniff",
                                                "Cache-Control": "private, max-age=3600"})
 
-    async def api_state(request):
-        cfg = load_config()
-        chain = detect_toolchain(session.cwd)
-        sessions = []
+    sessions_cache = {"at": 0.0, "rows": []}
+
+    def recent_sessions() -> list[dict]:
+        """This project's latest saved sessions. Reading them is the costly part of /api/state (the page polls it),
+        so the listing is reused for 30s."""
+        if time.time() - sessions_cache["at"] < 30:
+            return sessions_cache["rows"]
+        rows: list[dict] = []
         try:
             paths = sorted((home_data_dir() / "sessions").glob("*.json"),
                            key=lambda p: p.stat().st_mtime, reverse=True)[:200]
             for p in paths:
-                if len(sessions) >= 12:
+                if len(rows) >= 12:
                     break
                 try:
                     raw = json.loads(p.read_text())
@@ -622,12 +677,19 @@ def make_app(session: Session, driver=None) -> web.Application:
                     preview = next((m.get("content", "")[:60] for m in raw.get("messages", [])
                                     if m.get("role") == "user"
                                     and not m.get("content", "").startswith("<auto-compaction>")), "")
-                    sessions.append({"id": raw.get("id", p.stem), "created": raw.get("created"),
-                                     "model": raw.get("model"), "preview": preview})
+                    rows.append({"id": raw.get("id", p.stem), "created": raw.get("created"),
+                                 "model": raw.get("model"), "preview": preview})
                 except (OSError, json.JSONDecodeError, KeyError):
                     continue
         except OSError:
             pass
+        sessions_cache.update(at=time.time(), rows=rows)
+        return rows
+
+    async def api_state(request):
+        cfg = load_config()
+        chain = detect_toolchain(session.cwd)
+        sessions = recent_sessions()
         _, _, todos = todo_mod.read_todos(session.cwd)
         skills = [{"name": s.name, "description": s.description[:160]}
                   for s in skills_mod.discover(session.cwd)]

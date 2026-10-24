@@ -71,7 +71,7 @@ def test_activity_line_lifecycle(tmp_path):
             await pilot.pause()
             return hidden_at_start, shown, act.display
     hidden_at_start, shown, still_shown = run(go())
-    assert hidden_at_start and "Testing the spirits" in shown and "ctrl+c" in shown
+    assert hidden_at_start and "Testing" in shown and "ctrl+c" in shown
     assert not still_shown
 
 
@@ -240,11 +240,11 @@ def test_status_line_shows_the_model_that_is_working_now(tmp_path):
             app.session.on_event = lambda event, *p, **k: app.handle_event(event, *p, **k)   # as TurnThread wires it
             app.session.set_active_model(app.session.model_config, "planning")
             await pilot.pause()
-            during = str(app.status.content)
+            during = str(app.sidebar._body.content)      # the sidebar's MODEL block names the working model
             app.session.active_model = ""
             app.handle_event("model_active")
             await pilot.pause()
-            return during, str(app.status.content)
+            return during, str(app.sidebar._body.content)
     during, after = run(go())
     assert "m · planning" in during and "planning" not in after
 

@@ -11,6 +11,10 @@ e.g. Claude Haiku — one short call, so a routing decision costs a fraction of 
     big   multi-file changes, designs, features, long lists of steps — straight to the
           plan-then-execute path (/delegate)
 
+The router profile's fallbacks chain qualifies as backup routers: if the first can't be used
+(limit, outage, missing key), the next one classifies — a local router at the end of the chain
+keeps routing alive when every cloud provider is down, and chat answers walk the same chain.
+
 Overflow (settings.overflow_profile, e.g. Haiku too): while the main model is busy with another
 request, chat- and small-sized requests run on the overflow model instead of waiting, and real
 work runs for that turn on the main model's fallback chain ([models.*] `fallbacks`, Anthropic
@@ -39,6 +43,7 @@ from .config import ModelConfig, home_data_dir
 
 ROUTES = ("chat", "small", "work", "big")
 BUSY_RECHECK_SECONDS = 45          # how long a "busy" verdict is trusted before probing again
+ROUTE_BUDGET_LOCAL = 45            # per classification: a local backup router needs more than a cloud one's 20s
 
 ROUTE_SYSTEM = (
     "You sort messages sent to hexiel, a coding agent the user runs inside their own project. "
@@ -81,6 +86,21 @@ def _router_mc(session):
     return _profile(session, name) if name else None
 
 
+def _chain(session) -> list:
+    """The routers in order: the router profile itself, then its fallbacks (see [models.*]). A
+    local router after the cloud ones keeps routing alive when every cloud provider is down."""
+    mc = _router_mc(session)
+    if mc is None:
+        return []
+    from . import planner
+    out = [mc]
+    for name in (getattr(mc, "fallbacks", ()) or ()):
+        m = planner._config_profile(session, name)
+        if m is not None and all(m.name != k.name for k in out):
+            out.append(m)
+    return out
+
+
 # ---------------------------------------------------------------- the entry point
 
 def route_turn(session, prompt: str, delegate_mode: str | None, cloud_turn: bool) -> tuple:
@@ -104,7 +124,7 @@ def route_turn(session, prompt: str, delegate_mode: str | None, cloud_turn: bool
     route, why = classify(session, prompt)
     if route == "chat":
         session.on_event("note", f"🧭 {why} — {route_or_router_name(session)} answers this directly")
-        if answer_chat(session, _router_mc(session)) == "done":
+        if answer_chat(session, _chain(session)) == "done":
             return session.model_config, True
         return overflow_or_main(session, prompt), False     # escalated or failed: run it normally
     if route == "big":
@@ -125,60 +145,78 @@ def route_or_router_name(session) -> str:
 
 def classify(session, prompt: str, mc: ModelConfig | None = None) -> tuple[str, str]:
     """(route, reason): 'chat', 'small', 'work' or 'big' — ('', reason) when the router can't be used
-    (the caller then treats the message as a normal request)."""
-    if mc is None:
-        mc = _router_mc(session)
-    if mc is None:
+    (the caller then treats the message as a normal request). The router profile's fallbacks chain
+    qualifies as backup routers: the first that answers wins, a local one ends the chain, and only
+    a chain-wide failure turns the router off for the session."""
+    chain = [mc] if mc is not None else _chain(session)
+    if not chain:
         return "", "no router"
     if session.__dict__.get("_router_broken"):
         return "", "router unusable"
-    if mc.api_key_env and not os.environ.get(mc.api_key_env):
-        session.__dict__["_router_broken"] = True
-        session.on_event("note", f"↪ the router is off: {mc.api_key_env} is not set — messages go to the main model")
-        return "", "no api key"
-
     trail = []
     for m in session.messages[-6:]:            # recent turns give 'deploy' messages their context
         c = m.get("content")
         if c:
             trail.append(f"{m.get('role', 'user')}: {str(c)[:300]}")
     user = "\n".join(trail) + f"\n\nThe newest message — the one to sort: {prompt[:2000]}"
-    from . import planner
-    try:
-        # 500 tokens (not less): a tight cap makes the model spend the whole budget on ad-hoc thinking
-        # before any text, so the JSON is cut off. At 500 it routes in ~1s on every run.
-        text, _ = planner.complete(session, mc, ROUTE_SYSTEM, user, max_tokens=500, budget=20, cloud=True)
-    except Exception as exc:  # noqa: BLE001 - a router problem must never break a turn
-        session.__dict__["_router_broken"] = True
-        first = str(exc).strip().splitlines()[0][:120] if str(exc).strip() else type(exc).__name__
-        session.on_event("note", f"↪ the router is off for this session: {mc.name} can't be used "
-                                 f"({first}) — messages go to the main model")
-        return "", "router failed"
-    try:
-        verdict = planner._json_from(text)
-    except ValueError:
-        return "work", "router reply was not JSON"
-    route = str(verdict.get("route", "")).strip().lower()
-    if route not in ROUTES:
-        return "work", "router said something unrecognized"
-    return route, str(verdict.get("reason", ""))[:60] or "routed"
+    from . import modelbusy, planner
+    failures = []
+    for i, m in enumerate(chain):
+        more = i < len(chain) - 1
+        if m.api_key_env and not os.environ.get(m.api_key_env):
+            session.on_event("note", f"↪ router {m.name} is off: {m.api_key_env} is not set — "
+                                     + ("trying the next router" if more else "messages go to the main model"))
+            failures.append("no api key")
+            continue
+        try:
+            # 500 tokens (not less): a tight cap makes the model spend the whole budget on ad-hoc thinking
+            # before any text, so the JSON is cut off. At 500 it routes in ~1s on every run. A local
+            # backup router runs slowly by cloud standards, so it gets a bigger budget.
+            text, _ = planner.complete(session, m, ROUTE_SYSTEM, user, max_tokens=500,
+                                       budget=ROUTE_BUDGET_LOCAL if modelbusy.is_local(m) else 20, cloud=True)
+        except Exception as exc:  # noqa: BLE001 - a router problem must never break a turn
+            first = str(exc).strip().splitlines()[0][:120] if str(exc).strip() else type(exc).__name__
+            session.on_event("note", f"↪ router {m.name} can't be used ({first}) — "
+                                     + ("trying the next router" if more else "messages go to the main model"))
+            failures.append(first)
+            continue
+        try:
+            verdict = planner._json_from(text)
+        except ValueError:
+            return "work", "router reply was not JSON"
+        route = str(verdict.get("route", "")).strip().lower()
+        if route not in ROUTES:
+            return "work", "router said something unrecognized"
+        reason = str(verdict.get("reason", ""))[:60] or "routed"
+        return route, (f"{reason} · {m.name}" if len(chain) > 1 else reason)
+    session.__dict__["_router_broken"] = True   # every router in the chain is unusable right now
+    return "", failures[-1] if failures else "router failed"
 
 
 # ---------------------------------------------------------------- chat answers
 
-def answer_chat(session, mc) -> str:
-    """Answer the last user entry straight from `mc`, in one tool-less reply. Returns
-    "done" when a chat reply stands as the turn's answer, "escalate" when the reply says the
-    message needs real tools (the turn then runs on the main model, with tools, as usual —
-    the user never resends), or "fail" when the model couldn't be used at all."""
+def answer_chat(session, mcs) -> str:
+    """Answer the last user entry straight from the first router chain model that can, with no
+    tools. Returns "done" when a chat reply stands as the turn's answer, "escalate" when the reply
+    says the message needs real tools (the turn then runs on the main model, with tools, as usual —
+    the user never resends), or "fail" when no model in the chain could be used at all."""
+    for mc in mcs:
+        out = _answer_once(session, mc)
+        if out != "fail":
+            return out
+    if mcs:
+        session.on_event("note", "↪ no router in the chain could answer the chat — it runs on the main model")
+    return "fail"
+
+
+def _answer_once(session, mc) -> str:
     prev_mc, prev_system = session.model_config, session.system_prompt
     session.model_config, session.system_prompt = mc, prev_system + CHAT_NOTE
     try:
         try:
             provider = llm.make_provider(mc, session.settings)
-        except SystemExit as exc:              # a missing API key and the like
-            session.__dict__["_router_broken"] = True
-            session.on_event("note", f"↪ the router is off for this session: {exc}")
+        except SystemExit as exc:              # a missing API key and the like: let the chain's next router try
+            session.on_event("note", f"↪ router {mc.name} can't answer chats ({str(exc).strip()[:120] or 'unusable'})")
             return "fail"
         session.set_active_model(mc, "chat")
         assistant = session._stream_assistant(provider, [])   # tools=[]: a reply, not a work turn

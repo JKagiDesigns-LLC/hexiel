@@ -52,6 +52,8 @@ for rel, body in {"src/app/login/login.component.ts": "export class LoginCompone
                   "package.json": "{}\n", "pom.xml": "<project/>\n"}.items():
     (PROJECT / rel).parent.mkdir(parents=True, exist_ok=True)
     (PROJECT / rel).write_text(body)
+(PROJECT / ".git").mkdir()                       # the TUI sidebar shows the current branch
+(PROJECT / ".git" / "HEAD").write_text("ref: refs/heads/main\n")
 os.chdir(PROJECT)
 sys.path.insert(0, str(REPO))
 
@@ -80,20 +82,24 @@ catalog.endpoints = lambda cfg: [1, 2, 3, 4]
 from hexiel.main import build_session            # noqa: E402
 
 CONVERSATION = [
-    {"role": "user", "content": "the login page accepts expired sessions — find out why and fix it"},
-    {"role": "assistant", "content": "I'll check the auth service and run the login tests first.",
+    {"role": "user", "ts": time.mktime((2026, 1, 1, 9, 41, 0, 0, 0, -1)),
+     "content": "the login page accepts expired sessions — find out why and fix it"},
+    {"role": "assistant", "ts": time.mktime((2026, 1, 1, 9, 41, 14, 0, 0, -1)),
+     "content": "I'll check the auth service and run the login tests first.",
      "tool_calls": [
          {"id": "c1", "name": "grep", "arguments": {"pattern": "isExpired", "path": "src/app"}},
          {"id": "c2", "name": "test", "arguments": {"path": "src/app/login"}}]},
     {"role": "tool", "tool_call_id": "c1", "content": "src/app/auth/auth.service.ts:41:  isExpired(token) { return false; }"},
     {"role": "tool", "tool_call_id": "c2", "content": "1 failed, 23 passed\nLoginComponent › rejects an expired session\n  expected 'Session expired' to be shown"},
-    {"role": "assistant", "content": "Found it — `isExpired()` in `auth.service.ts:41` is a stub that always "
+    {"role": "assistant", "ts": time.mktime((2026, 1, 1, 9, 42, 5, 0, 0, -1)),
+     "content": "Found it — `isExpired()` in `auth.service.ts:41` is a stub that always "
      "returns `false`, so the guard never redirects. Decoding the token's `exp` claim fixes it:\n\n"
      "```ts\nisExpired(token: string): boolean {\n  const { exp } = jwtDecode<{ exp: number }>(token);\n"
      "  return exp * 1000 < Date.now();\n}\n```",
      "tool_calls": [{"id": "c3", "name": "edit", "arguments": {"path": "src/app/auth/auth.service.ts"}}]},
     {"role": "tool", "tool_call_id": "c3", "content": "edited src/app/auth/auth.service.ts (1 replacement)"},
-    {"role": "assistant", "content": "Patched. Re-running the login suite to confirm."},
+    {"role": "assistant", "ts": time.mktime((2026, 1, 1, 9, 42, 18, 0, 0, -1)),
+     "content": "Patched. Re-running the login suite to confirm."},
 ]
 
 
@@ -122,7 +128,7 @@ async def tui_shots(tmp: Path) -> None:
     from hexiel.tui import ActivityLine, HexielTUI
     sk = skills_mod.discover(str(PROJECT))
 
-    async def capture(name, setup, size=(118, 34), conversation=True):
+    async def capture(name, setup, size=(120, 40), conversation=True):
         app = HexielTUI(session(conversation), sk, skills_mod.command_names(sk))
         async with app.run_test(size=size) as pilot:
             await pilot.pause(0.3)
@@ -131,8 +137,6 @@ async def tui_shots(tmp: Path) -> None:
         svg_to_png(tmp / f"{name}.svg", OUT / f"{name}.png")
 
     async def main_view(app, pilot):
-        for wid in app.query("#logo"):    # the welcome art would be half-scrolled away
-            wid.remove()
         app.query_one(ActivityLine).start()
         app.query_one(ActivityLine).add_chars(2400)
         app.query_one(ActivityLine).phase("tool", "test")
@@ -157,7 +161,7 @@ async def tui_shots(tmp: Path) -> None:
         await pilot.press("ctrl+p")
         await pilot.pause(0.6)
 
-    await capture("tui-welcome", nothing, size=(100, 22), conversation=False)
+    await capture("tui-welcome", nothing, size=(118, 28), conversation=False)
     await capture("tui-picker", picker, size=(110, 32), conversation=False)
     await capture("tui", main_view)
     await capture("tui-menu", menu)

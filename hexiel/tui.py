@@ -12,6 +12,7 @@ from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
 from textual.message import Message
+from textual.theme import Theme
 from textual.widgets import Button, Input, Label, Markdown, OptionList, Static, TextArea
 from textual.widgets.option_list import Option
 
@@ -20,6 +21,94 @@ from . import skills as skills_mod
 
 ACCENT = "#c8b6ff"
 GOLD = "#d9b55a"          # halo gold for the activity line
+TEXT = "#d6dae2"
+MUTED = "#7d8595"
+FAINT = "#4b5263"
+GREEN = "#7fc8a9"
+RED = "#e06c75"
+YELLOW = "#e5c07b"
+BLUE = "#82aaff"
+BORDER = "#262b36"
+BG = "#0e1014"
+PANEL = "#141821"
+SIDEBAR_BG = "#11141a"
+
+HEXIEL_THEME = Theme(
+    name="hexiel",
+    primary=ACCENT,
+    secondary=BLUE,
+    accent=GOLD,
+    foreground=TEXT,
+    background=BG,
+    surface=PANEL,
+    panel=SIDEBAR_BG,
+    success=GREEN,
+    warning=YELLOW,
+    error=RED,
+    dark=True,
+)
+
+SIDEBAR_WIDTH = 31
+SIDEBAR_MIN_SCREEN = 108      # below this the sidebar starts hidden (Ctrl+B still shows it)
+
+
+def stamp(ts) -> str:
+    """Local HH:MM for a message timestamp; empty when the message predates them."""
+    try:
+        return time.strftime("%H:%M", time.localtime(float(ts)))
+    except (TypeError, ValueError, OverflowError):
+        return ""
+
+
+def now_stamp() -> str:
+    return time.strftime("%H:%M")
+
+
+def fmt_tokens(n: int) -> str:
+    n = max(int(n), 0)
+    if n >= 1_000_000:
+        return f"{n / 1_000_000:.1f}M"
+    if n >= 1_000:
+        return f"{n // 1_000}k"
+    return str(n)
+
+
+def fit(text: str, width: int) -> str:
+    """Trim a plain string to `width`, with an ellipsis when it had to be cut."""
+    if width <= 0:
+        return ""
+    return text if len(text) <= width else text[:max(width - 1, 0)] + "…"
+
+
+def meter(pct: int, width: int = 18) -> str:
+    filled = max(0, min(width, round(width * pct / 100)))
+    colour = GREEN if pct < 60 else YELLOW if pct < 85 else RED
+    return f"[{colour}]{'━' * filled}[/][{BORDER}]{'─' * (width - filled)}[/]"
+
+
+def _short_parts(short: str) -> tuple[str, str]:
+    """'read(src/x.py)' -> ('read', '(src/x.py)') for a two-tone tool line."""
+    name, sep, rest = short.partition("(")
+    return name, f"({rest}" if sep else ""
+
+
+def _git_branch(cwd: str) -> str:
+    """The current branch, read straight from .git/HEAD (no subprocess, no shell)."""
+    try:
+        git = Path(cwd) / ".git"
+        if git.is_file():                      # worktree / submodule: .git points elsewhere
+            text = git.read_text().strip()
+            if not text.startswith("gitdir:"):
+                return ""
+            git = Path(text.split(":", 1)[1].strip())
+            if not git.is_absolute():
+                git = Path(cwd) / git
+        head = (git / "HEAD").read_text().strip()
+        if head.startswith("ref: refs/heads/"):
+            return head[len("ref: refs/heads/"):]
+        return head[:7]
+    except OSError:
+        return ""
 
 
 class TurnThread(threading.Thread):
@@ -543,68 +632,170 @@ def thumbnail_for(info: dict):
     return widget
 
 
+class UserMessage(Static):
+    """A request, with its time — quiet label, readable body, a single accent rule."""
+
+    def __init__(self, text: str, ts: str = "") -> None:
+        when = f"  [{FAINT}]· {ts}[/]" if ts else ""
+        body = text.replace("[", chr(92) + "[")
+        super().__init__(f"[b {ACCENT}]❯[/] [b {TEXT}]you[/]{when}\n[{TEXT}]{body}[/]",
+                         classes="user-msg")
+
+
+class ResponseHeader(Static):
+    """The start of one assistant response: marker, name, time."""
+
+    def __init__(self, ts: str = "") -> None:
+        when = f"  [{FAINT}]· {ts}[/]" if ts else ""
+        super().__init__(f"[{ACCENT}]⏺[/] [b {TEXT}]hexiel[/]{when}", classes="resp-header")
+
+
 class ToolLine(Static):
-    """One tool invocation line: name, args preview, and result preview once done."""
+    """One tool invocation: a compact Claude-Code-style line with its result folded underneath."""
+
+    @staticmethod
+    def _label(short: str) -> str:
+        name, args = _short_parts(short)
+        name = name.replace("[", chr(92) + "[").replace("]", chr(92) + "]")
+        args = args.replace("[", chr(92) + "[").replace("]", chr(92) + "]")
+        return f"[b {TEXT}]{name}[/][{MUTED}]{args}[/]"
 
     def running(self, short: str) -> None:
-        self.update(f"  [yellow]~[/yellow] {short.replace('[', chr(92) + '[')} (running…)")
+        self.update(f"  [{YELLOW}]◌[/] {self._label(short)}  [dim]running…[/]")
 
     def complete(self, short: str, preview: str, is_error: bool, elapsed: float) -> None:
-        bullet = "[red]✗[/red]" if is_error else "[green]✓[/green]"
-        snippet = "\n    ".join(
-            ln.strip().replace("[", chr(92) + "[")[:160]
-            for ln in preview.strip().splitlines()[:4])
-        body = f"\n    {snippet}" if snippet else ""
-        self.update(f"  {bullet} {short.replace('[', chr(92) + '[')} ({elapsed:.1f}s){body}")
+        colour = RED if is_error else GREEN
+        bullet = "✗" if is_error else "⏺"
+        took = f"  [dim]{elapsed:.1f}s[/]" if elapsed >= 0.1 else ""
+        lines = [ln.strip().replace("[", chr(92) + "[")[:160]
+                 for ln in preview.strip().splitlines() if ln.strip()][:4]
+        body = ""
+        if lines:
+            body = "\n     [dim]⎿[/] " + f"\n       ".join(lines)
+        self.update(f"  [{colour}]{bullet}[/] {self._label(short)}{took}{body}")
 
 
 class StatusLine(Static):
+    """Footer: the few keys worth remembering plus the state that changes most."""
+
     def __init__(self, session) -> None:
         super().__init__("")
         self._session = session
 
+    def _live_session(self):
+        return getattr(self.app, "session", None) or self._session
+
     def refresh_text(self) -> None:
         try:
-            tokens_now = self._session.tokens_now()
-            window = self._session.model_config.context_window
-            threshold = self._session.settings.compact_threshold
+            session = self._live_session()
+            tokens_now = session.tokens_now()
+            window = session.model_config.context_window
             pct = 100 * tokens_now // max(window, 1)
-            compact_at = int(100 * threshold)
-            model = self._session.active_model or self._session.model_config.model
-            from . import todo as todo_mod
-            todo_line = todo_mod.summary_line(self._session.cwd)
-            if not self._session.auto_approve:
-                approve = ("approving writes", "approving writes")
-            elif self._session.guard_commits:
-                approve = ("[yellow]auto-approve · asks before commits[/]", "auto-approve · asks before commits")
+            if getattr(session, "plan_mode", False):
+                mode = f"[b {YELLOW}]PLAN MODE[/]"
+            elif not session.auto_approve:
+                mode = f"[{MUTED}]asks before writes[/]"
+            elif session.guard_commits:
+                mode = f"[{MUTED}]auto-approve · asks before commits[/]"
             else:
-                approve = ("[b red]AUTO-APPROVE ALL[/]", "AUTO-APPROVE ALL")
-            if getattr(self._session, "plan_mode", False):
-                approve = ("[b yellow]PLAN MODE[/]", "PLAN MODE")
-            # (markup, plain) segments in priority order; low-priority ones drop
-            # first so the line always fits the window instead of running off it
+                mode = f"[b {RED}]AUTO-APPROVE ALL[/]"
             segments = [
-                (model, model),
-                (f"ctx {pct}% used ({tokens_now // 1000}k/{window // 1000}k)",) * 2,
-                approve,
-                (f"auto-compacts at {compact_at}%",) * 2,
-            ] + ([(todo_line, todo_line)] if todo_line else [])
+                (f"[{FAINT}]ctrl+p[/] [{MUTED}]model[/]", "ctrl+p model"),
+                (f"[{FAINT}]ctrl+b[/] [{MUTED}]sidebar[/]", "ctrl+b sidebar"),
+                (f"[{FAINT}]/[/] [{MUTED}]commands[/]", "/ commands"),
+                (mode, "mode"),
+                (f"[{MUTED}]ctx {pct}%[/]", f"ctx {pct}%"),
+            ]
             width = max(self.size.width - 4, 20) if self.size.width else 200
             shown, used = [], 0
             for markup, plain in segments:
                 cost = len(plain) + (3 if shown else 0)
                 if used + cost > width:
-                    if not shown:   # even the model name is too long: hard-truncate it
-                        shown.append(plain[:max(width - 1, 1)] + "…")
                     continue
                 shown.append(markup)
                 used += cost
-            self.update(" " + " · ".join(shown))
-        except Exception:  # noqa: BLE001 status line must never crash the app
+            self.update(" " + f"  [{FAINT}]·[/]  ".join(shown))
+        except Exception:  # noqa: BLE001 - the footer must never crash the app
             self.update(" hexiel")
 
     def on_resize(self) -> None:
         self.refresh_text()
+
+
+class Sidebar(Vertical):
+    """A quiet opencode-style rail: where you are, what is answering, how full the context is."""
+
+    def __init__(self) -> None:
+        super().__init__(id="sidebar")
+        self._body = Static("", id="sidebar-body")
+        self._keys = Static(
+            f"[{FAINT}]ctrl+p[/]  [{MUTED}]model[/]\n"
+            f"[{FAINT}]ctrl+b[/]  [{MUTED}]sidebar[/]\n"
+            f"[{FAINT}]ctrl+l[/]  [{MUTED}]clear[/]\n"
+            f"[{FAINT}]ctrl+c[/]  [{MUTED}]stop / quit[/]\n"
+            f"[{FAINT}]/[/]       [{MUTED}]commands[/]",
+            id="sidebar-keys")
+
+    def compose(self) -> ComposeResult:
+        yield self._body
+        yield self._keys
+
+    def on_mount(self) -> None:
+        self.refresh_text()
+
+    def refresh_text(self) -> None:
+        session = getattr(self.app, "session", None)
+        if session is None:
+            return
+        from . import __version__
+        from . import todo as todo_mod
+        home = str(Path.home())
+        cwd = session.cwd
+        path = "~" + cwd[len(home):] if cwd == home or cwd.startswith(home + "/") else cwd
+        project = Path(cwd).name or cwd
+        branch = _git_branch(cwd)
+        model = session.active_model or session.model_config.model
+        provider = session.model_config.provider
+        window = session.model_config.context_window
+        tokens_now = session.tokens_now()
+        pct = 100 * tokens_now // max(window, 1)
+        compact_at = int(100 * session.settings.compact_threshold)
+        if getattr(session, "plan_mode", False):
+            mode = f"[b {YELLOW}]plan mode[/]"
+        elif not session.auto_approve:
+            mode = f"[{TEXT}]asks before writes[/]"
+        elif session.guard_commits:
+            mode = f"[{TEXT}]auto-approve[/] [{MUTED}]except commits[/]"
+        else:
+            mode = f"[b {RED}]auto-approve all[/]"
+        todo_line = todo_mod.summary_line(cwd)
+        inner = SIDEBAR_WIDTH - 4
+
+        rows = [
+            f"[{GOLD}]✦[/] [b {ACCENT}]hexiel[/]  [{FAINT}]v{__version__}[/]",
+            "",
+            f"[{FAINT}]PROJECT[/]",
+            f"[b {TEXT}]{fit(project, inner)}[/]",
+            f"[{MUTED}]{fit(path, inner)}[/]",
+        ]
+        if branch:
+            rows.append(f"[{MUTED}]⎇ {fit(branch, inner - 2)}[/]")
+        rows += [
+            "",
+            f"[{FAINT}]MODEL[/]",
+            f"[b {TEXT}]{fit(model, inner)}[/]",
+            f"[{MUTED}]{fit(f'{provider} · {fmt_tokens(window)} ctx', inner)}[/]",
+            "",
+            f"[{FAINT}]CONTEXT[/]",
+            f"{meter(pct, inner)} [{MUTED}]{pct:>3}%[/]",
+            f"[{MUTED}]{fmt_tokens(tokens_now)} / {fmt_tokens(window)} · compacts {compact_at}%[/]",
+            "",
+            f"[{FAINT}]SESSION[/]",
+            mode,
+        ]
+        if todo_line:
+            rows.append(f"[{MUTED}]{fit(todo_line, inner)}[/]")
+        self._body.update("\n".join(rows))
 
 
 from .commands import BUILTIN as COMMANDS  # noqa: E402 - shared with the web UI
@@ -863,25 +1054,21 @@ class PromptInput(TextArea):
 
 
 class ActivityLine(Static):
-    """Bottom-left "hexiel is working" line: spinner + shimmering themed verb +
-    elapsed time + tokens. Hidden while idle."""
+    """Bottom-left "hexiel is working" line: spinner + verb + elapsed time + tokens. Hidden while idle."""
 
     FRAMES = "·✢✳✶✻✽✻✶✳✢"
-    WAITING = ["Discerning", "Pondering", "Contemplating", "Shepherding your code",
-               "Lighting the lamp", "Gathering wisdom", "Untangling the spaghetti",
-               "Counting loaves and fishes", "Herding semicolons", "Polishing halos",
-               "Consulting the scrolls", "Parting the sea of brackets", "Tending the vineyard",
-               "Refactoring the ark", "Seeking understanding", "Keeping watch"]
-    TOOLS = {"grep": "Searching the scrolls", "glob": "Searching the scrolls",
-             "list": "Surveying the land", "map": "Surveying the land",
-             "read": "Reading the scrolls", "file_info": "Examining",
-             "write": "Inscribing", "edit": "Inscribing",
+    WAITING = ["Thinking", "Working", "Planning", "Reading the codebase",
+               "Preparing changes", "Reviewing context", "Checking the details"]
+    TOOLS = {"grep": "Searching", "glob": "Searching",
+             "list": "Surveying", "map": "Surveying",
+             "read": "Reading", "file_info": "Inspecting",
+             "write": "Writing", "edit": "Editing",
              "bash": "Running", "powershell": "Running",
-             "test": "Testing the spirits", "container": "Herding containers",
-             "web_search": "Seeking far and wide", "web_fetch": "Reading the web",
-             "view_image": "Beholding", "image_edit": "Restoring the image",
-             "memory": "Remembering", "todo": "Keeping the ledger",
-             "gitlab_mr": "Preparing the offering", "skill": "Drawing on a gift"}
+             "test": "Testing", "container": "Running containers",
+             "web_search": "Searching the web", "web_fetch": "Fetching the web",
+             "view_image": "Looking at an image", "image_edit": "Editing an image",
+             "memory": "Remembering", "todo": "Updating the plan",
+             "gitlab_mr": "Preparing the merge request", "skill": "Loading a skill"}
 
     def __init__(self) -> None:
         super().__init__("", id="activity")
@@ -914,8 +1101,8 @@ class ActivityLine(Static):
             return
         if phase == self._phase and phase != "tool":
             return
-        verb = {"thinking": "Pondering deeply", "writing": "Scribing",
-                "approval": "Awaiting your blessing", "compacting": "Condensing the chronicles",
+        verb = {"thinking": "Thinking", "writing": "Writing",
+                "approval": "Waiting for your approval", "compacting": "Compacting context",
                 "tool": self.TOOLS.get(detail, f"Running {detail}"),
                 "waiting": random.choice(self.WAITING)}.get(phase, "Working")
         self._set(phase, verb)
@@ -925,7 +1112,7 @@ class ActivityLine(Static):
 
     def reading(self, tokens: int) -> None:
         if self.display:
-            self._set("reading", f"Model is reading ~{tokens // 1000}k tokens of context")
+            self._set("reading", f"Reading ~{tokens // 1000}k tokens of context")
 
     def countdown(self, seconds: float) -> None:
         """Rate limited: show the time until auto-resume instead of a verb."""
@@ -946,28 +1133,23 @@ class ActivityLine(Static):
             h, rem = divmod(left, 3600)
             clock = (f"{h}h{rem // 60:02d}m" if h else f"{rem // 60}m{rem % 60:02d}s")
             at = time.strftime("%H:%M", time.localtime(getattr(self, "_deadline", now)))
-            self.update(f"[{GOLD}]⏸[/] [{GOLD}]Rate limited — resuming automatically in {clock}[/] "
-                        f"[dim](at {at} · [b]ctrl+c[/b] to stop)[/dim]")
+            self.update(f"[{YELLOW}]⏸[/] [{TEXT}]Rate limited[/]  [{MUTED}]resuming in {clock} "
+                        f"(at {at}) ·[/] [b]ctrl+c[/b] [{MUTED}]to stop[/]")
             return
         # long waits rotate the verb so the line visibly stays alive
         if self._phase == "waiting" and now - self._verb_since > 8:
             self._set("waiting", random.choice([v for v in self.WAITING if v != self._verb]))
         spin = self.FRAMES[self._frame % len(self.FRAMES)]
-        # shimmer: a bright band sweeps across the verb
-        verb = self._verb + "…"
-        band = self._frame % (len(verb) + 8) - 4
-        shimmer = "".join(
-            f"[b {ACCENT}]{ch}[/]" if abs(i - band) <= 1 else f"[{ACCENT}]{ch}[/]" if abs(i - band) <= 3 else ch
-            for i, ch in enumerate(verb.replace("[", "(")))
         bits = [f"{int(now - self._started)}s"]
         if self._chars:
             bits.append(f"~{self._chars // 4} tokens")
         bits.append("[b]ctrl+c[/b] to stop" if self._phase != "approval" else "[b]y[/b]/[b]a[/b]/[b]n[/b]")
-        self.update(f"[{ACCENT}]{spin}[/] [{GOLD}]{shimmer}[/] [dim]({' · '.join(bits)})[/dim]")
+        self.update(f"[{GOLD}]{spin}[/] [b {TEXT}]{self._verb}[/]  "
+                    f"[{MUTED}]({' · '.join(bits)})[/]")
 
 
 class Banner(Static):
-    """Pinned header: version + current project dir, fitted to the window width."""
+    """Pinned top bar: wordmark, project, branch, and any active mode."""
 
     def __init__(self, cwd: str) -> None:
         super().__init__("", id="banner")
@@ -978,6 +1160,7 @@ class Banner(Static):
 
     def retarget(self, cwd: str, mode: str = "") -> None:
         home = str(Path.home())
+        self._cwd = cwd
         self._path = "~" + cwd[len(home):] if cwd == home or cwd.startswith(home + "/") else cwd
         self._project = Path(cwd).name or cwd
         self._mode = mode
@@ -992,17 +1175,35 @@ class Banner(Static):
 
     def refresh_text(self) -> None:
         width = max(self.size.width - 4, 20) if self.size.width else 200
-        head = f"hexiel v{self._version}" + (f"  {self._mode}" if self._mode else "")
-        tagline = " — your codebase's guardian angel"
-        # "~/code/" dim + "myproj" bold; the parent part elides from the left first
-        parent = self._path[:len(self._path) - len(self._project)]
-        room = width - len(head) - len(self._project) - 5
-        if len(parent) > room:
-            parent = "…" + parent[-max(room - 1, 0):] if room > 4 else ""
-        line = f"[b]{head}[/b]  ▸ [dim]{parent}[/dim][b]{self._project}[/b]"
-        if len(head) + len(parent) + len(self._project) + 5 + len(tagline) <= width:
-            line += f"[dim]{tagline}[/dim]"
-        self.update(line)
+        branch = _git_branch(self._cwd)
+        left = (f"[b {ACCENT}]◆[/] [b {TEXT}]hexiel[/] [{FAINT}]v{self._version}[/]"
+                f"   [{FAINT}]│[/]   [b {TEXT}]{fit(self._project, 28)}[/]")
+        tail = f"   [{FAINT}]│[/]   [{MUTED}]⎇ {fit(branch, 22)}[/]" if branch else ""
+        if self._mode:
+            tail += f"   {self._mode}"
+        parent = self._path[:max(len(self._path) - len(self._project), 0)]
+        if len(parent) > 1 and len(left) + len(parent) + len(tail) + 8 <= width:
+            left += f"  [{FAINT}]{fit(parent, width // 2)}[/]"
+        self.update(left + tail)
+
+
+class Welcome(Static):
+    """A compact, quiet welcome card shown when the conversation is empty."""
+
+    def __init__(self, cwd: str) -> None:
+        branch = _git_branch(cwd)
+        project = Path(cwd).name or cwd
+        hint = f"[{MUTED}]⎇ {branch}[/]   " if branch else ""
+        super().__init__(
+            f"[b {ACCENT}]hexiel[/]  [{FAINT}]·[/]  [{MUTED}]your codebase's guardian angel[/]\n"
+            f"{hint}[{MUTED}]{fit(cwd, 78)}[/]\n\n"
+            f"[{TEXT}]Ask a question, describe a change, or type[/] [b {ACCENT}]/[/] "
+            f"[{TEXT}]for commands.[/]\n\n"
+            f"[{MUTED}]  ❯  explain how this project is structured[/]\n"
+            f"[{MUTED}]  ❯  fix the failing tests[/]\n"
+            f"[{MUTED}]  ❯  refactor src/{project}.py[/]\n\n"
+            f"[{FAINT}]Enter sends · Shift+Enter adds a line · @file.png attaches an image[/]",
+            id="welcome")
 
 
 class HexielTUI(App):
@@ -1011,51 +1212,83 @@ class HexielTUI(App):
         Binding("ctrl+c", "cancel", "Cancel turn / quit", priority=True),
         Binding("ctrl+l", "clear_chat", "Clear chat", priority=True),
         Binding("ctrl+p", "pick_model", "Switch model", priority=True),
+        Binding("ctrl+b", "toggle_sidebar", "Toggle sidebar", priority=True, show=False),
     ]
     CSS = """
-    Screen { layout: vertical; }
-    /* plain vertical stack (no docking): docked widgets overlap in Textual,
-       which hid the input's bottom border behind the status line */
-    #banner { width: 100%; height: 1; padding: 0 2; background: $surface; }
-    #chat { height: 1fr; padding: 0 2; }
-    #activity { height: 1; padding: 0 2; }
-    #logo { margin: 1 0 0 0; }
-    #cmd-menu { height: auto; max-height: 12; margin: 0 1; border: round $accent 50%;
-                background: $surface; }
-    #input-row { height: auto; padding: 0 1; }
-    #prompt { width: 1fr; height: 3; border: round $accent; background: $surface; }
-    StatusLine { width: 100%; height: 1; padding: 0 2; color: $text-muted; background: $surface; }
-    .user-msg { color: $accent; margin: 1 0 0 0; }
-    .attachment { color: $text-muted; }
-    .attachment:hover { color: $accent; text-style: underline; }
+    Screen { layout: vertical; background: #0e1014; color: #d6dae2; }
+    Button {
+        border: round #2b3040;
+        background: #171b24;
+        color: #d6dae2;
+        min-width: 12;
+    }
+    Button:hover { border: round #c8b6ff 70%; background: #1d2230; }
+    Button.-primary { border: round #c8b6ff; background: #c8b6ff; color: #0e1014; text-style: bold; }
+    Button.-primary:hover { background: #d8ccff; }
+    Button.-error { border: round #e06c75; background: transparent; color: #e06c75; }
+    Button.-error:hover { background: #2a171c; }
+
+    /* ---------------------------------------------------------------- shell */
+    #body { height: 1fr; }
+    #main { width: 1fr; height: 100%; }
+    #sidebar { width: 31; height: 100%; padding: 1 1 0 1;
+               background: #11141a; border-right: solid #232834; }
+    #sidebar-body { height: 1fr; }
+    #sidebar-keys { height: auto; padding: 1 0 0 0; border-top: solid #232834; margin-top: 1; }
+
+    #banner { width: 100%; height: 2; padding: 0 2; content-align: left middle;
+              background: #11141a; border-bottom: solid #232834; }
+    #chat { height: 1fr; padding: 1 2 0 2; scrollbar-size-vertical: 1; }
+    #activity { height: 1; padding: 0 2; margin: 0 0 1 0; }
+
+    /* ---------------------------------------------------------------- messages */
+    .user-msg { color: #e7eaf1; background: #171b24; border-left: thick #7d8cff;
+                padding: 0 1; margin: 1 0 0 0; }
+    .resp-header { color: #7d8595; margin: 1 0 0 1; }
+    .assistant-msg { margin: 0 0 0 2; background: transparent; }
+    ToolLine { color: #b7bfcd; background: transparent; margin: 0 0 0 1; }
+    .note { color: #7d8595; text-style: italic; margin: 0 0 0 2; }
+    .welcome { margin: 1 0 1 1; padding: 0 1; border-left: thick #2b3040; }
+    .attachment { color: #7d8595; margin: 0 0 0 2; }
+    .attachment:hover { color: #c8b6ff; text-style: underline; }
     .thumb { width: auto; max-width: 48; height: auto; max-height: 14; margin: 0 0 0 2; }
-    .assistant-msg { margin: 0 0 0 0; }
-    ToolLine { color: $secondary-lighten-2; background: transparent; }
-    .note { color: $text-muted; text-style: italic; }
-    .weather { color: $accent; text-style: none; border-left: thick $accent; padding: 0 1; margin: 1 0; }
+    .weather { color: #c8b6ff; text-style: none; border-left: thick #c8b6ff;
+               padding: 0 1; margin: 1 0 1 1; }
+    Markdown { background: transparent; }
+
+    /* ---------------------------------------------------------------- prompt */
+    #cmd-menu { height: auto; max-height: 12; margin: 0 2 0 2; border: round #2b3040;
+                background: #141821; }
+    #input-row { height: auto; padding: 0 2; }
+    #prompt { width: 1fr; height: 3; border: round #2b3040; background: #151922; padding: 0 1; }
+    #prompt:focus { border: round #c8b6ff; }
+    StatusLine { width: 100%; height: 2; padding: 0 2; content-align: left middle;
+                 color: #7d8595; background: #11141a; border-top: solid #232834; }
+
+    /* ---------------------------------------------------------------- modals */
+    ScopeScreen, ConfigScreen, RestartScreen, ModelPicker, ReviewScreen { align: center middle; }
     #scope-box { width: 100%; max-width: 80; height: auto; margin: 2 2; padding: 1 2;
-                 border: heavy $accent; background: $surface; }
+                 border: round #c8b6ff; background: #141821; }
     #scope-buttons { height: auto; padding: 1 0 0 0; }
     #scope-buttons Button { margin: 0 1 0 0; }
-    ScopeScreen, ConfigScreen, RestartScreen, ModelPicker { align: center middle; }
-    #picker-box { width: 100%; max-width: 100; height: 80%; padding: 1 2; border: heavy $accent; background: $surface; }
-    #picker-list { height: 1fr; border: round $accent 50%; }
+    #picker-box { width: 100%; max-width: 100; height: 80%; padding: 1 2;
+                  border: round #c8b6ff; background: #141821; }
+    #picker-list { height: 1fr; border: round #2b3040 60%; background: #11141a; }
     #picker-status { height: auto; padding: 1 0 0 0; }
     #config-box { width: 100%; max-width: 110; height: auto; max-height: 90%; padding: 1 2;
-                  border: heavy $accent; background: $surface; }
-    #config-table { height: auto; max-height: 16; }
-    #config-options { height: auto; max-height: 10; border: round $accent; }
+                  border: round #c8b6ff; background: #141821; }
+    #config-table { height: auto; max-height: 16; background: #11141a; }
+    #config-options { height: auto; max-height: 10; border: round #2b3040; background: #11141a; }
     #config-help { height: auto; padding: 1 0 0 0; }
-    ReviewScreen { align: center middle; }
-    #review-box { width: 96%; height: 92%; padding: 1 2; border: heavy $accent; background: $surface; }
+    #review-box { width: 96%; height: 92%; padding: 1 2; border: round #c8b6ff; background: #141821; }
     #review-panes { height: 1fr; }
-    #review-files { width: 38%; height: 100%; border: round $accent 50%; }
-    #review-diff { width: 1fr; height: 100%; border: round $accent 50%; padding: 0 1; }
+    #review-files { width: 38%; height: 100%; border: round #2b3040 60%; background: #11141a; }
+    #review-diff { width: 1fr; height: 100%; border: round #2b3040 60%; padding: 0 1; background: #11141a; }
     #review-buttons { height: auto; padding: 1 0 0 0; }
     #review-buttons Button { margin: 0 1 0 0; }
     #approve-box { width: 100%; max-width: 90; margin: 1 2; margin-top: 1; padding: 1 2;
-                   border: heavy $accent; background: $surface; }
-    #approve-args { height: auto; max-height: 12; padding: 1 0; color: $text; }
+                   border: round #c8b6ff; background: #141821; }
+    #approve-args { height: auto; max-height: 12; padding: 1 0; color: #d6dae2; }
     #approve-scroll { height: auto; max-height: 20; }
     #approve-scroll #approve-args { max-height: 400; }
     #approve-buttons { height: auto; padding: 1 0 0 0; align: center middle; }
@@ -1063,52 +1296,79 @@ class HexielTUI(App):
 
     def __init__(self, session, skills, slash_skills) -> None:
         super().__init__()
+        self.register_theme(HEXIEL_THEME)
+        self.theme = "hexiel"
         self.session = session
         session.dismiss_approval = self._dismiss_approval
         self.skills = skills
         self.slash_skills = slash_skills   # lowercase name -> skill
         self._thread = None
         self._stream_wid = None
+        self._stream_header = None
         self._stream_text = ""
         self._last_flush = 0.0
         self._think_chars = 0       # reasoning chars this step (summarized in chat)
         self._tool_widgets: dict[str, ToolLine] = {}
         self._heal = None           # active self-heal: original session, workspace, incidents
         self._heal_pending = None   # a reviewed-later fix waiting for /heal review
+        self._sidebar_forced: bool | None = None   # Ctrl+B overrides the responsive default
 
     # ---------------------------------------------------------------- layout
 
     def compose(self) -> ComposeResult:
-        yield Banner(self.session.cwd)
-        with VerticalScroll(id="chat"):
-            pass
-        yield ActivityLine()
-        yield CommandMenu()
-        with Horizontal(id="input-row"):
-            yield PromptInput(placeholder="Ask hexiel…  (type / for commands)", id="prompt")
-        yield StatusLine(self.session)
+        with Horizontal(id="body"):
+            yield Sidebar()
+            with Vertical(id="main"):
+                yield Banner(self.session.cwd)
+                with VerticalScroll(id="chat"):
+                    pass
+                yield ActivityLine()
+                yield CommandMenu()
+                with Horizontal(id="input-row"):
+                    yield PromptInput(placeholder="Ask hexiel…  (type / for commands)", id="prompt")
+                yield StatusLine(self.session)
 
     def on_mount(self) -> None:
         self.status = self.query_one(StatusLine)
+        self.sidebar = self.query_one(Sidebar)
         self.activity = self.query_one(ActivityLine)
         self.status.refresh_text()
+        self.sidebar.refresh_text()
         self.query_one("#prompt", PromptInput).focus()
         self.set_interval(1.0, self._tick)
-        from .brand import LOGO_WIDTH, logo_text, small_logo_text
+        self._apply_sidebar_visibility()
         chat = self.query_one("#chat", VerticalScroll)
-        wide = self.size.width >= LOGO_WIDTH + 6
-        chat.mount(Static(logo_text() if wide else small_logo_text(), id="logo"))
-        chat.mount(Label("Type your first request — / opens the command menu, "
-                         "@file.png attaches a screenshot.", classes="note"))
+        chat.mount(Welcome(self.session.cwd))
         self.replay_history()
         self._refresh_status()
         self._inbox_notice()
         if not os.environ.get("HEXIEL_NO_UPDATE_CHECK"):
             threading.Thread(target=self._check_update, daemon=True).start()
 
+    def _apply_sidebar_visibility(self) -> None:
+        wanted = self._sidebar_forced
+        if wanted is None:
+            wanted = self.size.width >= SIDEBAR_MIN_SCREEN
+        self.query_one(Sidebar).display = wanted
+
+    def on_resize(self) -> None:
+        self._apply_sidebar_visibility()
+
+    def action_toggle_sidebar(self) -> None:
+        sidebar = self.query_one(Sidebar)
+        self._sidebar_forced = not sidebar.display
+        sidebar.display = self._sidebar_forced
+        if self._sidebar_forced:
+            sidebar.refresh_text()
+
     def replay_history(self) -> None:
         """Render an existing conversation (e.g. after -c resume) into the chat."""
         chat = self.query_one("#chat", VerticalScroll)
+        # A resumed conversation is no longer empty — drop the welcome card.
+        for child in list(chat.children):
+            if getattr(child, "id", None) == "welcome" or isinstance(child, Welcome):
+                child.remove()
+                break
         pending: dict[str, ToolLine] = {}
         for msg in self.session.messages:
             role = msg["role"]
@@ -1117,12 +1377,13 @@ class HexielTUI(App):
                 if body.startswith("<auto-compaction>"):
                     chat.mount(Static("— earlier history auto-compacted —", classes="note"))
                 else:
-                    self.add_user_msg(body[:2000])
+                    self.add_user_msg(body[:2000], stamp(msg.get("ts")))
             elif role == "assistant":
                 # the model's text precedes the tool calls it then makes
                 text = msg.get("content", "")
                 if text.strip():
-                    chat.mount(Markdown(text))
+                    chat.mount(ResponseHeader(stamp(msg.get("ts"))))
+                    chat.mount(Markdown(text, classes="assistant-msg"))
                 for call in msg.get("tool_calls", []):
                     wid = ToolLine(classes="tool")
                     pending[call["id"]] = wid
@@ -1198,9 +1459,17 @@ class HexielTUI(App):
         text = self.maybe_command(text)
         if not text:
             return
+        self.remove_welcome()
         self.add_user_msg(text)
         self.show_attachments(text)
         self._start_turn(text)
+
+    def remove_welcome(self) -> None:
+        chat = self.query_one("#chat", VerticalScroll)
+        for child in list(chat.children):
+            if getattr(child, "id", None) == "welcome" or isinstance(child, Welcome):
+                child.remove()
+                break
 
     def show_attachments(self, text: str) -> None:
         """Images and PDFs named in a message appear under it, so you can see what you attached."""
@@ -1633,7 +1902,8 @@ class HexielTUI(App):
             self.activity.phase("thinking")
             return
         if self._think_chars and event in ("text", "tool_call", "turn_end"):
-            chat.mount(Static(f"✓ thought for ~{self._think_chars // 4} tokens", classes="note"))
+            chat.mount(Static(f"[{FAINT}]✻[/] [{MUTED}]thought for ~{self._think_chars // 4} tokens[/]",
+                              classes="note"))
             self._think_chars = 0
         if event == "request":
             tokens = payload[0] if payload else 0
@@ -1644,7 +1914,7 @@ class HexielTUI(App):
             self.add_note("the model returned an empty reply — nudging it to continue")
             return
         if event == "model_active":
-            self.status.refresh_text()
+            self._refresh_status()
             return
         if event == "graphic":
             card = payload[0] if payload else {}
@@ -1710,7 +1980,9 @@ class HexielTUI(App):
             if self._stream_wid is None:
                 # construct with the text: an update() issued before the mount
                 # completes is silently dropped by Textual
-                self._stream_wid = Markdown(self._stream_text)
+                self._stream_header = ResponseHeader(now_stamp())
+                self._stream_wid = Markdown(self._stream_text, classes="assistant-msg")
+                chat.mount(self._stream_header)
                 chat.mount(self._stream_wid)
                 chat.scroll_end(animate=False)
                 self._last_flush = now
@@ -1768,24 +2040,34 @@ class HexielTUI(App):
         chat.scroll_end(animate=False)
 
     def finalize_stream(self, placeholder: bool = True) -> None:
+        header = self._stream_header
         if self._stream_wid is not None:
-            wid, text = self._stream_wid, self._stream_text or ("*(empty response)*" if placeholder else "")
+            wid, text = self._stream_wid, self._stream_text
+            if not text:
+                if placeholder:
+                    text = "*(empty response)*"
+                elif header is not None:
+                    header.display = False
             if wid.is_mounted:
                 wid.update(text)
             else:   # still mounting: an immediate update would be dropped
                 self.call_after_refresh(wid.update, text)
             self._stream_wid = None
+            self._stream_header = None
             self._stream_text = ""
-        self.status.refresh_text()
+        elif header is not None:
+            header.display = False
+            self._stream_header = None
+        self._refresh_status()
 
-    def add_user_msg(self, text: str) -> None:
+    def add_user_msg(self, text: str, ts: str | None = None) -> None:
         chat = self.query_one("#chat", VerticalScroll)
-        chat.mount(Static(f"[bold]❯[/bold] {text.replace('[', chr(92) + '[')}", classes="user-msg"))
+        chat.mount(UserMessage(text, now_stamp() if ts is None else ts))
         chat.scroll_end(animate=False)
 
     def add_note(self, text: str) -> None:
         chat = self.query_one("#chat", VerticalScroll)
-        chat.mount(Static(safe_markup(text), classes="note"))
+        chat.mount(Static(f"[{FAINT}]·[/] {safe_markup(text)}", classes="note"))
         chat.scroll_end(animate=False)
 
     def _tick(self) -> None:
@@ -1819,6 +2101,10 @@ class HexielTUI(App):
 
     def _refresh_status(self) -> None:
         self.query_one(StatusLine).refresh_text()
+        try:
+            self.query_one(Sidebar).refresh_text()
+        except Exception:
+            pass
 
     # approvals from the agent thread ------------------------------------------
 

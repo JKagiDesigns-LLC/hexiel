@@ -371,7 +371,8 @@ class Session:
             return
         images, notes = attach_images(user_text, self.cwd)
         entry = {"role": "user", "content": "\n".join(
-            [user_text, *notes, *([PLAN_MODE_NOTE] if self.plan_mode else [])])}
+            [user_text, *notes, *([PLAN_MODE_NOTE] if self.plan_mode else [])]),
+            "ts": time.time()}
         if images:
             entry["images"] = images
         from . import media as media_mod
@@ -395,6 +396,7 @@ class Session:
         self.messages = [m for m in self.messages if not _is_empty_reply(m)]
         self.messages.append(entry)
         self.save()
+        self.on_event("turn_start")          # views that join mid-turn (a reconnecting browser) catch up from here
         from . import router as router_mod
         mc, handled = router_mod.route_turn(self, user_text, delegate_mode, cloud_turn)
         if handled:
@@ -443,6 +445,7 @@ class Session:
                     else:
                         self.on_event("turn_end", aborted=True)
                     return
+                assistant.setdefault("ts", time.time())
                 self.messages.append(assistant)
                 self.save()
                 calls = assistant.get("tool_calls") or []

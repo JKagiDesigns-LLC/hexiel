@@ -190,7 +190,7 @@ def test_tui_auto_command_cycles_and_the_status_line_says_which_mode(tmp_path):
             return seen
     seen = asyncio.run(go())
     assert [m for m, _ in seen] == ["except-commits", "all", "off", "except-commits", "all", "off"]
-    assert "asks before commits" in seen[0][1] and "AUTO-APPROVE ALL" in seen[1][1] and "approving writes" in seen[2][1]
+    assert "asks before commits" in seen[0][1] and "AUTO-APPROVE ALL" in seen[1][1] and "asks before writes" in seen[2][1]
 
 
 def test_delegated_workers_and_plan_checks_inherit_the_guard(tmp_path):

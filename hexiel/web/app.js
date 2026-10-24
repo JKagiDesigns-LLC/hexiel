@@ -220,16 +220,39 @@ function updateSendButton() {
 // ---------------------------------------------------------------- websocket
 
 function connect() {
+  if (ws && ws.readyState <= 1) return;               // already open or opening
   const proto = location.protocol === "https:" ? "wss" : "ws";
-  ws = new WebSocket(`${proto}://${location.host}${location.pathname.replace(/[^/]*$/, "")}ws`);
+  const sock = new WebSocket(`${proto}://${location.host}${location.pathname.replace(/[^/]*$/, "")}ws`);
+  ws = sock;
   // (ws.send passed unbound throws "Illegal invocation", which used to drop anything typed before the socket opened)
-  ws.onopen = () => { wsQueue.splice(0).forEach((m) => ws.send(m)); };
-  ws.onmessage = (ev) => {
-    const data = JSON.parse(ev.data);
+  sock.onopen = () => { wsQueue.splice(0).forEach((m) => sock.send(m)); };
+  sock.onmessage = (ev) => handleFrame(JSON.parse(ev.data));
+  sock.onclose = () => { if (sock === ws) setTimeout(connect, 1500); };
+}
+
+// A phone or a background tab can leave the socket dead without telling the page: when the page is looked at
+// again, reconnect now (the server then replays whatever happened meanwhile) instead of waiting for a timeout.
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState !== "visible") return;
+  if (ws && ws.readyState === 1) {
+    try { ws.send(JSON.stringify({ t: "ping" })); } catch { ws.close(); }
+    setTimeout(() => { if (ws && ws.readyState > 1) connect(); }, 300);
+  } else {
+    if (ws) { const old = ws; ws = null; old.onclose = null; try { old.close(); } catch {} }
+    connect();
+  }
+});
+window.addEventListener("online", () => { if (!ws || ws.readyState > 1) { ws = null; connect(); } });
+
+function handleFrame(data) {
+  {
     switch (data.t) {
       case "history":
         renderHistory(data.items);
         applyStatus(data.status);
+        $("#modal-back").classList.remove("show");                      // answered elsewhere while away
+        for (const frame of data.replay || []) handleFrame(frame);     // what happened while this page was away
+        for (const frame of data.approvals || []) handleFrame(frame);  // a prompt still waiting for an answer
         break;
       case "status": applyStatus(data.status); break;
       case "text": appendText(data.delta); break;
@@ -266,8 +289,7 @@ function connect() {
       case "approval": showApproval(data); break;
       case "approval_done": hideApproval(data); break;
     }
-  };
-  ws.onclose = () => { setTimeout(connect, 1500); };
+  }
 }
 
 function sendWs(obj) {

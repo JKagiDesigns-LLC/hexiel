@@ -227,13 +227,33 @@ function connect() {
   // (ws.send passed unbound throws "Illegal invocation", which used to drop anything typed before the socket opened)
   sock.onopen = () => { wsQueue.splice(0).forEach((m) => sock.send(m)); };
   sock.onmessage = (ev) => handleFrame(JSON.parse(ev.data));
-  sock.onclose = () => { if (sock === ws) setTimeout(connect, 1500); };
+  sock.onclose = (ev) => {
+    if (sock !== ws) return;
+    if (ev.code === 4001) return sessionEnded();       // Hexiel Remote: the chat on the machine ended
+    setTimeout(connect, 1500);
+  };
+}
+
+let ended = false;
+function sessionEnded() {
+  if (ended) return;
+  ended = true;
+  ws = null;
+  busy = false; updateSendButton();
+  const div = document.createElement("div");
+  div.className = "note incident";
+  div.append("This chat's remote session has ended — it was closed on the machine, or remote control was turned off. ");
+  const back = document.createElement("a");
+  back.href = "/"; back.textContent = "Back to your sessions";
+  div.append(back);
+  $("#chat").appendChild(div);
+  $("#chat").scrollTop = $("#chat").scrollHeight;
 }
 
 // A phone or a background tab can leave the socket dead without telling the page: when the page is looked at
 // again, reconnect now (the server then replays whatever happened meanwhile) instead of waiting for a timeout.
 document.addEventListener("visibilitychange", () => {
-  if (document.visibilityState !== "visible") return;
+  if (document.visibilityState !== "visible" || ended) return;
   if (ws && ws.readyState === 1) {
     try { ws.send(JSON.stringify({ t: "ping" })); } catch { ws.close(); }
     setTimeout(() => { if (ws && ws.readyState > 1) connect(); }, 300);
@@ -242,7 +262,7 @@ document.addEventListener("visibilitychange", () => {
     connect();
   }
 });
-window.addEventListener("online", () => { if (!ws || ws.readyState > 1) { ws = null; connect(); } });
+window.addEventListener("online", () => { if (!ended && (!ws || ws.readyState > 1)) { ws = null; connect(); } });
 
 function handleFrame(data) {
   {

@@ -1644,7 +1644,7 @@ class HexielTUI(App):
                       + "\n(changes made by shell commands aren't tracked)")
 
     def cmd_remote_control(self, arg: str) -> None:
-        """/remote-control [off|status] — drive this same chat from remote.hexiel.tech."""
+        """/remote-control [on|off|status] — drive this same chat from remote.hexiel.tech."""
         from . import remote_control as rc
         word = arg.lower()
         if word in ("off", "stop"):

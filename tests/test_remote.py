@@ -102,15 +102,15 @@ def test_a_second_process_cannot_hold_the_connection(tmp_path, monkeypatch):
 
 def test_systemd_unit_runs_the_remote_client_in_the_background():
     unit = remote.systemd_unit()
-    assert "--serve --remote" in unit and "Restart=always" in unit and "WantedBy=default.target" in unit
-    assert f"--port {remote.SERVICE_PORT}" in unit
+    assert "-m hexiel remote run" in unit and "Restart=always" in unit and "WantedBy=default.target" in unit
+    assert "--serve" not in unit                  # the service runs automations; it is not a chat nobody can see
 
 
 def test_the_service_works_in_its_own_folder_not_the_home_directory(tmp_path, monkeypatch):
     monkeypatch.setenv("HEXIEL_DATA", str(tmp_path))
     work = remote.workspace_dir()
     assert work.is_dir() and work != Path.home() and f"WorkingDirectory={work}" in remote.systemd_unit()
-    assert str(work) == remote._service_command()[-1]
+    assert remote._service_command()[-2:] == ["remote", "run"]
     project = tmp_path / "proj"
     project.mkdir()
     remote.save_config({"device_token": "t", "workdir": str(project)})
@@ -156,7 +156,7 @@ def test_windows_service_is_a_scheduled_task_without_a_console_window(tmp_path, 
     remote.save_config({"relay": "https://r", "device_id": "d", "device_token": "t"})
     remote.install_service()
     create = next(c for c in calls if c[:2] == ["schtasks", "/Create"])
-    assert "ONLOGON" in create and "pythonw.exe" in create[-1] and "--serve --remote" in create[-1]
+    assert "ONLOGON" in create and "pythonw.exe" in create[-1] and "remote run" in create[-1]
     assert ["schtasks", "/Run", "/TN", "HexielRemote"] in calls
 
 

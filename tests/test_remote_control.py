@@ -107,25 +107,7 @@ def test_the_login_endpoint_never_crosses_the_tunnel():
     assert not remote.path_allowed("/api/remote/login")
 
 
-def test_the_service_is_paused_and_restored(tmp_path, monkeypatch):
-    monkeypatch.setenv("HEXIEL_DATA", str(tmp_path))
-    monkeypatch.setattr(remote.sys, "platform", "linux")
-    calls = []
-    monkeypatch.setattr(remote, "service_active", lambda: True)
-    monkeypatch.setattr(remote, "_run", lambda cmd: calls.append(cmd) or remote.subprocess.CompletedProcess(cmd, 0, "", ""))
-    assert remote.pause_service() is True
-    assert remote.pause_file().exists() and ["systemctl", "--user", "stop", "hexiel-remote"] in calls
-    remote.resume_service()
-    assert not remote.pause_file().exists() and ["systemctl", "--user", "start", "hexiel-remote"] in calls
-
-
-def test_nothing_to_pause_when_the_service_is_not_running(tmp_path, monkeypatch):
-    monkeypatch.setenv("HEXIEL_DATA", str(tmp_path))
-    monkeypatch.setattr(remote, "service_active", lambda: False)
-    assert remote.pause_service() is False and not remote.pause_file().exists()
-
-
-def test_a_killed_chat_does_not_leave_the_service_paused(tmp_path, monkeypatch):
+def test_a_service_paused_by_an_older_version_is_brought_back(tmp_path, monkeypatch):
     monkeypatch.setenv("HEXIEL_DATA", str(tmp_path))
     started = []
     monkeypatch.setattr(remote, "resume_service", lambda: started.append(True))
@@ -189,7 +171,7 @@ async def _end_to_end(tmp_path, monkeypatch):
         if typed:
             break
         await asyncio.sleep(0.05)
-    assert remote_control.active(session)
+    assert remote_control.active(session), note
     session.on_event("note", "the terminal did something")          # reaches the browser too
     for _ in range(100):
         if any(m.get("t") == "note" for m in got.get("later", [])):
@@ -242,3 +224,159 @@ def test_the_terminal_chat_runs_a_turn_typed_in_the_browser(tmp_path, monkeypatc
             await pilot.pause()
             return driver.busy()
     assert asyncio.run(go()) is False and started == ["hello from the phone"]
+
+
+async def _fake_relay(handler, status=None):
+    """A relay whose /ws/device runs `handler(request, ws)`, or refuses the handshake with `status`."""
+    from aiohttp import web
+
+    async def device_ws(request):
+        if status:
+            return web.json_response({"error": "nope"}, status=status)
+        ws = web.WebSocketResponse()
+        await ws.prepare(request)
+        await handler(request, ws)
+        return ws
+    app = web.Application()
+    app.router.add_get("/ws/device", device_ws)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "127.0.0.1", 0)
+    await site.start()
+    return runner, f"http://127.0.0.1:{site._server.sockets[0].getsockname()[1]}"
+
+
+class IdleDriver:
+    def __init__(self): self.working = False
+    def busy(self): return self.working
+    def submit(self, text): pass
+
+
+async def _session_lifecycle(tmp_path, monkeypatch):
+    monkeypatch.setenv("HEXIEL_DATA", str(tmp_path / "data"))
+    monkeypatch.setattr(remote.Tunnel, "STATUS_EVERY", 0.05)
+    session = make_session(tmp_path)
+    session.messages = [{"role": "user", "content": "  fix   the flaky test  "}]
+    stopped, seen, driver = [], {}, IdleDriver()
+    session.stop = lambda: stopped.append(True)
+
+    async def relay(request, ws):
+        seen.setdefault("conns", []).append(1)          # End must not be followed by a reconnect
+        seen["query"] = dict(request.query)
+        seen["hello"] = json.loads((await ws.receive()).data)
+        driver.working = True                                  # a turn starts: the page learns of it
+        seen["status"] = json.loads((await ws.receive(timeout=3)).data)
+        await ws.send_json({"t": "stop"})
+        await ws.send_json({"t": "run", "id": "r1", "prompt": "never in a chat"})
+        await asyncio.sleep(0.2)
+        await ws.send_json({"t": "end"})
+        await ws.receive()                                     # the chat lets go
+    runner, url = await _fake_relay(relay)
+    remote.save_config({"relay": url, "device_id": "d", "device_token": "t", "name": "x"})
+    notes = []
+    loop = asyncio.get_running_loop()
+    note = await loop.run_in_executor(None, lambda: remote_control.start(session, driver=driver, say=notes.append))
+    for _ in range(100):
+        if not remote_control.active(session):
+            break
+        await asyncio.sleep(0.05)
+    await runner.cleanup()
+    return note, seen, stopped, notes, session
+
+
+def test_a_chat_is_its_own_session_and_the_account_page_can_stop_and_end_it(tmp_path, monkeypatch):
+    note, seen, stopped, notes, session = asyncio.run(_session_lifecycle(tmp_path, monkeypatch))
+    assert note.startswith("Remote control ON")
+    assert seen["query"]["kind"] == "chat" and len(seen["query"]["session"]) == 16
+    hello = seen["hello"]
+    assert seen["conns"] == [1], seen
+    assert hello["ui"] == "terminal" and hello["title"] == "fix the flaky test" and hello["busy"] is False
+    assert "models" not in hello                               # only the service offers models for automations
+    assert seen["status"] == {"t": "status", "title": "fix the flaky test", "busy": True}
+    assert stopped == [True]                                   # Stop on the page stops the turn here
+    assert not remote_control.active(session) and session.mirrors == []     # End turned remote control off
+    assert any("turned off from remote.hexiel.tech" in n for n in notes)
+
+
+async def _refused(tmp_path, monkeypatch, status):
+    monkeypatch.setenv("HEXIEL_DATA", str(tmp_path / "data"))
+    runner, url = await _fake_relay(None, status=status)
+    remote.save_config({"relay": url, "device_id": "d", "device_token": "t", "name": "x"})
+    session = make_session(tmp_path)
+    note = await asyncio.get_running_loop().run_in_executor(
+        None, lambda: remote_control.start(session, driver=IdleDriver(), say=lambda m: None))
+    await runner.cleanup()
+    return note, remote_control.active(session)
+
+
+def test_the_session_limit_is_reported_and_nothing_stays_on(tmp_path, monkeypatch):
+    note, on = asyncio.run(_refused(tmp_path, monkeypatch, 409))
+    assert "limit" in note and "couldn't start" in note and not on
+
+
+def test_two_chats_on_one_machine_can_both_have_remote_control(tmp_path, monkeypatch):
+    async def go():
+        monkeypatch.setenv("HEXIEL_DATA", str(tmp_path / "data"))
+        sids = []
+
+        async def relay(request, ws):
+            sids.append(request.query["session"])
+            async for _ in ws:
+                pass
+        runner, url = await _fake_relay(relay)
+        remote.save_config({"relay": url, "device_id": "d", "device_token": "t", "name": "x"})
+        a, b = make_session(tmp_path), make_session(tmp_path)
+        loop = asyncio.get_running_loop()
+        notes = [await loop.run_in_executor(None, lambda s=s: remote_control.start(s, driver=IdleDriver())) for s in (a, b)]
+        both = remote_control.active(a) and remote_control.active(b)
+        for s in (a, b):
+            await loop.run_in_executor(None, lambda s=s: remote_control.stop(s))
+        await runner.cleanup()
+        return notes, both, sids
+    notes, both, sids = asyncio.run(go())
+    assert all(n.startswith("Remote control ON") for n in notes) and both
+    assert len(set(sids)) == 2
+
+
+def test_the_background_service_runs_jobs_but_shows_no_chat():
+    async def go():
+        sent = []
+
+        class WS:
+            async def send_json(self, frame): sent.append(frame)
+        tunnel = remote.Tunnel({"relay": "http://r"}, "", "/w", None, kind="runner")
+        await tunnel._handle(WS(), None, {"t": "http", "id": "1", "method": "GET", "path": "/"})
+        await tunnel._handle(WS(), None, {"t": "ws_open", "sid": "s"})
+        return sent
+    sent = asyncio.run(go())
+    assert sent[0]["t"] == "http_res" and sent[0]["status"] == 404
+    assert sent[1] == {"t": "ws_close", "sid": "s"}
+
+
+def test_status_frames_say_when_a_turn_is_running(tmp_path):
+    """The Stop button follows status.busy: it used to read an attribute nothing set, so a phone that
+    reconnected mid-turn only ever showed Send and could not stop the turn."""
+    from hexiel.webui import WebState, status_state
+    session = make_session(tmp_path)
+    driver = IdleDriver()
+    state = WebState(session, driver)
+    assert status_state(session)["busy"] is False
+    driver.working = True
+    assert status_state(session)["busy"] is True and state.catch_up()["status"]["busy"] is True
+    session.remove_mirror(state)
+
+
+def test_services_installed_before_sessions_become_the_automation_runner(tmp_path, monkeypatch):
+    monkeypatch.setenv("HEXIEL_DATA", str(tmp_path))
+    work = remote.workspace_dir()
+    assert remote.is_service_invocation(str(work), remote.SERVICE_PORT)
+    assert not remote.is_service_invocation(str(work), 8777)              # someone's own web console there
+    assert not remote.is_service_invocation(str(tmp_path), remote.SERVICE_PORT)
+
+
+def test_the_session_list_reads_well():
+    text = remote.format_sessions({"max_sessions": 3, "sessions": [
+        {"kind": "chat", "title": "fix it", "ui": "terminal", "cwd": "/p", "busy": True},
+        {"kind": "legacy", "title": ""}]})
+    assert "(1; at most 3 per account)" in text and "fix it — terminal, /p (working)" in text
+    assert "none" in remote.format_sessions({"sessions": []})

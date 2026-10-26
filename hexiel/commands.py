@@ -94,7 +94,7 @@ BUILTIN = [
     ("bug", "<what happened>", "report a bug to the hexiel team (tracked at hexiel.tech/support)"),
     ("feature", "<idea>", "request a feature (tracked at hexiel.tech/support)"),
     ("bugs", "", "your reported bugs and whether they are resolved"),
-    ("remote-control", "[off|status]", "drive this same chat from remote.hexiel.tech (signs you in first if needed)"),
+    ("remote-control", "[on|off|status]", "drive this same chat from remote.hexiel.tech (signs you in first if needed)"),
     ("heal", "[what broke]", "fix a hexiel bug itself, review the diff, share it or keep it"),
     ("setup-gitlab", "<token>", "save a GitLab access token"),
     ("update", "", "install the newest hexiel release and restart"),

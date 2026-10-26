@@ -65,7 +65,7 @@ def status_state(session: Session) -> dict:
                     "compact_at_pct": int(100 * session.settings.compact_threshold)},
         "auto_approve": session.auto_approve,
         "auto_mode": approve_mode(session.auto_approve, session.guard_commits),
-        "busy": getattr(session, "_web_busy", False),
+        "busy": bool(session.busy_probe()) if getattr(session, "busy_probe", None) else False,
         "todo": todo_mod.summary_line(session.cwd) or None,
     }
 
@@ -91,6 +91,8 @@ class WebState:
             session.on_approve = self.ask_approval
         else:
             session.add_mirror(self)
+        # Every status frame says whether a turn is running, so a tab that joins (or reconnects) mid-turn shows Stop.
+        session.busy_probe = self.is_busy
 
     def has_viewers(self) -> bool:
         return bool(self.clients)
@@ -190,6 +192,7 @@ class WebState:
         elif event == "turn_start":
             with self.replay_lock:
                 self.turn_base, self.replay = len(self.session.messages) - 1, []
+            self.broadcast({"t": "status", "status": status_state(self.session)})     # e.g. started in the terminal
         elif event == "turn_end":
             with self.replay_lock:
                 self.turn_base, self.replay = None, []

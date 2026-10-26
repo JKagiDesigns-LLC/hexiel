@@ -152,6 +152,7 @@ class Session:
         self._on_event = on_event or (lambda *_a, **_k: None)
         self._on_approve = on_approve or (lambda *_: "yes")
         self.web_base = ""                       # the local web UI's address, once one is serving this session
+        self.busy_probe = None                   # set by a web view: is a turn running (for its Stop button)
         self.mirrors: list = []                  # other views of this chat (Hexiel Remote): see add_mirror
         self.dismiss_approval = lambda: None     # the primary UI closes its approval prompt when a mirror answers first
         self.id = uuid.uuid4().hex[:12]

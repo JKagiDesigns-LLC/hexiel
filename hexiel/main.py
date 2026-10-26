@@ -256,6 +256,10 @@ def main() -> None:
         raise SystemExit(remote_cli(sys.argv[2:]))
     args = parse_args()
     cwd = str(Path(args.path).resolve())
+    if args.serve and args.remote:
+        from .remote import is_service_invocation, remote_cli
+        if is_service_invocation(cwd, args.port):      # a service installed before 0.4.7: run automations only
+            raise SystemExit(remote_cli(["run"]))
     os.chdir(cwd)
 
     if args.presets:
@@ -286,7 +290,7 @@ def main() -> None:
     if reporter.mode() != "off":
         reporter.in_background(reporter.flush_outbox)      # reports queued while offline
     from . import remote
-    remote.resume_if_orphaned()                           # a killed /remote-control chat left the service paused
+    remote.resume_if_orphaned()                           # a killed /remote-control chat (before 0.4.7) left it paused
     if args.yes:
         session.auto_approve = True
         session.guard_commits = False          # -y is "everything"; use auto_approve = "except-commits" for the careful mode

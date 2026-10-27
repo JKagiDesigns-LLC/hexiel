@@ -95,12 +95,40 @@ def test_the_terminal_can_answer_first_and_the_browser_prompt_closes(tmp_path):
     assert mirror.cancelled
 
 
-def test_a_mirror_with_nobody_watching_is_not_asked(tmp_path):
+def test_a_mirror_with_nobody_watching_yet_still_holds_the_prompt_for_a_phone_that_opens_later(tmp_path):
     s = make_session(tmp_path)
-    s.on_approve = lambda *a: "yes"
-    mirror = Mirror(viewers=False, answer="no")
+    gate = threading.Event()
+    s.on_approve = lambda *a: (gate.wait(5), "no")[1]          # the terminal modal, unanswered
+    mirror = Mirror(viewers=False, answer="yes", delay=0.2)    # the phone connects and answers after the ask
     s.add_mirror(mirror)
-    assert s.on_approve("bash", {}) == "yes" and not mirror.cancelled
+    assert s.on_approve("bash", {}) == "yes"
+    gate.set()
+
+
+def test_a_real_web_mirror_shows_an_approval_to_a_phone_that_joins_after_it_was_asked(tmp_path):
+    from hexiel.webui import WebState
+    s = make_session(tmp_path)
+    gate = threading.Event()
+    s.on_approve = lambda *a: (gate.wait(5), "always")[1]
+    driver = type("Terminal", (), {"busy": lambda self: True})()
+    state = WebState(s, driver=driver)                         # mirrors a terminal chat; no tab connected
+    assert not state.has_viewers()
+    got = []
+    t = threading.Thread(target=lambda: got.append(s.on_approve("bash", {"command": "make test"})))
+    t.start()
+    for _ in range(50):
+        if state.approvals:
+            break
+        time.sleep(0.05)
+    frames = state.catch_up()["approvals"]                     # what a phone opening the chat now is sent
+    assert frames and frames[0]["tool"] == "bash" and "make test" in frames[0]["args"]
+    gate.set(); t.join(5)
+    assert got == ["always"]
+    for _ in range(50):                                        # the phone's prompt closes on its own thread
+        if not state.approvals:
+            break
+        time.sleep(0.05)
+    assert not state.approvals
 
 
 def test_the_login_endpoint_never_crosses_the_tunnel():

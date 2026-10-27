@@ -311,8 +311,9 @@ class Session:
     @property
     def on_approve(self):
         primary, mirrors = self._on_approve, self.mirrors
-        ask = primary if not any(m.has_viewers() for m in mirrors) else \
-            (lambda *args: self._ask_everywhere(primary, list(mirrors), args))
+        # Every mirror is asked, watched or not: it keeps the prompt for a phone that opens the chat (or wakes up)
+        # after the step began. Asking only mirrors with a viewer at that instant left such a phone at "waiting…".
+        ask = primary if not mirrors else (lambda *args: self._ask_everywhere(primary, list(mirrors), args))
         notify = self.remote_notify
         if ask is None or notify is None:
             return ask
@@ -345,8 +346,7 @@ class Session:
             self.mirrors.remove(mirror)
 
     def _ask_everywhere(self, primary, mirrors: list, args: tuple) -> str:
-        """Ask the primary UI and every mirror with a viewer at once; the first answer wins and the
-        other prompts are closed."""
+        """Ask the primary UI and every mirror at once; the first answer wins and the other prompts are closed."""
         answers: "queue.Queue[tuple[object, str]]" = queue.Queue()
 
         def ask(who, fn):
@@ -354,7 +354,7 @@ class Session:
                 answers.put((who, fn(*args)))
             except Exception:  # noqa: BLE001
                 answers.put((who, "no"))
-        askers = [(primary, primary)] + [(m, m.ask_approval) for m in mirrors if m.has_viewers()]
+        askers = [(primary, primary)] + [(m, m.ask_approval) for m in mirrors]
         for who, fn in askers:
             threading.Thread(target=ask, args=(who, fn), daemon=True).start()
         winner, verdict = answers.get()

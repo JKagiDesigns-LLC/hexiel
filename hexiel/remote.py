@@ -67,7 +67,8 @@ def _relay_ws_url(relay: str, sid: str = "", kind: str = "chat") -> str:
 
 
 def chat_title(session) -> str:
-    """What the account page calls a chat: its first request, like a tab title."""
+    """What the account page calls a chat: its first request, like a tab title (a compaction summary
+    standing in for older messages is not a request)."""
     for msg in getattr(session, "messages", None) or []:
         if msg.get("role") != "user":
             continue
@@ -75,9 +76,42 @@ def chat_title(session) -> str:
         if isinstance(content, list):
             content = " ".join(p.get("text", "") for p in content if isinstance(p, dict))
         text = " ".join(str(content or "").split())
-        if text:
+        if text and not text.startswith("<auto-compaction>"):
             return text[:80]
     return ""
+
+
+ASSISTANT_NOTE = """[Assistant mode] You are the user's personal assistant on their own computer, reached from the
+Hexiel phone app — often by voice, and the reply may be read aloud. Answer briefly, in plain spoken sentences:
+no tables, no code blocks and no long lists unless asked. You can look things up, read and search files, run
+commands and use every tool you have; anything that changes files or runs a command still asks for approval,
+which the user answers on the phone."""
+
+
+def assistant_sid(device_id: str) -> str:
+    """The Assistant keeps one session id per machine, so the phone finds it again after a restart."""
+    import hashlib
+    return hashlib.sha256(f"assistant:{device_id}".encode()).hexdigest()[:16]
+
+
+def load_assistant(workdir: str):
+    """The reserved Assistant chat: resumed from last time (its id is kept in remote.json), working in the
+    service's folder, with a note in its instructions that it is being talked to from a phone."""
+    from .main import build_session
+    from .session import Session
+    cfg = load_config()
+    resumed = None
+    sid = cfg.get("assistant_session")
+    if sid:
+        try:
+            resumed = json.loads((home_data_dir() / "sessions" / f"{sid}.json").read_text())
+        except (OSError, ValueError):
+            resumed = None
+    session: Session = build_session(workdir, None, resumed)
+    session.system_prompt += "\n\n" + ASSISTANT_NOTE
+    if not resumed:
+        save_config({**cfg, "assistant_session": session.id})
+    return session
 
 
 def chat_busy(session) -> bool:
@@ -122,7 +156,8 @@ def model_profiles() -> dict:
 
 class Tunnel:
     """One live connection to the relay. kind "chat": one chat, its web UI tunneled to the browser (Stop and End
-    from the account page reach it). kind "runner": the background service, which only runs automations."""
+    from the account page reach it). kind "runner": the background service, which only runs automations.
+    kind "assistant": the service's reserved Assistant chat, which the phone app talks to (never ended remotely)."""
 
     STATUS_EVERY = 1.5
 
@@ -132,6 +167,9 @@ class Tunnel:
         self.say = say or (lambda text: print(f"  remote: {text}", file=sys.stderr))
         self.kind, self.ui, self.on_end = kind, ui, on_end
         self.sid = uuid.uuid4().hex[:16]          # this chat's session on the relay, the same across reconnects
+        self._loop: asyncio.AbstractEventLoop | None = None
+        if session is not None and kind != "runner":
+            session.remote_notify = self.notify   # e.g. an approval nobody answered: the relay pushes it to the phone
         self.connected = False
         self.problem = ""
         self.ended = False                        # turned off from the account page
@@ -185,7 +223,7 @@ class Tunnel:
                 if self.kind == "runner":
                     hello["models"] = model_profiles()        # the automation form offers what the runner can use
                 await ws.send_json(hello)
-                self._ws = ws
+                self._ws, self._loop = ws, asyncio.get_running_loop()
                 self.connected, self.problem = True, ""
                 self.attempted.set()
                 self.say("connected — open https://remote.hexiel.tech to drive this chat" if self.kind == "chat"
@@ -201,14 +239,27 @@ class Tunnel:
             for sid in list(self.local_ws):
                 await self._close_local(sid)
 
+    @property
+    def has_chat(self) -> bool:
+        return self.kind in ("chat", "assistant")
+
     def _status(self) -> dict:
-        if self.kind != "chat":
+        if not self.has_chat:
             return {}
-        return {"title": chat_title(self.session), "busy": chat_busy(self.session)}
+        title = "Assistant" if self.kind == "assistant" else chat_title(self.session)
+        return {"title": title, "busy": chat_busy(self.session)}
+
+    def notify(self, kind: str, text: str) -> None:
+        """From any thread: ask the relay to push this to the user's phone."""
+        ws, loop = self._ws, self._loop
+        if ws is None or loop is None or not self.connected or loop.is_closed():
+            return
+        sent = asyncio.run_coroutine_threadsafe(ws.send_json({"t": "notify", "kind": kind, "text": text[:300]}), loop)
+        sent.add_done_callback(lambda fut: fut.exception())
 
     async def _report_status(self, ws, last: dict) -> None:
         """Keep the account page's session list current: what the chat is about and whether it is working."""
-        while self.kind == "chat":
+        while self.has_chat:
             await asyncio.sleep(self.STATUS_EVERY)
             now = self._status()
             if now != last:
@@ -225,7 +276,7 @@ class Tunnel:
     async def _handle(self, ws, http, frame: dict) -> None:
         kind = frame.get("t")
         try:
-            if kind in ("http", "ws_open") and self.kind != "chat":
+            if kind in ("http", "ws_open") and not self.has_chat:
                 if kind == "http":                   # the background service has no chat to show
                     await self._reply(ws, frame["id"], 404, {}, b"no chat here")
                 else:
@@ -236,7 +287,7 @@ class Tunnel:
                 await self._ws_open(ws, http, frame)
             elif kind == "stop" and self.session is not None:
                 self.session.stop()
-            elif kind == "end":
+            elif kind == "end" and self.kind == "chat":       # the Assistant is reserved: not ended from the web
                 self._end()
             elif kind == "ws_msg":
                 local = await self._await_local(frame["sid"])
@@ -244,7 +295,7 @@ class Tunnel:
                     await local.send_str(frame["data"])
             elif kind == "ws_close":
                 await self._close_local(frame["sid"])
-            elif kind == "run" and self.kind != "chat":
+            elif kind == "run" and self.kind == "runner":
                 await self._run(ws, frame)
         except Exception as exc:  # noqa: BLE001 - one bad frame must not drop the tunnel
             if kind == "http":
@@ -589,7 +640,9 @@ def is_service_invocation(cwd: str, port: int) -> bool:
 
 
 async def serve_runner() -> None:
-    """The background service (hexiel remote run): keep this machine reachable for automations. No chat."""
+    """The background service (hexiel remote run): keep this machine reachable for automations, and host the
+    reserved Assistant chat the phone app talks to. The Assistant is also open locally, at
+    http://127.0.0.1:8778 (`hexiel remote assistant`), so it is never a chat you can't see."""
     cfg = load_config()
     if not cfg.get("device_token"):
         raise SystemExit("not signed in to Hexiel Remote — run:  hexiel remote login")
@@ -602,7 +655,31 @@ async def serve_runner() -> None:
         await asyncio.sleep(30)
     workdir = str(workspace_dir())
     os.chdir(workdir)
-    await Tunnel(cfg, "", workdir, None, kind="runner").run_forever()
+    tunnels = [Tunnel(cfg, "", workdir, None, kind="runner")]
+    runner = None
+    if cfg.get("assistant", "on") != "off":
+        from aiohttp import web
+        from .webui import make_app
+        session = load_assistant(workdir)
+        runner = web.AppRunner(make_app(session))
+        await runner.setup()
+        try:
+            site = web.TCPSite(runner, "127.0.0.1", SERVICE_PORT)
+            await site.start()
+        except OSError:                           # the port is taken: any free one (`hexiel remote assistant` finds it)
+            site = web.TCPSite(runner, "127.0.0.1", 0)
+            await site.start()
+        port = site._server.sockets[0].getsockname()[1]
+        session.web_base = f"http://127.0.0.1:{port}"
+        save_config({**load_config(), "assistant_url": session.web_base})
+        helper = Tunnel(cfg, session.web_base, workdir, session, kind="assistant", ui="assistant")
+        helper.sid = assistant_sid(cfg.get("device_id", ""))
+        tunnels.append(helper)
+    try:
+        await asyncio.gather(*(t.run_forever() for t in tunnels))
+    finally:
+        if runner is not None:
+            await runner.cleanup()
 
 
 async def serve_with_remote(session, host: str, port: int) -> None:
@@ -630,7 +707,8 @@ async def serve_with_remote(session, host: str, port: int) -> None:
 
 
 def remote_cli(argv: list[str]) -> int:
-    """hexiel remote login [--relay URL] | logout | status | sessions | install [--dir FOLDER] | uninstall | run"""
+    """hexiel remote login [--relay URL] | logout | status | sessions | install [--dir FOLDER] | uninstall | run
+    | assistant [on|off]"""
     import getpass
     import platform
     cmd = argv[0] if argv else "status"
@@ -659,6 +737,22 @@ def remote_cli(argv: list[str]) -> int:
         else:
             print("Automations need the background service: hexiel remote install (or keep `hexiel remote run` going)")
         print("To drive a chat from remote.hexiel.tech, type /remote-control in it.")
+        return 0
+    if cmd == "assistant":
+        if len(argv) > 1 and argv[1] in ("on", "off"):
+            save_config({**cfg, "assistant": argv[1]})
+            print(f"Assistant {argv[1]} — restart the background service to apply (hexiel remote install)")
+            return 0
+        if cfg.get("assistant") == "off":
+            print("the Assistant is off — `hexiel remote assistant on` turns it on")
+            return 0
+        url = cfg.get("assistant_url") or f"http://127.0.0.1:{SERVICE_PORT}"
+        print(f"the Assistant chat (what the Hexiel phone app talks to): {url}")
+        try:
+            import webbrowser
+            webbrowser.open(url)
+        except Exception:  # noqa: BLE001
+            pass
         return 0
     if cmd == "run":
         ensure_streams()
@@ -704,6 +798,10 @@ def remote_cli(argv: list[str]) -> int:
         print("  relay sees the service: " + ("yes" if status.get("runner", status.get("online")) else
                                               "no (automations will queue)"))
         print(format_sessions(status))
+        helper = next((s for s in status.get("sessions", []) if s.get("kind") == "assistant"), None)
+        print("  Assistant (for the phone app): " + (("working" if helper.get("busy") else "ready")
+                                                     + " — see it here with `hexiel remote assistant`" if helper else
+                                                     "not connected" if cfg.get("assistant") != "off" else "off"))
     return 0
 
 

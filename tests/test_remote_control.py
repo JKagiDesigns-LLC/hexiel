@@ -380,3 +380,60 @@ def test_the_session_list_reads_well():
         {"kind": "legacy", "title": ""}]})
     assert "(1; at most 3 per account)" in text and "fix it — terminal, /p (working)" in text
     assert "none" in remote.format_sessions({"sessions": []})
+
+
+def test_a_compacted_chat_keeps_a_real_title(tmp_path):
+    session = make_session(tmp_path)
+    session.messages = [{"role": "user", "content": "<auto-compaction>\n\nsummary\n</auto-compaction>"},
+                        {"role": "user", "content": "now deploy it"}]
+    assert remote.chat_title(session) == "now deploy it"
+
+
+def test_an_unanswered_approval_is_pushed_to_the_phone_and_an_answered_one_is_not(tmp_path, monkeypatch):
+    session = make_session(tmp_path)
+    monkeypatch.setattr(type(session), "APPROVAL_REMINDER", 0.05)
+    pushed = []
+    session.remote_notify = lambda kind, text: pushed.append((kind, text))
+    session.on_approve = lambda *a: "yes"                                   # answered at once
+    assert session.on_approve("bash", {"command": "ls"}) == "yes"
+    time.sleep(0.15)
+    assert pushed == []
+    session.on_approve = lambda *a: (time.sleep(0.3), "no")[1]             # nobody at the desk
+    assert session.on_approve("bash", {"command": "rm -rf   build"}) == "no"
+    assert pushed == [("approval", "bash: rm -rf build")]
+    session.remote_notify = None
+    assert session.on_approve is not None and session.on_approve("x", {}) == "no"
+
+
+def test_the_assistant_tunnel_shows_its_chat_but_is_never_ended_or_given_jobs(tmp_path):
+    async def go():
+        sent = []
+
+        class WS:
+            async def send_json(self, frame): sent.append(frame)
+        session = make_session(tmp_path)
+        tunnel = remote.Tunnel({"relay": "http://r"}, "http://127.0.0.1:9", "/w", session, kind="assistant")
+        ended = []
+        tunnel.on_end = lambda: ended.append(True)
+        await tunnel._handle(WS(), None, {"t": "end"})
+        await tunnel._handle(WS(), None, {"t": "run", "id": "1", "prompt": "p"})
+        return tunnel, ended, sent, session
+    tunnel, ended, sent, session = asyncio.run(go())
+    assert not tunnel.ended and ended == [] and sent == []
+    assert tunnel._status() == {"title": "Assistant", "busy": False}
+    assert session.remote_notify == tunnel.notify
+    assert remote.assistant_sid("dev1") == remote.assistant_sid("dev1") != remote.assistant_sid("dev2")
+
+
+def test_the_assistant_chat_is_resumed_with_its_phone_instructions(tmp_path, monkeypatch):
+    monkeypatch.setenv("HEXIEL_DATA", str(tmp_path / "data"))
+    remote.save_config({"relay": "http://r", "device_id": "d", "device_token": "t"})
+    work = tmp_path / "w"
+    work.mkdir()
+    first = remote.load_assistant(str(work))
+    assert remote.ASSISTANT_NOTE in first.system_prompt
+    assert remote.load_config()["assistant_session"] == first.id
+    first.messages = [{"role": "user", "content": "what's on my calendar"}]
+    first.save()
+    again = remote.load_assistant(str(work))
+    assert again.id == first.id and again.messages == first.messages

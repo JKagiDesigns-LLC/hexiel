@@ -18,6 +18,7 @@ from textual.widgets.option_list import Option
 
 from . import memory as memory_mod
 from . import skills as skills_mod
+from .session import STEERING_NOTE
 
 ACCENT = "#c8b6ff"
 GOLD = "#d9b55a"          # halo gold for the activity line
@@ -1377,7 +1378,7 @@ class HexielTUI(App):
                 if body.startswith("<auto-compaction>"):
                     chat.mount(Static("— earlier history auto-compacted —", classes="note"))
                 else:
-                    self.add_user_msg(body[:2000], stamp(msg.get("ts")))
+                    self.add_user_msg(body.removeprefix(STEERING_NOTE)[:2000], stamp(msg.get("ts")))   # sent mid-turn: no prefix
             elif role == "assistant":
                 # the model's text precedes the tool calls it then makes
                 text = msg.get("content", "")
@@ -2342,7 +2343,11 @@ class HexielTUI(App):
             holder["event"].set()
 
         self.call_from_thread(show)
-        holder["event"].wait()
+        # wait however long it takes, but Stop (Ctrl+C, or from Hexiel Remote) gives up and closes the prompt
+        while not holder["event"].wait(0.5):
+            if self.session._stop.is_set():
+                self._dismiss_approval()
+                return "no"
         return holder["result"]
 
     def action_cancel(self) -> None:

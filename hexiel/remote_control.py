@@ -93,9 +93,9 @@ class Control:
 
     def _ended_remotely(self) -> None:
         if _active.get(id(self.session)) is self:
+            self.say("remote control was turned off from remote.hexiel.tech — this chat is local again")
             _active.pop(id(self.session), None)
             self.stop()
-            self.say("remote control was turned off from remote.hexiel.tech — this chat is local again")
 
     def stop(self) -> None:
         if self.stopped:
@@ -104,6 +104,8 @@ class Control:
         atexit.unregister(self.stop)
         if self.state is not None:
             self.session.remove_mirror(self.state)
+        if self.tunnel is not None and self.session.remote_notify == self.tunnel.notify:
+            self.session.remote_notify = None
         if self.tunnel is not None and self.loop is not None and not self.loop.is_closed():
             try:
                 asyncio.run_coroutine_threadsafe(self.tunnel.close(), self.loop)

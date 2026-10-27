@@ -23,7 +23,7 @@ from . import skills as skills_mod
 from . import todo as todo_mod
 from .config import load_config, home_data_dir
 from .llm import make_provider
-from .session import Session
+from .session import STEERING_NOTE, Session
 from .tooling import detect_toolchain
 from .tools import ToolResult
 
@@ -268,7 +268,7 @@ class WebState:
                 if body.startswith("<auto-compaction>"):
                     items.append({"t": "note", "text": "— earlier history auto-compacted —"})
                 else:
-                    item = {"t": "user", "text": body}
+                    item = {"t": "user", "text": body.removeprefix(STEERING_NOTE)}   # sent mid-turn
                     shown = media_items(a.get("path", "") for a in msg.get("attachments", []))
                     if shown:
                         item["media"] = shown
@@ -295,6 +295,15 @@ class WebState:
         for item in items:
             item.pop("path", None)             # a local path is only for finding the file, not for the page
         return items
+
+
+def queued_note(text: str) -> dict:
+    """Said when a message arrives mid-turn. It quotes the message, so a view that reconnects before the model
+    reads it (and it joins the saved chat) still shows what was sent."""
+    shown = " ".join(text.split())
+    shown = shown if len(shown) <= 120 else shown[:117] + "…"
+    return {"t": "note", "text": f"↳ sent “{shown}” — hexiel will read this before its next step "
+                                 "(Stop ends the current work)"}
 
 
 def _json_response(data: dict, status: int = 200) -> web.Response:
@@ -554,6 +563,8 @@ def make_app(session: Session, driver=None) -> web.Application:
                     text = reply[len("prompt:"):]
             if state.driver is not None:
                 if text:
+                    if state.driver.busy():         # the terminal queues it for the model's next step
+                        state.broadcast(queued_note(text))
                     state.driver.submit(text)       # the terminal UI shows it and runs the turn
                 return
             with state.lock:
@@ -561,8 +572,7 @@ def make_app(session: Session, driver=None) -> web.Application:
                     return
                 if state.busy:               # typed mid-turn: the model reads it before its next step
                     session.queue_message(text)
-                    state.broadcast({"t": "note", "text": "↳ sent — hexiel will read this before its next step "
-                                                          "(Stop ends the current work)"})
+                    state.broadcast(queued_note(text))
                     return
                 state.busy = True
                 def run(first):

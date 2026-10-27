@@ -209,12 +209,19 @@ function finishTurn(data) {
   refreshState();
 }
 
+// While hexiel works, Stop sits beside Send: a message sent then is read before its next step.
 function updateSendButton() {
-  const btn = $("#send");
-  btn.disabled = false;
-  if (busy) { btn.textContent = "Stop"; btn.classList.add("stop"); }
-  else { btn.textContent = "Send"; btn.classList.remove("stop"); }
+  $("#send").disabled = false;
+  $("#stop").hidden = !busy;
+  $("#input").placeholder = busy ? "Add to what hexiel is doing — it reads this before its next step"
+                                 : "Ask hexiel to build, fix, research… (Enter to send, Shift+Enter for newline)";
   $("#ctx-label").textContent = lastStatus?.model_id || "";
+}
+
+function stopTurn() {
+  sendWs({ t: "stop" });
+  $("#stop").textContent = "Stopping…";
+  setTimeout(() => { $("#stop").textContent = "Stop"; }, 4000);
 }
 
 // ---------------------------------------------------------------- websocket
@@ -703,7 +710,6 @@ input.addEventListener("input", () => {
   input.style.height = Math.min(input.scrollHeight, 200) + "px";
 });
 function submit() {
-  if (busy) { sendWs({ t: "stop" }); return; }
   const text = input.value.trim();
   if (!text) return;
   input.value = ""; input.style.height = "auto";
@@ -718,6 +724,7 @@ function submit() {
   sendWs({ t: "send", text });
 }
 $("#send").addEventListener("click", submit);
+$("#stop").addEventListener("click", stopTurn);
 
 connect();
 refreshState();

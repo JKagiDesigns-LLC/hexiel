@@ -192,6 +192,7 @@ class Session:
         self._on_approve = on_approve or (lambda *_: "yes")
         self.web_base = ""                       # the local web UI's address, once one is serving this session
         self.busy_probe = None                   # set by a web view: is a turn running (for its Stop button)
+        self.remote_notify = None                # set while Hexiel Remote is on: (kind, text) -> push to the phone
         self.mirrors: list = []                  # other views of this chat (Hexiel Remote): see add_mirror
         self.dismiss_approval = lambda: None     # the primary UI closes its approval prompt when a mirror answers first
         self.id = uuid.uuid4().hex[:12]
@@ -305,12 +306,31 @@ class Session:
     def on_event(self, fn) -> None:
         self._on_event = fn
 
+    APPROVAL_REMINDER = 15.0                     # seconds an approval waits before the phone is told
+
     @property
     def on_approve(self):
         primary, mirrors = self._on_approve, self.mirrors
-        if not any(m.has_viewers() for m in mirrors):
-            return primary
-        return lambda *args: self._ask_everywhere(primary, list(mirrors), args)
+        ask = primary if not any(m.has_viewers() for m in mirrors) else \
+            (lambda *args: self._ask_everywhere(primary, list(mirrors), args))
+        notify = self.remote_notify
+        if ask is None or notify is None:
+            return ask
+        return lambda *args: self._ask_with_reminder(ask, notify, args)
+
+    def _ask_with_reminder(self, ask, notify, args: tuple) -> str:
+        """With remote control on, an approval nobody answers for a while is pushed to the phone."""
+        tool = str(args[0]) if args else "a step"
+        params = args[1] if len(args) > 1 and isinstance(args[1], dict) else {}
+        detail = next((str(params[k]) for k in ("command", "path", "url", "step", "text") if k in params), "")
+        summary = f"{tool}: {' '.join(detail.split())}"[:200] if detail else tool
+        timer = threading.Timer(self.APPROVAL_REMINDER, notify, ("approval", summary))
+        timer.daemon = True
+        timer.start()
+        try:
+            return ask(*args)
+        finally:
+            timer.cancel()
 
     @on_approve.setter
     def on_approve(self, fn) -> None:
@@ -911,7 +931,14 @@ class Session:
             self.on_event("subagent", label, p[0].get("name", "")) if event == "tool_call" else None)
         helper.on_approve = lambda *a: "no"
         helper.save = lambda: None                  # helpers don't create saved sessions
-        helper.run_turn(prompt + SUBAGENT_LIMIT)
+        from .planner import _link_stop
+        link = _link_stop(self, helper)             # Stop on this chat stops the subagent too
+        try:
+            helper.run_turn(prompt + SUBAGENT_LIMIT)
+        finally:
+            link.set()
+        if self._stop.is_set():
+            return ToolResult(text="error: cancelled by the user before the subagent finished", is_error=True)
         answer = next((m.get("content", "") for m in reversed(helper.messages)
                        if m.get("role") == "assistant" and m.get("content")), "")
         for key in self.usage_totals:

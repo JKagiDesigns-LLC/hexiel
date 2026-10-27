@@ -115,6 +115,45 @@ def _is_empty_reply(msg: dict) -> bool:
             and not msg.get("tool_calls"))
 
 
+def repair_tool_pairs(messages: list[dict]) -> bool:
+    """Give every tool call a result and drop results with no call, in place. A chat saved while a
+    tool was running (hexiel killed, restarted or updated mid-command) otherwise fails every later
+    request: providers reject a tool_use id that is not answered in the very next message.
+    Returns True when anything changed."""
+    changed = False
+    i = 0
+    while i < len(messages):
+        msg = messages[i]
+        if msg.get("role") == "tool":                 # a result not directly after its call
+            messages.pop(i)
+            changed = True
+            continue
+        if msg.get("role") != "assistant" or not msg.get("tool_calls"):
+            i += 1
+            continue
+        wanted = [c["id"] for c in msg["tool_calls"]]
+        answered = set()
+        j = i + 1
+        while j < len(messages) and messages[j].get("role") in ("tool", "graphic"):
+            m = messages[j]
+            if m["role"] == "tool" and (m.get("tool_call_id") not in wanted
+                                        or m.get("tool_call_id") in answered):
+                messages.pop(j)
+                changed = True
+                continue
+            if m["role"] == "tool":
+                answered.add(m["tool_call_id"])
+            j += 1
+        missing = [{"role": "tool", "tool_call_id": cid, "is_error": True,
+                    "content": "interrupted — hexiel stopped before this tool finished; "
+                               "check its effects before retrying"}
+                   for cid in wanted if cid not in answered]
+        messages[j:j] = missing
+        changed = changed or bool(missing)
+        i = j + len(missing)
+    return changed
+
+
 MAX_TIMEOUT_RETRIES = 2   # consecutive request timeouts before giving up (each already waited request_timeout)
 FALLBACK_COOLDOWN = 1800.0    # a profile that hit its usage limit is skipped by fallbacks this long —
                               # retrying it with every request would raise the same error again; try again later.
@@ -680,6 +719,8 @@ class Session:
         final = None
         reasoning: list[str] = []
         streamed: list[str] = []
+        if repair_tool_pairs(self.messages):     # e.g. a chat saved mid-command, then resumed
+            self.save()
         sent = len(self.messages)       # the prompt covers exactly these messages
         from . import modelbusy
         slot = modelbusy.enter(self.model_config, lambda t: self.on_event("note", t), self.id)

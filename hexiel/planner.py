@@ -35,6 +35,9 @@ REVIEW_FILE_CHARS = 6000           # ... and of any one file
 MAX_REVIEW_ISSUES = 6
 BRIEF_TOOL_CAP = 12
 LEDGER_CHARS = 400
+CONTEXT_CHARS = 5000               # how much of the conversation before the request the briefing and plan see
+CONTEXT_TURN_CHARS = 1200          # ... and of any one earlier message
+NEWEST = "## The newest message (this is the request)\n"
 CHECK_TIMEOUT = 600
 
 # ---------------------------------------------------------------- prompts
@@ -50,6 +53,8 @@ BRIEF_SYSTEM = (
     "(search, read, map), find what matters for the request and then write the briefing: "
     "the relevant files (exact paths, one line on each file's role), short key snippets with line numbers, "
     "project conventions, and the commands that build and test the project. Facts only, no plan. "
+    "When the request comes with the conversation so far, the newest message is what to do and the earlier "
+    "turns say what it refers to: use the paths, projects and files named there, and don't search elsewhere. "
     f"Use at most {BRIEF_TOOL_CAP} tool calls and keep the briefing under 700 words.")
 
 PLANNER_SYSTEM = (
@@ -369,7 +374,7 @@ def parse_plan(text: str, request: str) -> Plan:
         tasks.append(Task(id=tid, title=title[:120], goal=goal[:2000], files=files,
                           constraints=str(t.get("constraints") or "")[:600],
                           check=str(t.get("check") or "").strip()[:500], depends_on=deps))
-    return Plan(request=request, summary=str(raw.get("summary", "")).strip()[:300] or request[:200],
+    return Plan(request=request, summary=str(raw.get("summary", "")).strip()[:300] or request.rsplit(NEWEST, 1)[-1][:200],
                 tasks=tasks, created=datetime.datetime.now().isoformat(timespec="seconds"))
 
 
@@ -459,6 +464,33 @@ def _link_stop(session, helper):
 
     threading.Thread(target=watch, daemon=True, name="hexiel-stop-link").start()
     return done
+
+
+def with_context(session, request: str) -> str:
+    """The request as the briefing and the planner see it: a short follow-up ("again, the domain is …",
+    "I gave you the path") only makes sense with what came before, so the recent conversation goes first —
+    the user's and the agent's own words, newest last, tool output left out."""
+    earlier = list(session.messages)
+    for i in range(len(earlier) - 1, -1, -1):             # the request itself is already the last user message
+        if earlier[i].get("role") == "user":
+            earlier = earlier[:i]
+            break
+    turns, used = [], 0
+    for m in reversed(earlier):
+        text = m.get("content")
+        if m.get("role") not in ("user", "assistant") or not isinstance(text, str) or not text.strip():
+            continue
+        text = text.strip()
+        if len(text) > CONTEXT_TURN_CHARS:
+            text = text[:CONTEXT_TURN_CHARS] + " …"
+        if used + len(text) > CONTEXT_CHARS:
+            break
+        turns.append(f"{m['role']}: {text}")
+        used += len(text)
+    if not turns:
+        return request
+    return ("## Conversation so far (for context; newest last)\n" + "\n\n".join(reversed(turns))
+            + f"\n\n{NEWEST}{request}")
 
 
 def build_brief(session, request: str) -> str:
@@ -947,6 +979,7 @@ def _finish(session, plan: Plan, finished: bool) -> None:
 
 def _run_whole(session, request: str) -> bool:
     say(session, f"📐 gathering context with {worker_model(session).name} …")
+    request = with_context(session, request)
     brief = build_brief(session, request)
     if session._stop.is_set():
         session.on_event("turn_end", aborted=True)

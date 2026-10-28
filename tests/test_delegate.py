@@ -150,6 +150,23 @@ def test_delegate_runs_every_task_and_summarises(env):
     assert todo.count("[x]") == 3 and "[ ]" not in todo
 
 
+def test_a_short_follow_up_is_planned_with_the_conversation_before_it(env):
+    s, providers, *_ = env
+    s.messages += [{"role": "user", "content": "use the logo at /srv/site/assets/logo.jpg"},
+                   {"role": "assistant", "content": "Which page should it go on?"},
+                   {"role": "tool", "tool_call_id": "x", "content": "TOOL NOISE"}]
+    seen = []
+    stream = providers["cloud"].stream
+    providers["cloud"].stream = lambda m, sy, t, **k: (seen.append(m[-1]["content"]), stream(m, sy, t, **k))[1]
+    s.run_turn("/delegate I told you exactly where the image is")
+    brief_prompt = next(p for p in providers["local"].prompts if "Prepare the briefing" in p)
+    for prompt in (brief_prompt, seen[0]):
+        assert "/srv/site/assets/logo.jpg" in prompt and "Which page should it go on?" in prompt
+        assert "TOOL NOISE" not in prompt
+        assert prompt.index("logo.jpg") < prompt.index(planner.NEWEST) < prompt.index("I told you exactly")
+    assert planner.with_context(type("S", (), {"messages": [{"role": "user", "content": "hi"}]})(), "hi") == "hi"
+
+
 def test_each_task_runs_in_a_fresh_small_context(env):
     s, providers, *_ = env
     s.run_turn("/delegate make three files")

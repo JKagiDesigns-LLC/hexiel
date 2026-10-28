@@ -700,7 +700,10 @@ class StatusLine(Static):
                 mode = f"[{MUTED}]auto-approve · asks before commits[/]"
             else:
                 mode = f"[b {RED}]AUTO-APPROVE ALL[/]"
-            segments = [
+            from . import timers as timers_mod
+            timer = timers_mod.summary(session)
+            segments = [(f"[b {GOLD}]{timer}[/]", timer)] if timer else []      # first: it is what you're watching
+            segments += [
                 (f"[{FAINT}]ctrl+p[/] [{MUTED}]model[/]", "ctrl+p model"),
                 (f"[{FAINT}]ctrl+b[/] [{MUTED}]sidebar[/]", "ctrl+b sidebar"),
                 (f"[{FAINT}]/[/] [{MUTED}]commands[/]", "/ commands"),
@@ -1068,7 +1071,7 @@ class ActivityLine(Static):
              "test": "Testing", "container": "Running containers",
              "web_search": "Searching the web", "web_fetch": "Fetching the web",
              "view_image": "Looking at an image", "image_edit": "Editing an image",
-             "memory": "Remembering", "todo": "Updating the plan",
+             "memory": "Remembering", "todo": "Updating the plan", "timer": "Setting a timer",
              "gitlab_mr": "Preparing the merge request", "skill": "Loading a skill"}
 
     def __init__(self) -> None:
@@ -1917,6 +1920,9 @@ class HexielTUI(App):
         if event == "model_active":
             self._refresh_status()
             return
+        if event == "timers":
+            self._refresh_status()
+            return
         if event == "graphic":
             card = payload[0] if payload else {}
             if card and card.get("kind") == "weather":
@@ -2074,7 +2080,19 @@ class HexielTUI(App):
     def _tick(self) -> None:
         if self._stream_wid is not None:
             self._stream_wid.update(self._stream_text)
+        self._timers_due()
         self._refresh_status()
+
+    def _timers_due(self) -> None:
+        """Say so once when a timer runs out (the footer keeps showing it as over until it is stopped)."""
+        from . import timers as timers_mod
+        done = self.__dict__.setdefault("_timers_rang", set())
+        for timer in timers_mod.live(self.session):
+            if timer["ends"] <= time.time() and timer["id"] not in done:
+                done.add(timer["id"])
+                took = timers_mod.fmt_duration(timer["ends"] - timer["started"])
+                self.add_note(f"⏱ time's up: {timer['label']} (estimated {took})".replace("[", "\\["))
+                self.notify_user("hexiel timer", f"{timer['label']}: the {took} estimate is up")
 
     def on_app_focus(self, event) -> None:
         self._terminal_focused = True

@@ -20,6 +20,7 @@ from . import memory as memory_mod
 from . import settings_edit
 from .config import approve_mode
 from . import skills as skills_mod
+from . import timers as timers_mod
 from . import todo as todo_mod
 from .config import load_config, home_data_dir
 from .llm import make_provider
@@ -67,6 +68,10 @@ def status_state(session: Session) -> dict:
         "auto_mode": approve_mode(session.auto_approve, session.guard_commits),
         "busy": bool(session.busy_probe()) if getattr(session, "busy_probe", None) else False,
         "todo": todo_mod.summary_line(session.cwd) or None,
+        # end times, not "time left": every view counts down on its own clock and stays in step
+        "timers": [{"id": t["id"], "label": t["label"], "started": t["started"], "ends": t["ends"]}
+                   for t in timers_mod.live(session)],
+        "now": time.time(),
     }
 
 
@@ -179,7 +184,7 @@ class WebState:
         elif event == "rate_limited":
             self.broadcast({"t": "note", "text": f"⏸ rate limited — resuming automatically in "
                                                 f"~{int(payload[0] // 60)}m{int(payload[0] % 60):02d}s"})
-        elif event == "model_active":
+        elif event in ("model_active", "timers"):
             self.broadcast({"t": "status", "status": status_state(self.session)})
         elif event == "note":
             self.broadcast({"t": "note", "text": str(payload[0])})
@@ -197,9 +202,9 @@ class WebState:
             with self.replay_lock:
                 self.turn_base, self.replay = None, []
             error = payload[0].get("error") if payload and isinstance(payload[0], dict) else None
-            if _kw.get("aborted"):
-                error = "stopped by user"
-            self.broadcast({"t": "turn_end", "error": error,
+            # Stop is not a failure: it was reported as error "stopped by user", which the views showed in red
+            stopped = bool(_kw.get("aborted"))
+            self.broadcast({"t": "turn_end", "error": None if stopped else error, "stopped": stopped,
                             "messages": self.trim(self.render_history())})
         elif event == "tool_call":
             self.broadcast({"t": "tool", **short_call(payload[0])})

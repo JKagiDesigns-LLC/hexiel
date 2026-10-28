@@ -91,6 +91,8 @@ def build_session(cwd: str, model_name: str | None, resumed: dict | None = None)
     if settings.consult_mode != "off" and (settings.planner_profile or settings.fallback_profile):
         from . import consult
         session.tools.append(consult.tool_def(session))       # the working model can ask the strong model for advice
+    from . import timers
+    session.tools.append(timers.tool_def(session))            # countdowns the user sees for long waits
     session.bind_tool_ctx(tool_ctx)
     # gitlab propose steps share the standard approval gate; "no" declines the step
     tool_ctx.on_step = (lambda kind, desc: session.on_approve(f"gitlab:{kind}",
@@ -98,6 +100,7 @@ def build_session(cwd: str, model_name: str | None, resumed: dict | None = None)
     if resumed:
         session.id = resumed["id"]
         session.messages = resumed.get("messages", [])
+        session.timers = [t for t in resumed.get("timers", []) if isinstance(t, dict) and "ends" in t]
         settings_edit.restore_auto_mode(session, resumed)
     return session
 

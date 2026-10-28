@@ -101,7 +101,7 @@ SUBAGENT_SYSTEM = (
 SUBAGENT_LIMIT = "\n\n(Keep your final answer under ~400 words; include paths and line numbers.)"
 
 FILE_TOOLS = {"write", "edit", "image_edit"}      # snapshotted before they run (/undo)
-PLAN_MODE_ALLOWED = {"todo", "memory", "skill"}   # bookkeeping still works in plan mode
+PLAN_MODE_ALLOWED = {"todo", "memory", "skill", "timer"}   # bookkeeping still works in plan mode
 PLAN_MODE_NOTE = ("[plan mode] Investigate with read-only tools and produce a step-by-step plan. "
                   "Do not try to change files or run commands; the user will approve the plan "
                   "and turn plan mode off.")
@@ -202,6 +202,7 @@ class Session:
         self.plan_mode = False          # read-only planning: no writes/commands run
         self.loaded_toolsets: set = set()   # optional tool groups in use (toolsets.py)
         self.checkpoints: list[list] = []   # per turn: [(path, original bytes | None)] for /undo
+        self.timers: list[dict] = []        # countdowns for long waits (timers.py), shown in every view
         from . import hooks as hooks_mod
         self.hooks = hooks_mod.load(cwd)     # user commands on agent events (hooks.py)
         self.usage_totals = {"requests": 0, "prompt_tokens": 0, "cached_tokens": 0,
@@ -1246,6 +1247,8 @@ class Session:
             }
             if getattr(self, "auto_override", None):       # set for this chat only: resuming it keeps the mode
                 payload["auto_mode"] = self.auto_override
+            if self.timers:
+                payload["timers"] = self.timers
             (sessions / f"{self.id}.json").write_text(json.dumps(payload))
         except OSError:
             pass

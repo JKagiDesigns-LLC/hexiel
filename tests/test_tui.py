@@ -303,3 +303,25 @@ def test_safe_markup_keeps_valid_markup_and_escapes_the_rest():
     from hexiel.tui import safe_markup
     assert safe_markup("[b]ok[/b] and [green]fine[/green]") == "[b]ok[/b] and [green]fine[/green]"
     assert safe_markup(NASTY).startswith("python3 -c") and "\\[s for s" in safe_markup(NASTY)
+
+
+def test_footer_counts_down_a_timer_and_says_when_it_is_up(tmp_path):
+    import time
+    from hexiel.tui import StatusLine
+
+    async def go():
+        app = make_app(tmp_path)
+        async with app.run_test(size=(120, 30)) as pilot:
+            app.session.timers = [{"id": "a", "label": "test suite", "started": time.time(), "ends": time.time() + 1800}]
+            app.handle_event("timers", app.session.timers)
+            await pilot.pause()
+            footer = str(app.query_one(StatusLine).render())
+            app.session.timers[0]["ends"] = time.time() - 5
+            app._tick()
+            app._tick()                                   # says so once, not every second
+            await pilot.pause()
+            notes = [str(w.render()) for w in app.query(".note")]
+            return footer, notes
+    footer, notes = run(go())
+    assert "⏱ test suite · 30:00 left" in footer or "⏱ test suite · 29:59 left" in footer
+    assert sum("time's up: test suite" in n for n in notes) == 1

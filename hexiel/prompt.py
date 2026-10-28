@@ -132,6 +132,9 @@ explanations.
   turn mid-task. If the session dies, the next one resumes from that file.
 - Check the todo list before starting work when it exists; stale items are bugs —
   update or delete them.
+- When something will take a while (a long test run, build or download) and you
+  tell the user roughly how long, also start a `timer` with that estimate so they
+  can watch it count down; stop it as soon as the wait is over.
 """
 
 

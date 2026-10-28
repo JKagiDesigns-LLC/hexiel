@@ -199,13 +199,14 @@ function finishTurn(data) {
   }
   busy = false;
   updateSendButton();
-  if (data && data.error) {
-    const div = document.createElement("div");
-    div.className = "note incident";
-    div.textContent = "error: " + data.error;
-    $("#chat").appendChild(div);
-  }
   if (data && data.messages) renderHistory(data.messages);
+  if (data && (data.error || data.stopped)) {        // after the history, which redraws the chat
+    const div = document.createElement("div");
+    div.className = data.error ? "note incident" : "note";
+    div.textContent = data.error ? "error: " + data.error : "Stopped.";
+    $("#chat").appendChild(div);
+    $("#chat").scrollTop = $("#chat").scrollHeight;
+  }
   refreshState();
 }
 
@@ -381,8 +382,39 @@ function applyStatus(status) {
   $("#ctx-label").title = label;              // hover/long-press reads the whole string
   $("#todo-badge").textContent = status.todo || "";
   $("#todo-badge").title = status.todo || "";
+  timers = status.timers || [];
+  if (status.now) clockSkew = status.now * 1000 - Date.now();
+  renderTimers();
   updateSendButton();
 }
+
+// ---------------------------------------------------------------- timers (the agent's estimates for long waits)
+
+let timers = [], clockSkew = 0;
+
+function fmtDuration(seconds) {
+  seconds = Math.max(0, Math.round(seconds));
+  const h = Math.floor(seconds / 3600), m = Math.floor(seconds % 3600 / 60), s = seconds % 60;
+  const pad = (n) => String(n).padStart(2, "0");
+  return h ? `${h}:${pad(m)}:${pad(s)}` : `${m}:${pad(s)}`;
+}
+
+function renderTimers() {
+  const badge = $("#timer-badge");
+  if (!timers.length) { badge.hidden = true; return; }
+  const now = (Date.now() + clockSkew) / 1000;
+  const soonest = [...timers].sort((a, b) => a.ends - b.ends)[0];
+  const left = soonest.ends - now;
+  badge.hidden = false;
+  badge.classList.toggle("over", left <= 0);
+  badge.textContent = `⏱ ${soonest.label} · ` + (left > 0 ? `${fmtDuration(left)} left` : `over by ${fmtDuration(-left)}`) +
+                      (timers.length > 1 ? ` (+${timers.length - 1})` : "");
+  badge.title = timers.map((t) => `${t.label}: estimated ${fmtDuration(t.ends - t.started)}, ` +
+                                  (t.ends > now ? `${fmtDuration(t.ends - now)} left` : `over by ${fmtDuration(now - t.ends)}`))
+                      .join("\n");
+}
+
+setInterval(() => { if (timers.length) renderTimers(); }, 1000);
 
 function renderTodo(items) {
   if (!items.length) { $("#todo-panel").innerHTML = "<em class='dim'>no todo list — hexiel creates one automatically for multi-step tasks</em>"; return; }

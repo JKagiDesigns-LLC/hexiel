@@ -84,6 +84,69 @@ class Slot:
             self.path = None
 
 
+def holders(mc, token: str = "", label: str = "") -> list[tuple[str, str]]:
+    """Who besides our own request is using this model right now: (kind, name) pairs.
+
+    kind: "self" — this session's own parallel steps; "same" — another chat of this hexiel process
+    (a parallel step of it, or another web-UI tab); "other" — another hexiel window or background run.
+    name: a short title from the holder's first user message, when its session file can be read."""
+    out = []
+    try:
+        files = list(folder().glob(f"{model_key(mc)}.*.json"))
+    except OSError:
+        return []
+    for path in files:
+        try:
+            info = json.loads(path.read_text())
+        except (OSError, ValueError):
+            continue
+        if info.get("token") == token:
+            continue
+        if time.time() - info.get("started", 0) > STALE_SECONDS or not _alive(int(info.get("pid", 0))):
+            path.unlink(missing_ok=True)
+            continue
+        same_process = int(info.get("pid", 0)) == os.getpid()
+        kind = ("self" if info.get("label") == label else "same") if same_process else "other"
+        out.append((kind, _session_title(info.get("label", "")) if kind != "self" else ""))
+    return out
+
+
+def _session_title(label: str) -> str:
+    """Short first-user-message title of a session (works across processes: one shared data dir)."""
+    if not label:
+        return ""
+    try:
+        data = json.loads((home_data_dir() / "sessions" / f"{label}.json").read_text())
+    except (OSError, ValueError):
+        return ""
+    for msg in data.get("messages", []):
+        if msg.get("role") == "user":
+            text = " ".join(str(msg.get("content", "")).split())
+            if text:
+                return text[:50] + ("…" if len(text) > 50 else "")
+        break
+    return ""
+
+
+_HOLDER = {"self": "a parallel step of this chat", "same": "another chat in this hexiel process",
+           "other": "another hexiel window or background run"}
+
+
+def busy_who(found: list[tuple[str, str]]) -> str:
+    """Read 'holding it: …' text for a busy note: who holds the model, per holders()."""
+    if not found:
+        return "another request"
+    lines, shown = [], 0
+    for kind, title in found:
+        shown += 1
+        piece = (f"“{title}” " if title else "") + _HOLDER[kind]
+        lines.append(piece)
+        if shown == 4 and len(found) > 4:
+            lines.append(f"… and {len(found) - 4} more")
+            break
+    return "holding it: " + "; ".join(lines)
+
+
 def enter(mc, say=None, label: str = "") -> Slot:
     """Register a request on a local model. `say(text)` is called (once) when someone else is already using it."""
     if not is_local(mc):
@@ -98,6 +161,6 @@ def enter(mc, say=None, label: str = "") -> Slot:
     except OSError:
         path = None
     if waiting and say:
-        say(f"⏳ {mc.name} is busy with {waiting} other request{'s' if waiting != 1 else ''} from another hexiel "
-            "window or background run — this one may wait its turn")
+        say(f"⏳ {mc.name} is busy with {waiting} other request{'s' if waiting != 1 else ''} — "
+            f"{busy_who(holders(mc, token, label))} — this one may wait its turn")
     return Slot(path, waiting)

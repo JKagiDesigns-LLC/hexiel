@@ -325,3 +325,22 @@ def test_footer_counts_down_a_timer_and_says_when_it_is_up(tmp_path):
     footer, notes = run(go())
     assert "⏱ test suite · 30:00 left" in footer or "⏱ test suite · 29:59 left" in footer
     assert sum("time's up: test suite" in n for n in notes) == 1
+
+
+def test_quitting_ends_a_step_still_waiting_for_an_approval(tmp_path):
+    # a plan step blocked on the terminal's prompt used to keep Python from exiting until Ctrl+C
+    import threading
+    app = make_app(tmp_path)
+    got = []
+
+    async def go():
+        async with app.run_test(size=(100, 30)) as pilot:
+            t = threading.Thread(target=lambda: got.append(app.ask_approval("bash", {"command": "mkdir docs"})),
+                                 daemon=True)
+            t.start()
+            await pilot.pause(0.5)
+            app.exit()
+        return t
+    t = asyncio.run(go())
+    t.join(5)
+    assert not t.is_alive() and got == ["no"]

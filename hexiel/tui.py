@@ -1,5 +1,6 @@
 """Textual TUI: streaming chat, tool-call rendering, approval modal, context gauge."""
 
+import asyncio
 import json
 import os
 import re
@@ -1690,7 +1691,28 @@ class HexielTUI(App):
         def close() -> None:
             if isinstance(self.screen, ApproveScreen):
                 self.screen.dismiss("no")
-        self.call_from_thread(close)
+        self._post(close)
+
+    def _post(self, fn) -> None:
+        """Run fn on the UI thread without waiting for it: once the app is closing, waiting never ends."""
+        loop = getattr(self, "_loop", None)
+        if loop is None or loop.is_closed():
+            return
+
+        async def run() -> None:
+            with self._context():             # as call_from_thread does: widgets need the active app
+                fn()
+        try:
+            asyncio.run_coroutine_threadsafe(run(), loop)
+        except RuntimeError:                  # closed in the meantime
+            pass
+
+    def on_unmount(self) -> None:
+        # Quitting stops whatever is still running: a plan step waiting on an approval nobody can answer now
+        # kept Python from exiting (it waits for those threads) until Ctrl+C.
+        self.session.stop()
+        if self._heal:
+            self._heal["original"].stop()
 
     def cmd_bug(self, arg: str, kind: str = "bug") -> None:
         """/bug <what happened> and /feature <idea> — send it to the hexiel team."""
@@ -2360,7 +2382,7 @@ class HexielTUI(App):
             holder["result"] = verdict or "no"
             holder["event"].set()
 
-        self.call_from_thread(show)
+        self._post(show)
         # wait however long it takes, but Stop (Ctrl+C, or from Hexiel Remote) gives up and closes the prompt
         while not holder["event"].wait(0.5):
             if self.session._stop.is_set():

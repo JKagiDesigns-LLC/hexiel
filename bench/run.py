@@ -20,6 +20,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -34,19 +35,23 @@ sys.path.insert(0, str(ROOT))
 
 from hexiel import settings_edit  # noqa: E402  (pure TOML line editing helpers)
 
+# Every run starts from these, so only the configuration below decides which models work: the router, overflow,
+# step fallback and per-tool helper models in a personal config would otherwise quietly bring in other models.
+ISOLATE = {"router_profile": "", "overflow_profile": "", "worker_fallback_profile": "", "escalate_mode": "off"}
+
 # LOCAL / CLOUD are replaced by the profile names given on the command line
 CONFIGS = {
     "local": {"model": "LOCAL", "delegate": False,
               "settings": {"auto_delegate": "off", "consult_mode": "off", "planner_profile": "", "delegate_review": "off"}},
     "local+advice": {"model": "LOCAL", "delegate": False,
                      "settings": {"auto_delegate": "off", "consult_mode": "auto", "planner_profile": "CLOUD",
-                                  "delegate_review": "off"}},
+                                  "escalate_mode": "auto", "delegate_review": "off"}},
     "delegate": {"model": "LOCAL", "delegate": True,
                  "settings": {"auto_delegate": "off", "consult_mode": "off", "planner_profile": "CLOUD",
                               "executor_profile": "LOCAL", "delegate_review": "off", "delegate_approval": False}},
     "delegate+review": {"model": "LOCAL", "delegate": True,
                         "settings": {"auto_delegate": "off", "consult_mode": "auto", "planner_profile": "CLOUD",
-                                     "executor_profile": "LOCAL", "delegate_review": "always", "delegate_approval": False}},
+                                     "executor_profile": "LOCAL", "escalate_mode": "auto", "delegate_review": "always", "delegate_approval": False}},
     "cloud": {"model": "CLOUD", "delegate": False,
               "settings": {"auto_delegate": "off", "consult_mode": "off", "planner_profile": "", "delegate_review": "off"}},
 }
@@ -113,7 +118,8 @@ def self_check(tasks: dict[str, dict]) -> bool:
 def build_config(base_text: str, spec: dict, local: str, cloud: str, home: Path) -> None:
     sub = {"LOCAL": local, "CLOUD": cloud}
     text = settings_edit.set_toml_value(base_text, None, "default", sub[spec["model"]])
-    settings = dict(spec["settings"], notify=False, auto_approve=True)
+    text = re.sub(r"(?m)^\[tool_models\]\n(?:(?!\[).*\n?)*", "", text)        # tool output stays raw: no helper models
+    settings = dict(ISOLATE, **spec["settings"], notify=False, auto_approve=True)
     for key, value in settings.items():
         value = sub.get(value, value) if isinstance(value, str) else value
         text = settings_edit.set_toml_value(text, "settings", key, value)

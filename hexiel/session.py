@@ -110,6 +110,11 @@ PLAN_MODE_NOTE = ("[plan mode] Investigate with read-only tools and produce a st
 EMPTY_NUDGE = ("(Your previous reply was empty. Continue the task: either call the next tool "
                "or reply to the user with your answer.)")
 
+TRUNCATION_NUDGES = 2                  # auto-continuations when a reply is cut off at max_output_tokens
+TRUNCATION_NUDGE = ("(Your previous reply was cut off at the model's output-token limit. "
+                    "Continue from exactly where it stopped; if you were writing a large file, "
+                    "keep going from that point instead of restarting it.)")
+
 
 def _is_empty_reply(msg: dict) -> bool:
     return (msg.get("role") == "assistant" and not (msg.get("content") or "").strip()
@@ -487,7 +492,7 @@ class Session:
         prev_mc = self.model_config      # an overflow model for this one request only (router.py)
         self.__dict__["_turn_boot_model"] = prev_mc.name
         self.model_config = mc
-        turn = {"tools": 0, "used_todo": False, "item": None, "ok": False}
+        turn = {"tools": 0, "used_todo": False, "item": None, "ok": False, "nudges": 0}
         self.__dict__.pop("_fallback_tried", None)  # a new turn starts at the first link again
         self._provider_override = None   # a fallback switch already changed model_config
         try:
@@ -532,6 +537,16 @@ class Session:
                 self.save()
                 calls = assistant.get("tool_calls") or []
                 if not calls:
+                    truncated = assistant.pop("_truncated", False)   # cut off at max_output_tokens (llm.py)
+                    if truncated:
+                        if turn["nudges"] < TRUNCATION_NUDGES:
+                            turn["nudges"] += 1
+                            self.on_event("note", f"…output hit the model's token cap — asking it to continue "
+                                                  f"({turn['nudges']}/{TRUNCATION_NUDGES})")
+                            self.messages.append({"role": "user", "content": TRUNCATION_NUDGE})
+                            continue
+                        self.on_event("note", "the model's output was cut at its max_output_tokens limit again "
+                                              "— the reply may be incomplete; ask for the rest or chunk smaller")
                     if self.has_pending():        # the user spoke while this reply was being written: answer them too
                         continue
                     turn["ok"] = True

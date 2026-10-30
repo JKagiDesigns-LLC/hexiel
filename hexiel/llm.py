@@ -323,6 +323,8 @@ class AnthropicProvider(AbortableHTTP):
             "content-type": "application/json",
         }
         buf = AssistantBuffer()
+        usage = {}
+        truncated = False                 # a reply cut off at max_tokens is not a complete reply
         with self.client(timeout) as client:
             with client.stream("POST", f"{self.base_url}/v1/messages",
                                json=body, headers=headers) as resp:
@@ -356,12 +358,17 @@ class AnthropicProvider(AbortableHTTP):
                         elif delta["type"] == "input_json_delta" and data.get("index") in slots:
                             buf.add_args(slots[data["index"]], delta["partial_json"])
                     elif mtype == "message_delta":
+                        if data.get("delta", {}).get("stop_reason") == "max_tokens":
+                            truncated = True
                         out = data.get("usage", {}).get("output_tokens")
                         if out:
                             usage["completion_tokens"] = out
                 self.meter(model, usage)
                 yield ("done", usage)
-        yield ("assistant", buf.finalize())
+        final = buf.finalize()
+        if truncated:
+            final["_truncated"] = True                  # cut off at max_tokens: the reply is not complete
+        yield ("assistant", final)
 
 
 class OpenAICompatProvider(AbortableHTTP):
@@ -472,10 +479,12 @@ class OpenAICompatProvider(AbortableHTTP):
                     continue
                 raise_for_status(response.status_code, response.headers, text, "provider")
             try:
-                usage = {}
+                usage, finish = {}, ""
                 for sse in _iter_sse(response.iter_lines()):
                     data = json.loads(sse)
                     for choice in data.get("choices", []):
+                        if choice.get("finish_reason"):
+                            finish = choice["finish_reason"]
                         delta = choice.get("delta", {})
                         if delta.get("reasoning"):
                             yield ("thinking", delta["reasoning"])
@@ -498,7 +507,10 @@ class OpenAICompatProvider(AbortableHTTP):
                 yield ("done", usage)
             finally:
                 response.close()
-        yield ("assistant", buf.finalize())
+        final = buf.finalize()
+        if finish == "length":
+            final["_truncated"] = True                  # cut off at max_tokens: the reply is not complete
+        yield ("assistant", final)
 
 
 def _iter_sse(lines: Iterator[str]) -> Iterator[str]:

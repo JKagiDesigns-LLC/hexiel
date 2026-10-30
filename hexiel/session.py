@@ -179,6 +179,13 @@ def cooling_down(name: str) -> bool:
     return bool(until)
 
 
+def _left_out(tool, args, exc: KeyError) -> bool:
+    """A KeyError naming one of the tool's own arguments that the call didn't include."""
+    key = exc.args[0] if exc.args else None
+    return (isinstance(args, dict) and isinstance(key, str) and key not in args
+            and key in ((tool.parameters or {}).get("properties") or {}))
+
+
 class Session:
     def __init__(self, model_config: ModelConfig, settings: Settings, cwd: str,
                  tools: list, system_prompt: str, on_event: Callable = None,
@@ -827,6 +834,16 @@ class Session:
                                   "content": f"error: unknown tool '{call['name']}'",
                                   "is_error": True})
             return
+        args = call["arguments"]
+        missing = [k for k in (tool.parameters or {}).get("required", [])
+                   if not isinstance(args, dict) or args.get(k) is None]
+        if missing:
+            # the model's mistake, not hexiel's: tell it what to send instead of crashing and filing an error report
+            text = (f"error: {tool.name} needs {' and '.join(repr(k) for k in missing)} — "
+                    f"call {tool.name} again with {'it' if len(missing) == 1 else 'them'} filled in")
+            self.messages.append({"role": "tool", "tool_call_id": call["id"], "content": text, "is_error": True})
+            self.on_event("tool_result", call, text, True)
+            return
         from . import permissions
         rule = permissions.decide(self.rules, tool.name, call["arguments"], self.cwd)
         if rule == "deny":
@@ -890,16 +907,22 @@ class Session:
         try:
             result = tool.run(call["arguments"], self.tool_ctx)
         except Exception as exc:  # noqa: BLE001 - record + recover, model continues
-            import traceback
-            from . import heal as heal_mod
-            path = heal_mod.record_incident(self.cwd, kind=f"tool-{tool.name}",
-                                            detail=f"{tool.name} raised {exc!r}",
-                                            traceback_text=traceback.format_exc(),
-                                            context={"arguments": call["arguments"]})
-            self.on_event("incident", tool.name, str(path))
-            result = ToolResult(text=f"internal error in {tool.name}: {exc!r} "
-                                     f"(recorded to {path}); work around it or retry",
-                                is_error=True)
+            if isinstance(exc, KeyError) and _left_out(tool, args, exc):
+                # one of the tool's own arguments was left out (its schema doesn't mark it required): the model's
+                # mistake, so it is told what to send — not filed as an error in hexiel
+                result = ToolResult(text=f"error: {tool.name} needs {exc.args[0]!r} — call {tool.name} again with "
+                                         "it filled in", is_error=True)
+            else:
+                import traceback
+                from . import heal as heal_mod
+                path = heal_mod.record_incident(self.cwd, kind=f"tool-{tool.name}",
+                                                detail=f"{tool.name} raised {exc!r}",
+                                                traceback_text=traceback.format_exc(),
+                                                context={"arguments": call["arguments"]})
+                self.on_event("incident", tool.name, str(path))
+                result = ToolResult(text=f"internal error in {tool.name}: {exc!r} "
+                                         f"(recorded to {path}); work around it or retry",
+                                    is_error=True)
         for out in hooks_mod.run(self.hooks, "PostToolUse", self.cwd, self.id, tool=tool.name,
                                  tool_input=call["arguments"], tool_response=result.text):
             if out.blocked and out.stderr:          # feedback for the model (e.g. lint errors)

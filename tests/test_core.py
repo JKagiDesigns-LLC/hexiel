@@ -257,3 +257,61 @@ def test_compaction_prompts_demand_accuracy_and_distrust_the_summary():
     assert "outcome not seen" in COMPACT_PROMPT and "hypothesis (unverified)" in COMPACT_PROMPT
     assert "word for word" in COMPACT_PROMPT and "earlier <auto-compaction>" in COMPACT_PROMPT
     assert "authoritative" not in ON_COMPACTION_NOTE and "verify" in ON_COMPACTION_NOTE
+
+
+def test_glob_takes_absolute_and_home_patterns(tmp_path):
+    # reported automatically: glob raised NotImplementedError('Non-relative patterns are unsupported')
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "a.py").write_text("x")
+    (tmp_path / "src" / "b.txt").write_text("x")
+    glob = tool_by_name("glob")
+    out = glob.run({"pattern": f"{tmp_path}/src/*.py"}, make_ctx(tmp_path))
+    assert not out.is_error and out.text == str(tmp_path / "src" / "a.py")
+    out = glob.run({"pattern": f"{tmp_path}/**/*.txt"}, make_ctx(tmp_path))
+    assert out.text == str(tmp_path / "src" / "b.txt")
+    assert glob.run({"pattern": f"{tmp_path}/src/a.py"}, make_ctx(tmp_path)).text == str(tmp_path / "src" / "a.py")
+    assert glob.run({"pattern": f"{tmp_path}/nope/*.py"}, make_ctx(tmp_path)).text == "(no matches)"
+
+
+def test_grep_survives_files_that_are_not_utf8(tmp_path):
+    # reported automatically: grep raised UnicodeDecodeError (ripgrep printed a line from a binary-ish file)
+    (tmp_path / "skin.txt").write_bytes(b"image \xff\xfe background_port.png\n")
+    (tmp_path / "ok.txt").write_text("image background_land.png\n")
+    out = tool_by_name("grep").run({"pattern": "background"}, make_ctx(tmp_path))
+    assert not out.is_error and "background_land.png" in out.text and "background_port.png" in out.text
+    sub = tmp_path / "deep"
+    sub.mkdir()
+    (sub / "x.txt").write_text("background here\n")
+    out = tool_by_name("grep").run({"pattern": "background", "path": "deep"}, make_ctx(tmp_path))   # relative to the chat
+    assert "x.txt" in out.text and "ok.txt" not in out.text
+
+
+def test_a_tool_call_missing_a_required_argument_is_sent_back_not_reported(tmp_path, monkeypatch):
+    # reported automatically: read/write/edit raised KeyError('path'), grep raised KeyError('pattern')
+    from hexiel import heal
+    recorded = []
+    monkeypatch.setattr(heal, "record_incident", lambda *a, **k: recorded.append(a) or "x")
+    s = Session(ModelConfig(name="t", provider="openai", model="m", base_url="http://127.0.0.1:9/v1"),
+                Settings(auto_approve=True), cwd=str(tmp_path), tools=build_tools(Toolchain()), system_prompt="t")
+    s.bind_tool_ctx(make_ctx(tmp_path))
+    for i, (name, args) in enumerate([("read", {}), ("write", {"content": "x"}), ("edit", {"old": "a"}),
+                                      ("grep", {"path": "."})]):
+        s._execute_tool({"id": f"c{i}", "name": name, "arguments": args})
+        last = s.messages[-1]
+        assert last["is_error"] and f"{name} needs" in last["content"] and "again" in last["content"]
+    assert "'path'" in s.messages[0]["content"] and "'pattern'" in s.messages[-1]["content"]
+    assert recorded == []                                         # nothing filed as hexiel's own error
+
+
+def test_a_real_keyerror_inside_a_tool_is_still_reported(tmp_path, monkeypatch):
+    from hexiel import heal
+    from hexiel.tools import ToolDef
+    recorded = []
+    monkeypatch.setattr(heal, "record_incident", lambda *a, **k: recorded.append(k.get("kind")) or "x")
+    broken = ToolDef("broken", "d", {"type": "object", "properties": {"path": {"type": "string"}}},
+                     readonly=True, run=lambda args, ctx: {}["internal"])
+    s = Session(ModelConfig(name="t", provider="openai", model="m", base_url="http://127.0.0.1:9/v1"),
+                Settings(), cwd=str(tmp_path), tools=[broken], system_prompt="t")
+    s.bind_tool_ctx(make_ctx(tmp_path))
+    s._execute_tool({"id": "c", "name": "broken", "arguments": {"path": "x"}})
+    assert recorded == ["tool-broken"] and "internal error" in s.messages[-1]["content"]

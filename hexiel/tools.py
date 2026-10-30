@@ -335,8 +335,17 @@ def _edit(args: dict, ctx: ToolContext) -> ToolResult:
 # ---------------------------------------------------------------- glob / grep / list / file_info
 
 def _glob(args: dict, ctx: ToolContext) -> ToolResult:
-    pattern = args["pattern"]
-    base = Path(args.get("path") or ctx.cwd)
+    pattern = os.path.expanduser(args["pattern"])
+    base = _resolve_path(os.path.expanduser(args.get("path") or ctx.cwd), ctx)
+    if Path(pattern).is_absolute():
+        # rglob only takes relative patterns: an absolute one ("/srv/app/*.py", "~/notes/**/*.md") becomes its
+        # fixed leading folders as the base and the rest as the pattern
+        parts = Path(pattern).parts
+        cut = next((i for i, part in enumerate(parts) if any(c in part for c in "*?[")), len(parts))
+        if cut == len(parts):
+            exact = Path(pattern)
+            return text_result(str(exact) if exact.is_file() else "(no matches)")
+        base, pattern = Path(*parts[:cut]), str(Path(*parts[cut:]))
     try:
         matches = sorted(str(p) for p in base.rglob(pattern) if p.is_file())[:200]
     except (OSError, IndexError) as exc:
@@ -350,7 +359,7 @@ _SKIP_DIRS = {".git", "node_modules", "__pycache__", ".venv", "venv", ".pixi",
 
 def _grep(args: dict, ctx: ToolContext) -> ToolResult:
     pattern = args["pattern"]
-    base = Path(args.get("path") or ctx.cwd)
+    base = _resolve_path(os.path.expanduser(args.get("path") or ctx.cwd), ctx)
     file_glob = args.get("glob", "")
     ignore_case = bool(args.get("ignore_case"))
     try:
@@ -365,7 +374,7 @@ def _grep(args: dict, ctx: ToolContext) -> ToolResult:
         if file_glob:
             cmd += ["-g", file_glob]
         cmd += ["-e", pattern, str(base)]
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+        proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60)
         return text_result(proc.stdout.strip() or "(no matches)")
     hits = []
     try:

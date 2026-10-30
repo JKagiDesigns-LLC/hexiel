@@ -2,6 +2,7 @@
 fallback profile switch, and giving up when a limit won't reset soon."""
 
 import datetime
+import re
 import sys
 from pathlib import Path
 
@@ -82,6 +83,24 @@ def test_unknown_reset_backs_off_exponentially(tmp_path, monkeypatch, clock):
     s.run_turn("hi")
     waits = [round(e[1]) for e in events if e[0] == "rate_limited"]
     assert waits == [32, 62] and s.messages[-1]["content"] == "ok"
+
+
+def test_retry_notes_carry_the_schedule(tmp_path, monkeypatch, clock):
+    s, events = make(tmp_path, monkeypatch, [
+        llm.RateLimitError("429", retry_after=300),
+        {"role": "assistant", "content": "ok"}])
+    s.run_turn("hi")
+    ev = next(e for e in events if e[0] == "rate_limited")
+    assert ev[1] == 302 and ev[3] == 1 and re.match(r"\d\d:\d\d:\d\d", ev[4])   # (wait, reason, attempt, retry-at)
+
+
+def test_a_small_retry_after_gets_a_backoff_floor(tmp_path, monkeypatch, clock):
+    s, events = make(tmp_path, monkeypatch, [
+        llm.RateLimitError("429", retry_after=2),
+        {"role": "assistant", "content": "ok"}])
+    s.run_turn("hi")
+    ev = next(e for e in events if e[0] == "rate_limited")                     # floor beats the tight 2 s loop
+    assert round(ev[1]) == 62 and ev[3] == 1
 
 
 def test_long_term_limit_switches_to_fallback(tmp_path, monkeypatch, clock):

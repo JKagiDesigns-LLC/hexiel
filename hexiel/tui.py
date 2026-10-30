@@ -1999,14 +1999,20 @@ class HexielTUI(App):
             return
         if event == "rate_limited":
             seconds, reason = payload[0], payload[1] if len(payload) > 1 else ""
+            attempt, deadline = (payload[2], payload[3]) if len(payload) > 3 else (0, "")
+            which = f"attempt {attempt}: " if attempt else ""
+            when = f" (at {deadline})" if deadline else ""
             self.activity.countdown(seconds)
-            self.add_note(f"⏸ rate limited — hexiel will resume on its own in ~{int(seconds // 60)}m"
-                          f"{int(seconds % 60):02d}s. ({reason[:120].replace('[', chr(92) + '[')})")
+            self.add_note(f"⏸ rate limited — {which}hexiel retries on its own in ~{int(seconds // 60)}m"
+                          f"{int(seconds % 60):02d}s{when}. ({reason[:120].replace('[', chr(92) + '[')})")
             return
         if event == "model_unreachable":
             seconds, reason = payload[0], payload[1] if len(payload) > 1 else ""
+            attempt, deadline = (payload[2], payload[3]) if len(payload) > 3 else (0, "")
+            which = f"attempt {attempt}: " if attempt else ""
+            when = f" (at {deadline})" if deadline else ""
             self.activity.countdown(seconds)
-            self.add_note(f"⚠ model server not responding — retrying in {int(seconds)}s. "
+            self.add_note(f"⚠ model server not responding — {which}retrying in {int(seconds)}s{when}. "
                           f"({reason[:120].replace('[', chr(92) + '[')})")
             return
         if event == "resumed":

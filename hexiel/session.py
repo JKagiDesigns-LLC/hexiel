@@ -5,6 +5,7 @@ import queue
 import threading
 import time
 import uuid
+import datetime
 
 import httpx
 from collections.abc import Callable
@@ -640,7 +641,7 @@ class Session:
                             continue
                         self._provider_error = str(exc)
                         return {"role": "assistant", "content": ""}
-                    self.on_event("model_unreachable", wait, str(exc)[:200])
+                    self.on_event("model_unreachable", wait, str(exc)[:200], attempt + 1, self._retry_at(wait))
                     if not self._sleep_interruptibly(wait):
                         return {"role": "assistant", "content": ""}
                     attempt += 1
@@ -654,7 +655,7 @@ class Session:
                     self._provider_error = str(exc) + (
                         "" if self.settings.auto_resume else " (auto-resume is off)")
                     return {"role": "assistant", "content": ""}
-                self.on_event("rate_limited", wait, str(exc)[:200])
+                self.on_event("rate_limited", wait, str(exc)[:200], attempt + 1, self._retry_at(wait))
                 if not self._sleep_interruptibly(wait):
                     return {"role": "assistant", "content": ""}
                 self.on_event("resumed")
@@ -717,11 +718,21 @@ class Session:
         """Seconds to wait before retrying, or None to stop waiting."""
         if not self.settings.auto_resume or exc.long_term and exc.retry_after is None:
             return None
-        wait = exc.retry_after if exc.retry_after is not None else min(30 * 2 ** attempt, 900)
+        if exc.retry_after is not None:
+            # the server's reset time wins, but never tighter than a 60-120 s floor: a tiny retry-after
+            # would otherwise hammer the struggling server (a floor keeps the requests respectable)
+            wait = max(float(exc.retry_after), min(60 * (2 ** attempt if attempt else 1), 120))
+        else:
+            wait = min(30 * 2 ** attempt, 900)
         wait += 2                                         # land just after the reset
         if wait > self.settings.auto_resume_max_wait or attempt >= 12:
             return None
         return wait
+
+    @staticmethod
+    def _retry_at(wait: float) -> str:
+        """Local clock time of the retry, for 'resuming at 12:41:05' notes."""
+        return (datetime.datetime.now() + datetime.timedelta(seconds=wait)).strftime("%H:%M:%S")
 
     def _switch_to_fallback(self, reason: str) -> bool:
         """Switch to the next profile left in this model's fallback chain ([models.*] `fallbacks`;

@@ -185,15 +185,19 @@ class WebState:
         elif event == "thinking":
             self.broadcast({"t": "thinking", "delta": payload[0]})
         elif event == "rate_limited":
-            self.broadcast({"t": "note", "text": f"⏸ rate limited — resuming automatically in "
-                                                f"~{int(payload[0] // 60)}m{int(payload[0] % 60):02d}s"})
+            attempt = f" attempt {payload[2]}:" if len(payload) > 2 else ""
+            when = f" (at {payload[3]})" if len(payload) > 3 else ""
+            self.broadcast({"t": "note", "text": f"⏸ rate limited{attempt} resuming automatically in "
+                                                 f"~{int(payload[0] // 60)}m{int(payload[0] % 60):02d}s{when}"})
         elif event in ("model_active", "timers"):
             self.broadcast({"t": "status", "status": status_state(self.session)})
         elif event == "note":
             self.broadcast({"t": "note", "text": str(payload[0])})
         elif event == "model_unreachable":
-            self.broadcast({"t": "note", "text": f"⚠ model server not responding — retrying in {int(payload[0])}s "
-                                                f"({payload[1]})"})
+            attempt = f" attempt {payload[2]}:" if len(payload) > 2 else ""
+            when = f" (at {payload[3]})" if len(payload) > 3 else ""
+            self.broadcast({"t": "note", "text": f"⚠ model server not responding{attempt} retrying in "
+                                                 f"{int(payload[0])}s{when} ({payload[1]})"})
         elif event == "fallback":
             self.broadcast({"t": "status", "status": status_state(self.session)})
             self.broadcast({"t": "note", "text": f"↪ {payload[0]} is limited — continuing on {payload[1]}"})

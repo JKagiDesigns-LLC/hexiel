@@ -21,6 +21,7 @@ import queue
 import re
 import subprocess
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -31,7 +32,8 @@ from . import __version__
 
 PROTOCOL_VERSION = "2025-06-18"
 START_TIMEOUT = 20.0
-CALL_TIMEOUT = 300.0
+CALL_TIMEOUT = 120.0                # replaced by a server's own timeout when its config sets one
+RESTART_COOLDOWN = 30.0             # after a restart failure, calls fail fast (backed off) for a while
 
 
 class MCPError(RuntimeError):
@@ -48,6 +50,7 @@ class ServerConfig:
     headers: dict = field(default_factory=dict)
     tools: list | None = None          # allowlist; None = all
     enabled: bool = True
+    timeout: float = 0.0               # seconds per tool call; 0 = the default (one bad value can't kill the server)
     source: str = ""
 
 
@@ -60,13 +63,17 @@ def _expand(value: str) -> str:
 
 
 def _from_entry(name: str, entry: dict, source: str) -> ServerConfig:
+    try:
+        timeout = float(entry.get("timeout") or 0)      # a typo here degrades to the default, never an abort
+    except (TypeError, ValueError):
+        timeout = 0.0
     return ServerConfig(
         name=name, command=_expand(entry.get("command", "")),
         args=[_expand(a) for a in entry.get("args", [])],
         env={k: _expand(v) for k, v in (entry.get("env") or {}).items()},
         url=_expand(entry.get("url", "")),
         headers={k: _expand(v) for k, v in (entry.get("headers") or {}).items()},
-        tools=entry.get("tools"), enabled=entry.get("enabled", True), source=source)
+        tools=entry.get("tools"), enabled=entry.get("enabled", True), timeout=max(0.0, timeout), source=source)
 
 
 def load_configs(cwd: str, config_mcp: dict | None = None) -> list[ServerConfig]:
@@ -243,6 +250,8 @@ class Server:
         self.tools: list[dict] = []
         self.error = ""
         self.info: dict = {}
+        self.cooldown_until = 0.0
+        self.restarts = 0
 
     def _rpc(self, method: str, params: dict | None = None, timeout: float = CALL_TIMEOUT) -> dict:
         msg = {"jsonrpc": "2.0", "id": next(self.ids), "method": method, "params": params or {}}
@@ -275,7 +284,37 @@ class Server:
         return self
 
     def call(self, tool: str, arguments: dict) -> dict:
-        return self._rpc("tools/call", {"name": tool, "arguments": arguments or {}})
+        """One tools/call: a call that dies or waits past its timeout is RESTARTED (the transport was
+        the broken part, not the invocation) and retried once — after that, backed-off failures
+        return errors fast instead of freezing the turn."""
+        timeout = self.cfg.timeout or CALL_TIMEOUT
+        if self.cooldown_until > time.time():
+            raise MCPError(f"{self.cfg.name}/{tool}: down (recent failures); backed off for "
+                           f"{int(self.cooldown_until - time.time())}s")
+        try:
+            return self._rpc("tools/call", {"name": tool, "arguments": arguments or {}}, timeout=timeout)
+        except (MCPError, OSError, httpx.HTTPError) as exc:
+            self.error = ""
+            if time.time() < self.cooldown_until:
+                raise MCPError(f"{self.cfg.name}/{tool}: down ({str(exc)[:120]}); cooldown until "
+                               f"{int(self.cooldown_until - time.time())}s") from exc
+            self._restart()
+            try:
+                return self._rpc("tools/call", {"name": tool, "arguments": arguments or {}}, timeout=timeout)
+            except (MCPError, OSError, httpx.HTTPError) as exc:
+                self.cooldown_until = time.time() + RESTART_COOLDOWN
+                raise MCPError(f"{self.cfg.name}/{tool}: {str(exc)[:200]} "
+                               f"({getattr(self.cfg, 'name', '')} restarted once; backed off {RESTART_COOLDOWN:.0f}s)") from exc
+
+    def _restart(self) -> None:
+        self.restarts += 1
+        self.close()
+        self.tools = []
+        self.start()
+        if self.error:
+            self.cooldown_until = time.time() + RESTART_COOLDOWN
+            raise MCPError(f"{self.cfg.name} could not be restarted: {self.error}")
+        self.error = ""
 
     def close(self) -> None:
         if self.transport is not None:

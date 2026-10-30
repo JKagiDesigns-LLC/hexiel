@@ -513,6 +513,7 @@ class Session:
                     pass
                 if self.compaction_needed() and not self.compacting:
                     self.compact(self._provider_override or provider)
+                self._supersede_reads()
                 tool_defs = self._tool_defs()        # load_tools may have added a group
                 self.on_event("request", self.tokens_now())
                 assistant = self._stream_assistant(provider, tool_defs)
@@ -1188,6 +1189,42 @@ class Session:
             return False
         current = max(self.estimate_tokens(), self.tokens_now())
         return current >= self.model_config.context_window * self.settings.compact_threshold
+
+    SUPERSEDE_MIN_CHARS = 64 * 1024     # a history rewrite invalidates the prompt cache from that block on:
+                                        # only rewrite when the reclaim justifies the one cache miss
+
+    def _supersede_reads(self) -> None:
+        """Context economy (Cline's outdated-read rule): when a file was READ AGAIN later in the history,
+        the earlier read's file body shrinks to a one-line stamp the model can follow to the newer read.
+        Rewrites land in batches (>= SUPERSEDE_MIN_CHARS reclaimable) so the provider's prompt cache is
+        not invalidated for pocket change."""
+        calls: dict[str, str] = {}                   # tool_call_id -> path
+        reads: list[tuple[int, str, str]] = []       # (index in history, path, result text)
+        for i, msg in enumerate(self.messages):
+            for call in msg.get("tool_calls") or []:
+                if call.get("name") == "read" and isinstance(call.get("arguments"), dict):
+                    calls[str(call.get("id", ""))] = str(call["arguments"].get("path", ""))
+            if (msg.get("role") == "tool" and not msg.get("is_error")
+                    and calls.get(str(msg.get("tool_call_id", "")))):
+                path = calls[str(msg["tool_call_id"])]
+                reads.append((i, path, str(msg.get("content", ""))))
+        newest: dict[str, int] = {}
+        for i, path, _ in reads:
+            newest[path] = i                         # the last read of each path
+        stale = [(i, path, text) for i, path, text in reads
+                 if newest[path] > i and len(text.split("\n", 1)[-1]) > 200]
+        if not stale:
+            return
+        reclaim = sum(len(t) for _i, _p, t in stale)
+        if reclaim < self.SUPERSEDE_MIN_CHARS:
+            return
+        for i, path, text in stale:
+            head = text.split("\n", 1)[0]            # the path line
+            self.messages[i]["content"] = (f"{head}\n[outdated — a newer read of this file is in the "
+                                           "history; the file body it showed was replaced here]")
+        self.on_event("note", f"✂ {len(stale)} superseded read{'s' if len(stale) != 1 else ''} shrunk "
+                              f"(~{reclaim // 1024} KB reclaimed for the context window)")
+        self.save()
 
     def _mech_trim_overflow(self) -> None:
         """Deterministic overflow recovery: summary compaction can fail exactly when the window is full,

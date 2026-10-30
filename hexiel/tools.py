@@ -2,6 +2,7 @@
 
 import base64
 import hashlib
+import itertools
 import os
 import re
 import shlex
@@ -9,6 +10,7 @@ import shutil
 import struct
 import subprocess
 import sys
+import threading
 import time
 from dataclasses import dataclass, field
 from html.parser import HTMLParser
@@ -110,6 +112,167 @@ def head_tail(text: str, head: int = 10_000, tail: int = 5_000) -> str:
 
 _ANSI = re.compile(r"\x1b\[[0-9;]*m")
 
+_TASK_KEEP_CHARS = 200_000        # a task's buffer caps here; the tasks tool caps harder per call
+MAX_TASKS = 12
+
+
+# ---------------------------------------------------------------- background tasks
+
+@dataclass
+class ShellTask:
+    """A shell command hexiel keeps ownership of: started by run_in_background, or parked there
+    when it outlived its timeout instead of being killed. One daemon thread drains its output."""
+
+    id: str
+    label: str
+    proc: object                                     # Popen, stdout merged with stderr
+    started: float
+    out: list = field(default_factory=list)          # lines of output as they arrive
+    lock: object = field(default_factory=threading.Lock)
+    done: bool = False
+    code: int | None = None
+    reaped: bool = False                             # its completion was already reported to a session
+
+    def running(self) -> bool:
+        return not self.done
+
+    def text(self) -> str:
+        with self.lock:
+            return "".join(self.out)
+
+
+_TASKS: dict[str, ShellTask] = {}
+_task_lock = threading.Lock()
+_task_seq = itertools.count(1)
+
+
+def _pump(task: ShellTask) -> None:
+    """Drain the task's output into its buffer; the process is dead when the loop ends."""
+    proc = task.proc
+    try:
+        for line in proc.stdout:
+            with task.lock:
+                task.out.append(line)
+                if sum(len(l) for l in task.out) > _TASK_KEEP_CHARS:
+                    del task.out[0]                  # newest output wins, like head+tail capping
+    except Exception:                                # noqa: BLE001 - a closed/cancelled pipe just ends the pump
+        pass
+    try:
+        task.code = proc.wait(timeout=600)
+    except Exception:                                # noqa: BLE001
+        try:
+            _kill_tree(proc)
+        except Exception:                            # noqa: BLE001
+            pass
+        task.code = -1
+    with task.lock:
+        task.done = True
+
+
+def _register_task(task: ShellTask) -> None:
+    with _task_lock:
+        while len(_TASKS) >= MAX_TASKS:              # retire the oldest when the table is full
+            oldest = min(_TASKS.values(), key=lambda t: t.started)
+            _TASKS.pop(oldest.id, None)
+            try:
+                if oldest.running():
+                    _kill_tree(oldest.proc)
+            except Exception:                        # noqa: BLE001
+                pass
+        _TASKS[task.id] = task
+
+
+def _new_task(argv: list[str], label: str, cwd: str) -> ShellTask:
+    proc = subprocess.Popen(argv, cwd=cwd, stdin=subprocess.DEVNULL,
+                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                            bufsize=1, start_new_session=(os.name != "nt"))
+    task = ShellTask(f"bg-{next(_task_seq)}", label[:80], proc, time.time())
+    threading.Thread(target=_pump, args=(task,), daemon=True, name="hexiel-shell-task").start()
+    _register_task(task)
+    return task
+
+
+def drain_finished() -> list[str]:
+    """Completion notes for background tasks nobody looked at yet — the session loop delivers
+    them into the conversation so the model can read the output with the tasks tool."""
+    notes = []
+    with _task_lock:
+        tasks = list(_TASKS.values())
+    for task in tasks:
+        if task.done and not task.reaped:
+            task.reaped = True
+            size = sum(len(l) for l in task.out)
+            notes.append(f"background task {task.id} finished (exit code {task.code}) — {task.label}: "
+                         f"{size} chars of output ready; call the tasks tool (op='output', id='{task.id}') to read it")
+    return notes
+
+
+def _park_on_timeout(proc: subprocess.Popen, label: str, parked: dict) -> subprocess.Popen:
+    """Called instead of the kill when a command outlives its timeout: the command keeps running
+    as a task; whatever is already buffered is read here (Unix) and shown in the tool result."""
+    grabbed = ""
+    if os.name != "nt":
+        try:
+            import fcntl
+            fd = proc.stdout
+            fcntl.fcntl(fd, fcntl.F_SETFL, fcntl.fcntl(fd, fcntl.F_GETFL) | fcntl.O_NONBLOCK)
+            chunks = []
+            while True:
+                try:
+                    chunk = os.read(fd.fileno(), 65536)
+                except BlockingIOError:
+                    break
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                if len(chunks) * 65536 > 400_000:
+                    break
+            grabbed = b"".join(chunks).decode("utf-8", "replace")
+            fcntl.fcntl(fd, fcntl.F_SETFL, fcntl.fcntl(fd, fcntl.F_GETFL) & ~fcntl.O_NONBLOCK)
+        except Exception:                                # noqa: BLE001 - preview is best effort only
+            grabbed = ""
+    task = ShellTask(f"bg-{next(_task_seq)}", label[:80], proc, time.time())
+    if grabbed:
+        task.out.append(grabbed)
+    threading.Thread(target=_pump, args=(task,), daemon=True, name="hexiel-shell-task").start()
+    _register_task(task)
+    parked["task"] = task
+    return proc
+
+
+def _tasks_tool(args: dict, ctx: ToolContext) -> ToolResult:
+    """Background shell tasks: list them, read a task's output, or kill one. Only covers the
+    tasks of THIS hexiel window (each process keeps its own table)."""
+    op = args.get("op", "list")
+    with _task_lock:
+        tasks = sorted(_TASKS.values(), key=lambda t: t.id)
+    if op == "list":
+        lines = []
+        for t in tasks:
+            size = sum(len(l) for l in t.out)
+            state = f"finished (exit code {t.code})" if t.done else f"running {int(time.time() - t.started)}s"
+            lines.append(f"{t.id}  {state}  {size} chars of output — {t.label}")
+        return text_result("\n".join(lines) or "no background tasks")
+    tid = str(args.get("id", ""))
+    task = next((t for t in tasks if t.id.endswith(tid)), None)
+    if task is None:
+        return text_result(f"error: no task matching {tid or '(no id)'} — try op='list'", True)
+    if op == "output":
+        with task.lock:
+            body = "".join(task.out).strip()
+        out = head_tail(body) if body else "(no output yet)"
+        if task.done:
+            out += f"\n(finished, exit code {task.code})"
+        return text_result(out)
+    if op == "kill":
+        try:
+            _kill_tree(task.proc)
+        except Exception:                                # noqa: BLE001
+            return text_result(f"error: could not kill {task.id}", True)
+        task.out.append("")                              # nudge the pump loop to its end
+        return text_result(f"killed {task.id} — {task.label}")
+    return text_result("error: op must be list, output or kill", True)
+
 
 def _clean(text: str) -> str:
     """Strip ANSI color escapes (pwsh colorizes PowerShell errors)."""
@@ -134,10 +297,11 @@ def _kill_tree(proc: subprocess.Popen) -> None:
         proc.kill()
 
 
-def run_cancellable(argv, *, cwd=None, timeout=None, stop=None, input=None) -> subprocess.CompletedProcess:
+def run_cancellable(argv, *, cwd=None, timeout=None, stop=None, input=None, on_timeout=None) -> subprocess.CompletedProcess:
     """subprocess.run(capture_output, text) that notices `stop` (a threading.Event) within ~0.25 s and kills
     the whole process group instead of blocking until the command finishes. Raises ToolCancelled on stop and
-    subprocess.TimeoutExpired on timeout (both after killing the command)."""
+    subprocess.TimeoutExpired on timeout (both after killing the command) — unless `on_timeout` is given,
+    which is called with the LIVE process instead (the caller then owns it, e.g. parking a background task)."""
     proc = subprocess.Popen(argv, cwd=cwd, stdin=subprocess.PIPE if input is not None else None,
                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
                             start_new_session=(os.name != "nt"))
@@ -154,6 +318,8 @@ def run_cancellable(argv, *, cwd=None, timeout=None, stop=None, input=None) -> s
             out, err = proc.communicate()
             raise ToolCancelled(out or "", err or "")
         if deadline and time.time() > deadline:
+            if on_timeout is not None:
+                return on_timeout(proc)          # the command keeps running: the caller parked it
             _kill_tree(proc)
             out, err = proc.communicate()
             raise subprocess.TimeoutExpired(argv, timeout, output=out, stderr=err)
@@ -172,8 +338,15 @@ def _run_shell(args: dict, ctx: ToolContext, argv: list[str], shell_label: str) 
     if not cmd:
         return text_result("error: command is required", True)
     timeout = float(args.get("timeout") or 120)
+    if bool(args.get("run_in_background")):
+        task = _new_task(argv, f"{shell_label}: {cmd}", ctx.cwd)
+        return text_result(f"running in the background as task {task.id} — poll it with the tasks tool "
+                           f"(op='output', id='{task.id}'); you will be told when it finishes. "
+                           "Note: it dies if this hexiel process exits.")
+    parked = {}
     try:
-        proc = run_cancellable(argv, cwd=ctx.cwd, timeout=timeout, stop=ctx.stop_event)
+        proc = run_cancellable(argv, cwd=ctx.cwd, timeout=timeout, stop=ctx.stop_event,
+                               on_timeout=lambda p: _park_on_timeout(p, f"{shell_label}: {cmd}", parked))
     except ToolCancelled as exc:
         return _cancelled_result(exc)
     except subprocess.TimeoutExpired:
@@ -182,6 +355,14 @@ def _run_shell(args: dict, ctx: ToolContext, argv: list[str], shell_label: str) 
         return text_result(f"error: {shell_label} not installed", True)
     except PermissionError:
         return text_result(f"error: {shell_label} is not executable", True)
+    if parked:
+        task = parked["task"]
+        preview = task.text()
+        body = (f"the command outlived its {timeout:.0f}s timeout — it is parked as background task {task.id} "
+                "and keeps running. Poll it with the tasks tool (op='output', id='"
+                f"{task.id}'), kill it with op='kill', or let it finish (you will be told)"
+                + (f"\noutput so far:\n{head_tail(preview)}" if preview else ""))
+        return text_result(body)
     out = []
     if proc.stdout:
         out.append(head_tail(_clean(proc.stdout)))
@@ -1025,8 +1206,11 @@ def build_tools(chain: Toolchain) -> list[ToolDef]:
     return [
         ToolDef("bash", "Run a shell command (/bin/bash -lc) in the project directory. "
                 "Use for git, builds, installs, anything without a dedicated tool. "
+                "Set run_in_background=true for dev servers / builds / watchers: you get a task id, "
+                "can read its output with the tasks tool, and are told when it finishes. "
                 "On Windows this falls back to PowerShell when bash is absent.",
-                obj(command={"type": "string"}, timeout={"type": "number"}),
+                obj(command={"type": "string"}, timeout={"type": "number"},
+                    run_in_background={"type": "boolean"}),
                 run=_run_bash),
         ToolDef("python", "Run a Python 3 script in the project directory (project venv if "
                 "present) and get its stdout/stderr. Prefer ONE script over many tool "
@@ -1038,8 +1222,15 @@ def build_tools(chain: Toolchain) -> list[ToolDef]:
         ToolDef("powershell", "Run a PowerShell command (pwsh) in the project directory — "
                 "Windows-native paths, registry, services, WMI, etc. Use instead of "
                 "bash for Windows-specific operations.",
-                obj(command={"type": "string"}, timeout={"type": "number"}),
+                obj(command={"type": "string"}, timeout={"type": "number"},
+                    run_in_background={"type": "boolean"}),
                 run=_run_powershell),
+        ToolDef("tasks", "This window's background shell tasks: list them, read a task's output, "
+                "or kill one (op must be list | output | kill; kill/output/id need the task id, "
+                "e.g. 'bg-1' or just '1').",
+                obj(op={"type": "string", "enum": ["list", "output", "kill"]},
+                    id={"type": "string"}),
+                readonly=True, always_ok=True, run=_tasks_tool),
         ToolDef("read", "Read a text file with line numbers; supports offset/limit for long files.",
                 obj(path={"type": "string"}, offset={"type": "integer"}, limit={"type": "integer"}),
                 readonly=True, run=_read),

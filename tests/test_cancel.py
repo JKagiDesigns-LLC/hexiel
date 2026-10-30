@@ -198,13 +198,25 @@ def test_cancel_keeps_the_output_produced_so_far(tmp_path):
     assert "partial-result" in out.text and "cancelled" in out.text
 
 
-def test_timeout_also_kills_children(tmp_path):
-    from hexiel.tools import _run_bash
+def test_a_timeout_parks_the_command_instead_of_killing_it(tmp_path):
+    """Timeouts park the command as a background task (it keeps running);
+    only the tasks tool's kill ends it — including its children."""
+    from hexiel.tools import _run_bash, _TASKS, _tasks_tool
+    ctx = _ctx(tmp_path, threading.Event())
     t0 = time.time()
-    out = _run_bash({"command": "sleep 31338 && echo no", "timeout": 1}, _ctx(tmp_path, threading.Event()))
-    assert "timed out" in out.text and time.time() - t0 < 4
+    out = _run_bash({"command": "sleep 31338 && echo no", "timeout": 1}, ctx)
+    assert out.is_error is False and "parked as background task" in out.text and time.time() - t0 < 4
+    tid = next(w for w in out.text.split() if w.startswith("bg-"))
     time.sleep(0.3)
-    assert not _alive("sleep 31338")
+    assert _alive("sleep 31338")               # parked: the command (and children) still run
+    killed = _tasks_tool({"op": "kill", "id": tid}, ctx)
+    assert killed.is_error is False and "killed" in killed.text
+    for _ in range(20):
+        if _TASKS[tid].done:
+            break
+        time.sleep(0.1)
+    time.sleep(0.3)
+    assert not _alive("sleep 31338")           # the kill takes the whole process group down
 
 
 def test_commands_without_cancel_still_work_normally(tmp_path):

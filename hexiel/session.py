@@ -503,6 +503,10 @@ class Session:
                     self.on_event("turn_end", aborted=True)
                     return
                 self._deliver_pending()
+                from . import tools as tools_mod
+                for task_note in tools_mod.drain_finished():
+                    self.messages.append({"role": "user", "content": f"[system] {task_note}"})
+                    self.on_event("note", task_note)
                 try:
                     consult.maybe_help(self)               # struggling? advice, or the strong model takes over for a while
                 except Exception:  # noqa: BLE001 - help is a bonus, never a reason to stop

@@ -556,13 +556,24 @@ class Session:
                     turn["ok"] = True
                     self.on_event("turn_end")
                     return
-                for call in calls:
-                    if self._stop.is_set():
-                        self._append_tool_results(calls[calls.index(call):])
-                        self.on_event("turn_end", aborted=True)
-                        return
-                    self._execute_tool(call)
-                    self._auto_todo_step(user_text, call, assistant, turn)
+                if len(calls) > 1 and self._parallel_safe(calls):
+                    for c in calls:                       # the UI stays single-threaded: announce, run, land
+                        self.on_event("tool_call", c)
+                    results = self._run_parallel(calls)   # a failing call carries its own error result
+                    for call in calls:
+                        entry = results.get(call["id"])
+                        if entry is not None:
+                            self.messages.append(entry)
+                            self.on_event("tool_result", call, entry["content"], entry.get("is_error", False))
+                        self._auto_todo_step(user_text, call, assistant, turn)
+                else:
+                    for call in calls:
+                        if self._stop.is_set():
+                            self._append_tool_results(calls[calls.index(call):])
+                            self.on_event("turn_end", aborted=True)
+                            return
+                        self._execute_tool(call)
+                        self._auto_todo_step(user_text, call, assistant, turn)
         finally:
             self._restore_weather_note()
             if self.model_config is not prev_mc and self._provider_override is None:
@@ -875,87 +886,101 @@ class Session:
 
     # ---------------------------------------------------------------- tool execution
 
-    def _execute_tool(self, call: dict) -> None:
+    @staticmethod
+    def _tool_message(call: dict, text: str, is_error: bool = False, images=None) -> dict:
+        entry = {"role": "tool", "tool_call_id": call["id"], "content": text}
+        if is_error:
+            entry["is_error"] = True
+        if images:
+            entry["images"] = images
+        return entry
+
+    def _screen(self, call: dict) -> tuple:
+        """The checks before any work on one call: (tool, rule, needs_ask, guarded, refusal).
+        A refusal is (text, is_error): the call is answered without running anything."""
+        from . import permissions
         tool = next((t for t in self.tools if t.name == call["name"]), None)
         if tool is None:
-            self.messages.append({"role": "tool", "tool_call_id": call["id"],
-                                  "content": f"error: unknown tool '{call['name']}'",
-                                  "is_error": True})
-            return
+            return None, None, False, False, (f"error: unknown tool '{call['name']}'", True)
         args = call["arguments"]
         missing = [k for k in (tool.parameters or {}).get("required", [])
                    if not isinstance(args, dict) or args.get(k) is None]
         if missing:
             # the model's mistake, not hexiel's: tell it what to send instead of crashing and filing an error report
-            text = (f"error: {tool.name} needs {' and '.join(repr(k) for k in missing)} — "
-                    f"call {tool.name} again with {'it' if len(missing) == 1 else 'them'} filled in")
-            self.messages.append({"role": "tool", "tool_call_id": call["id"], "content": text, "is_error": True})
-            self.on_event("tool_result", call, text, True)
-            return
-        from . import permissions
-        rule = permissions.decide(self.rules, tool.name, call["arguments"], self.cwd)
+            return None, None, False, False, (
+                f"error: {tool.name} needs {' and '.join(repr(k) for k in missing)} — "
+                f"call {tool.name} again with {'it' if len(missing) == 1 else 'them'} filled in", True)
+        rule = permissions.decide(self.rules, tool.name, args, self.cwd)
         if rule == "deny":
-            self.messages.append({
-                "role": "tool", "tool_call_id": call["id"], "is_error": True,
-                "content": f"Blocked by a permission rule: {call['name']} is denied for this "
-                           "target. Do not retry it; find another approach or ask the user."})
-            self.on_event("tool_result", call, "blocked by a deny rule", True)
-            return
+            return None, None, False, False, (
+                f"Blocked by a permission rule: {call['name']} is denied for this "
+                "target. Do not retry it; find another approach or ask the user.", True)
         if self.plan_mode and not tool.readonly and tool.name not in PLAN_MODE_ALLOWED:
-            self.messages.append({
-                "role": "tool", "tool_call_id": call["id"], "is_error": True,
-                "content": "Plan mode is on: no changes are made. Describe the change you "
-                           "would make instead; the user will turn plan mode off to apply it."})
-            self.on_event("tool_result", call, "skipped — plan mode", True)
-            return
+            return None, None, False, False, (
+                "Plan mode is on: no changes are made. Describe the change you "
+                "would make instead; the user will turn plan mode off to apply it.", True)
         skips_approval = getattr(tool, "always_ok", False) or rule == "allow"
         needs_ask = rule == "ask" or (not tool.readonly and not skips_approval and not self.auto_approve)
         guarded = False
         if (not needs_ask and self.auto_approve and self.guard_commits and rule != "allow"
                 and not tool.readonly and not getattr(tool, "always_ok", False)):
-            what = permissions.commit_action(tool.name, call["arguments"])
+            what = permissions.commit_action(tool.name, args)
             if what:
                 guarded = needs_ask = True
                 self.on_event("note", f"🔒 this would run {what} — asking first "
                                       "(auto-approve is set to everything except commits)")
-        if needs_ask:
-            verdict = self.on_approve(tool.name, call["arguments"])
-            if verdict == "always" and not guarded:
-                # scoped: "always" for git status means git status, not every command
-                self.rules.allow.append(permissions.always_rule(tool.name, call["arguments"]))
-            elif verdict == "no":
-                self.messages.append({
-                    "role": "tool", "tool_call_id": call["id"], "is_error": True,
-                    "content": f"User denied the {call['name']} tool call. "
-                               "Find another approach or ask the user."})
-                self.on_event("tool_result", call, "denied by user", True)
-                return
-        self.on_event("tool_call", call)
-        cache_key = None
-        if tool.name in CACHEABLE_TOOLS:
-            cache_key = (tool.name, json.dumps(call["arguments"], sort_keys=True))
-            hit = self.tool_ctx.result_cache.get(cache_key)
-            if hit is not None:
-                entry = {"role": "tool", "tool_call_id": call["id"],
-                         "content": hit.text + "\n(cached — identical earlier call this session)"}
-                self.messages.append(entry)
-                self.on_event("tool_result", call, entry["content"], False, 0.0)
-                return
+        return tool, rule, needs_ask, guarded, None
+
+    def _parallel_safe(self, calls: list[dict]) -> bool:
+        """True when the whole batch may run concurrently: read-only tools plus checks-only answers,
+        with no approval gate anywhere in it (the main thread stays the only place a UI approval fires)."""
+        from . import permissions
+        for call in calls:
+            tool = next((t for t in self.tools if t.name == call["name"]), None)
+            if tool is None:
+                continue                       # answered by the checks alone
+            args = call["arguments"]
+            if not isinstance(args, dict):
+                return False
+            if [k for k in (tool.parameters or {}).get("required", []) if args.get(k) is None]:
+                continue                       # answered by the checks alone
+            rule = permissions.decide(self.rules, tool.name, args, self.cwd)
+            if rule == "ask":
+                return False                   # this one needs the main thread
+            if tool.readonly:
+                continue
+            if self.plan_mode and tool.name not in PLAN_MODE_ALLOWED:
+                continue                       # plan-mode refusal: a message, no work, no approval
+            if getattr(tool, "always_ok", False) or rule == "allow":
+                if not (self.auto_approve and self.guard_commits
+                        and permissions.commit_action(tool.name, args)):
+                    continue                   # runs without asking
+            return False
+        return True
+
+    def _run_tool(self, call: dict, tool) -> tuple[dict, float]:
+        """Hooks, cache, snapshot, run, digest — for one screened call. Returns (message, elapsed);
+        elapsed 0.0 marks a cache hit. History is written by the caller, so the parallel path can
+        land results in call order."""
         from . import hooks as hooks_mod
         for out in hooks_mod.run(self.hooks, "PreToolUse", self.cwd, self.id,
                                  tool=tool.name, tool_input=call["arguments"]):
             if out.blocked:
                 reason = out.stderr or f"blocked by hook: {out.command}"
-                self.messages.append({"role": "tool", "tool_call_id": call["id"], "is_error": True,
-                                      "content": f"A PreToolUse hook blocked this call: {reason}"})
-                self.on_event("tool_result", call, f"blocked by hook: {reason[:200]}", True)
-                return
+                return self._tool_message(call, f"A PreToolUse hook blocked this call: {reason}", True), 0.0
+        cache_key = None
+        if tool.name in CACHEABLE_TOOLS:
+            cache_key = (tool.name, json.dumps(call["arguments"], sort_keys=True))
+            hit = self.tool_ctx.result_cache.get(cache_key)
+            if hit is not None:
+                return self._tool_message(
+                    call, hit.text + "\n(cached — identical earlier call this session)"), 0.0
         self._snapshot(tool.name, call["arguments"])
         started = time.time()
         try:
             result = tool.run(call["arguments"], self.tool_ctx)
         except Exception as exc:  # noqa: BLE001 - record + recover, model continues
-            if isinstance(exc, KeyError) and _left_out(tool, args, exc):
+            if isinstance(exc, KeyError) and _left_out(tool, call["arguments"], exc):
                 # one of the tool's own arguments was left out (its schema doesn't mark it required): the model's
                 # mistake, so it is told what to send — not filed as an error in hexiel
                 result = ToolResult(text=f"error: {tool.name} needs {exc.args[0]!r} — call {tool.name} again with "
@@ -978,17 +1003,54 @@ class Session:
                                     images=result.images, is_error=result.is_error)
         from . import digest
         shown = digest.maybe_digest(self, call, result)           # a tool's own model may condense a big output
-        entry = {"role": "tool", "tool_call_id": call["id"], "content": shown.text}
-        if result.is_error:
-            entry["is_error"] = True
-        if getattr(result, "images", None):
-            entry["images"] = result.images
-        self.messages.append(entry)
         consult.record_result(self, call, bool(result.is_error), result.text)
         if cache_key is not None and not result.is_error:
             self.tool_ctx.result_cache[cache_key] = result
-        self.on_event("tool_result", call, result.text, result.is_error,
-                      time.time() - started)
+        return self._tool_message(call, shown.text, result.is_error,
+                                  getattr(result, "images", None)), time.time() - started
+
+    def _execute_tool(self, call: dict) -> None:
+        """One call, sequential: checks → approval (main thread, the UI) → run → history + events."""
+        tool, rule, needs_ask, guarded, refusal = self._screen(call)
+        if refusal is not None:
+            entry = self._tool_message(call, refusal[0], refusal[1])
+            self.messages.append(entry)
+            self.on_event("tool_result", call, refusal[0], refusal[1])
+            return
+        if needs_ask:
+            verdict = self.on_approve(tool.name, call["arguments"])
+            if verdict == "always" and not guarded:
+                # scoped: "always" for git status means git status, not every command
+                from . import permissions
+                self.rules.allow.append(permissions.always_rule(tool.name, call["arguments"]))
+            elif verdict == "no":
+                entry = self._tool_message(call, f"User denied the {call['name']} tool call. "
+                                                 "Find another approach or ask the user.", True)
+                self.messages.append(entry)
+                self.on_event("tool_result", call, "denied by user", True)
+                return
+        self.on_event("tool_call", call)
+        entry, elapsed = self._run_tool(call, tool)
+        self.messages.append(entry)
+        self.on_event("tool_result", call, entry["content"], entry.get("is_error", False), elapsed)
+
+    def _run_parallel(self, calls: list[dict]) -> dict:
+        """A whole safe batch concurrently (_parallel_safe checked before): a failing call returns
+        its own error result and never cancels its siblings. Returns {tool_call_id: message};
+        history is written by the caller, in call order, after the batch."""
+        from concurrent.futures import ThreadPoolExecutor
+
+        def one(call: dict) -> dict:
+            try:
+                tool, rule, needs_ask, guarded, refusal = self._screen(call)
+                if refusal is not None:
+                    return self._tool_message(call, refusal[0], refusal[1])
+                return self._run_tool(call, tool)[0]
+            except Exception as exc:      # noqa: BLE001 - fault isolation: a sibling's crash is contained
+                return self._tool_message(call, f"error: could not run {call.get('name')} in parallel: "
+                                                f"{exc!r}", True)
+        with ThreadPoolExecutor(max_workers=min(8, len(calls)), thread_name_prefix="hexiel-tools") as pool:
+            return dict(zip((c["id"] for c in calls), pool.map(one, calls)))
 
     # ---------------------------------------------------------------- subagents
 

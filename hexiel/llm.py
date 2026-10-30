@@ -167,6 +167,18 @@ def raise_for_status(status: int, headers, text: str, who: str) -> None:
     raise ProviderError(f"{who} {status}: {text[:500]}")
 
 
+_OVERFLOW_TEXT = re.compile(
+    r"prompt (is |turns out to be )?too long|context (window|length) (exceed|overflow|is too long|would exceed)|"
+    r"exceeds? (the )?(maximum )?context|maximum context length|too many (input )?tokens|"
+    r"input length and .?max_tokens.? exceed|reduce the length|context_limit_exceeded", re.I)
+
+
+def is_context_overflow(text: str) -> bool:
+    """A provider rejection that means the INPUT is bigger than this model's (context) window.
+    Matched loosely across providers (Anthropic, OpenAI, Ollama, vLLM wordings differ)."""
+    return bool(_OVERFLOW_TEXT.search(text))
+
+
 def est_tokens(text: str) -> int:
     """Cheap heuristic; exact usage from the API is preferred whenever available."""
     return (len(text) + 3) // 4

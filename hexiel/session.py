@@ -629,6 +629,7 @@ class Session:
         and switching to the fallback profile when a limit won't reset soon."""
         attempt = 0
         timeouts = 0
+        recovered = False
         while True:
             try:
                 return self._stream_once(self._provider_override or provider, tool_defs)
@@ -675,6 +676,23 @@ class Session:
                     return {"role": "assistant", "content": ""}
                 self.on_event("resumed")
                 attempt += 1
+            except llm.ProviderError as exc:
+                # a context-window rejection must not fail the turn: compact once and retry a single
+                # time. Recovery has a deterministic floor (Cline's overflowRecovery rule — a summary
+                # model call could fail the very same way), so _mech_trim_overflow trims by hand when
+                # compaction did not leave the request small enough.
+                if recovered or not llm.is_context_overflow(str(exc)):
+                    self._provider_error = str(exc)
+                    return {"role": "assistant", "content": ""}
+                recovered = True
+                self.on_event("note", "✂ the request exceeds the model's context window — "
+                                      "compacting and retrying once")
+                try:
+                    self.compact(provider)               # elision first, then a summary (either may be enough)
+                except Exception:                        # noqa: BLE001 - the deterministic trim still applies
+                    pass
+                self._mech_trim_overflow()
+                continue
 
     def _interruptible(self, stream, provider):
         """Yield from a provider stream while staying responsive to stop(): the request runs in a worker
@@ -1104,6 +1122,21 @@ class Session:
             return False
         current = max(self.estimate_tokens(), self.tokens_now())
         return current >= self.model_config.context_window * self.settings.compact_threshold
+
+    def _mech_trim_overflow(self) -> None:
+        """Deterministic overflow recovery: summary compaction can fail exactly when the window is full,
+        so if the request is still too big, keep only the newest tail worth ~55% of the window and drop
+        the middle outright (used only by the overflow retry — never by the ordinary compaction flow)."""
+        if self.messages and not self.compaction_needed():
+            return
+        split = self._split_by_budget(self.messages, int(self.model_config.context_window * 0.55))
+        if not split or split >= len(self.messages):
+            return
+        dropped = len(self.messages[:split])
+        self.on_event("note", f"✂ {dropped} older message{'s' if dropped != 1 else ''} elided (overflow recovery)")
+        self.messages = self.messages[split:]
+        self.last_usage = {}
+        self.save()
 
     # ---------------------------------------------------------------- compaction
 

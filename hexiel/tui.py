@@ -727,6 +727,32 @@ class StatusLine(Static):
         self.refresh_text()
 
 
+def spend_rows(settings, inner: int, in_use: set) -> list[str]:
+    """SPEND: this cycle's bill for the accounts paying for the model at work now (none while a local model works);
+    ≈ marks an estimate, the colour how close it is to the limit. /usage lists every account."""
+    from . import spend
+    if not in_use:
+        return []
+    rows = [r for r in spend.snapshot(settings) if r["account"] in in_use]
+    if not rows:
+        return []
+    out = ["", f"[{FAINT}]SPEND THIS CYCLE[/]"]
+    warn = spend.warn_at(settings)
+    for r in rows:
+        mark = "" if r["source"] == "provider" else "≈"
+        figure = mark + spend.money(r["usd"]) + (f" / {spend.money(r['limit'])}" if r["limit"] else "")
+        name = fit(r["account"], max(4, inner - len(figure) - 1))
+        colour = TEXT
+        if r["limit"]:
+            share = r["usd"] / r["limit"]
+            colour = RED if share >= 1 else (YELLOW if share >= warn else TEXT)
+        out.append(f"[{MUTED}]{name}[/]{' ' * max(1, inner - len(name) - len(figure))}[{colour}]{figure}[/]")
+        if r["limit"]:
+            pct = min(999, r["pct"] or 0)
+            out.append(f"{meter(min(100, pct), inner - 6)} [{colour}]{pct:>3}%[/]")
+    return out
+
+
 class Sidebar(Vertical):
     """A quiet opencode-style rail: where you are, what is answering, how full the context is."""
 
@@ -792,7 +818,7 @@ class Sidebar(Vertical):
             f"[{MUTED}]{fit(f'{provider} · {fmt_tokens(window)} ctx', inner)}[/]",
             "",
             f"[{FAINT}]CONTEXT[/]",
-            f"{meter(pct, inner)} [{MUTED}]{pct:>3}%[/]",
+            f"{meter(pct, inner - 6)} [{MUTED}]{pct:>3}%[/]",
             f"[{MUTED}]{fmt_tokens(tokens_now)} / {fmt_tokens(window)} · compacts {compact_at}%[/]",
             "",
             f"[{FAINT}]SESSION[/]",
@@ -800,6 +826,7 @@ class Sidebar(Vertical):
         ]
         if todo_line:
             rows.append(f"[{MUTED}]{fit(todo_line, inner)}[/]")
+        rows += spend_rows(session.settings, inner, session.accounts_in_use())
         self._body.update("\n".join(rows))
 
 
@@ -1501,7 +1528,7 @@ class HexielTUI(App):
             "help": self.cmd_help, "clear": self.cmd_clear, "compact": self.cmd_compact,
             "config": self.cmd_config, "update": self.cmd_update, "mcp": self.cmd_mcp,
             "plan": self.cmd_plan, "permissions": self.cmd_permissions,
-            "undo": self.cmd_undo, "usage": self.cmd_usage, "toolmodels": self.cmd_toolmodels, "jobs": self.cmd_jobs, "knowledge": self.cmd_knowledge, "inbox": self.cmd_inbox,
+            "undo": self.cmd_undo, "usage": self.cmd_usage, "spend": self.cmd_spend, "toolmodels": self.cmd_toolmodels, "jobs": self.cmd_jobs, "knowledge": self.cmd_knowledge, "inbox": self.cmd_inbox,
             "model": self.cmd_model, "models": self.cmd_models, "auto": self.cmd_auto,
             "memory": self.cmd_memory, "skills": self.cmd_skills,
             "ship": self.cmd_ship, "heal": self.cmd_heal,
@@ -1736,9 +1763,16 @@ class HexielTUI(App):
         self.add_note(f"this session: {t['requests']} request(s) · input {t['prompt_tokens']:,} tokens "
                       f"({t['cached_tokens']:,} from cache = {share}%, {fresh:,} fresh) · "
                       f"output {t['completion_tokens']:,} tokens · model {self.session.model_config.model}")
-        from . import digest
+        from . import digest, spend
         if digest.summary_line(self.session):
             self.add_note(digest.summary_line(self.session))
+        for line in spend.summary_lines(self.session.settings):
+            self.add_note(line.replace("[", "\\["))
+
+    def cmd_spend(self, arg: str) -> None:
+        from . import spend
+        self.add_note(spend.command(self.session.settings, arg).replace("[", "\\["))
+        self.query_one(Sidebar).refresh_text()
 
     def cmd_toolmodels(self, arg: str) -> None:
         from . import digest

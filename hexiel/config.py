@@ -168,6 +168,7 @@ class ModelConfig:
     echo_reasoning: bool = False     # send reasoning back as reasoning_content (DeepSeek, Together, Kimi)
     max_tokens_param: str = ""       # "" = auto (max_completion_tokens for OpenAI/Azure, else max_tokens)
     fallbacks: tuple[str, ...] = ()  # profiles tried in order when this model is unreachable or over its limit
+    billing: str = ""                # the bill it is paid from, for spend tracking: "" = worked out (spend.py), "none" = free
 
     def __post_init__(self):
         # accept "name" as well as ["name", "name2"]
@@ -210,6 +211,7 @@ class Settings:
     tool_models: dict = field(default_factory=dict)   # [tool_models]: tool -> profile that condenses its big output (see digest.py)
     digest_min_chars: int = 3000      # tool output shorter than this is never condensed by a tool model
     digest_timeout: int = 90          # seconds a tool model gets to condense one output before hexiel uses the raw text
+    spend: dict = field(default_factory=dict)         # [spend]: limits, billing cycles and prices per account (see spend.py)
     delegate_review: str = "auto"     # after a delegated run the planner model reviews the diff: "auto" (when it is a different model than the worker) | "always" | "off"
 
 
@@ -270,6 +272,8 @@ def load_config(model_override: str | None = None) -> Config:
             raise ValueError(f"--model {default_model!r} is not one of your [models.*] profiles (you have: {have})")
         raise SystemExit(f"bad config {CONFIG_FILE}: default = {default_model!r} is not one of your [models.*] profiles "
                          f"(you have: {have}). Add a [models.NAME] table — see https://hexiel.tech/config/")
+    if isinstance(raw.get("spend"), dict):
+        settings.spend = raw["spend"]
     tm = raw.get("tool_models", {})
     if isinstance(tm, dict):
         settings.tool_models = {str(k): (v if isinstance(v, (dict, list)) else str(v)) for k, v in tm.items()}

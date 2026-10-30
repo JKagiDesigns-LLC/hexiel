@@ -218,6 +218,7 @@ class Session:
         self.usage_by_model: dict[str, dict] = {}     # model id -> {requests, prompt, cached, completion}: what each model cost
         self.internal = False      # True for hexiel's own helper sessions (delegated steps, briefings): their prompts are not the user's
         self.active_model = ""     # "model · role" while a /delegate role (planner/worker) is working; "" otherwise
+        self.active_config = None  # that model's profile; meaningful only while active_model is set
         self._usage_msgs = 0       # len(messages) when the request behind last_usage was sent
         self._pending: list[str] = []          # messages the user typed while a turn was running
         self._pending_lock = threading.Lock()
@@ -243,6 +244,10 @@ class Session:
             self._router_charge = router_mod.charge_targets(self)
         if model in self._router_charge:
             router_mod.charge_daily(sum(usage.get(k, 0) for k in ("prompt_tokens", "completion_tokens")))
+        if not self.internal:              # a cycle limit nearly or fully spent is said once, in the chat that hit it
+            from . import spend
+            for line in spend.alerts(self.settings):
+                self.on_event("note", line)
 
     def merge_usage(self, other: "Session") -> None:
         """Fold a helper session's per-model usage into this one (delegated steps, briefings, subagents)."""
@@ -251,9 +256,17 @@ class Session:
             for key, value in u.items():
                 mine[key] += value
 
+    def accounts_in_use(self) -> set:
+        """The bills the model working right now is paid from (spend.py): the chat's own model, and the one a step,
+        a summary or advice is running on at this moment. Empty while only models on your own machines run."""
+        from . import spend
+        configs = [self.model_config] + ([self.active_config] if self.active_model and self.active_config else [])
+        return {a for a in (spend.account_for(mc) for mc in configs) if a}
+
     def set_active_model(self, mc, role: str = "") -> None:
         """Tell the UIs which model is doing the work right now (the status line shows it)."""
         self.active_model = f"{mc.model} · {role}" if role else ""
+        self.active_config = mc
         self.on_event("model_active")
 
     # -- messages typed while a turn is running ("steering")

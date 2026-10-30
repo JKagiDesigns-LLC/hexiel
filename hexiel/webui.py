@@ -453,11 +453,17 @@ def make_app(session: Session, driver=None) -> web.Application:
         if cmd == "plan":
             session.plan_mode = not session.plan_mode
             return "📝 plan mode ON — investigate and plan, change nothing" if session.plan_mode else "plan mode OFF"
+        if cmd == "spend":
+            from . import spend as spend_mod
+            return spend_mod.command(session.settings, arg)
         if cmd == "usage":
             t = session.usage_totals
             from . import digest as digest_mod
-            return (f"{t['requests']} request(s) · input {t['prompt_tokens']:,} ({t['cached_tokens']:,} cached) · "
-                    f"output {t['completion_tokens']:,} tokens" + ("\n" + digest_mod.summary_line(session) if digest_mod.summary_line(session) else ""))
+            from . import spend as spend_mod
+            return "\n".join([f"{t['requests']} request(s) · input {t['prompt_tokens']:,} ({t['cached_tokens']:,} cached) · "
+                              f"output {t['completion_tokens']:,} tokens",
+                              *([digest_mod.summary_line(session)] if digest_mod.summary_line(session) else []),
+                              *spend_mod.summary_lines(session.settings)])
         if cmd == "toolmodels":
             from . import digest as digest_mod
             if arg.lower() == "test":

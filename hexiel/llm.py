@@ -56,6 +56,13 @@ class AbortableHTTP:
             pass
         return httpx.Client(timeout=timeout, transport=transport)
 
+    billing = ""                       # the account this provider's requests are paid from (spend.py); "" = free
+
+    def meter(self, model: str, usage: dict) -> None:
+        if self.billing:
+            from . import spend
+            spend.record(self.billing, model, usage)
+
     def abort(self) -> None:
         socks, lock = self._tracked()
         with lock:
@@ -333,6 +340,7 @@ class AnthropicProvider(AbortableHTTP):
                         usage["prompt_tokens"] = (u.get("input_tokens", 0) + cached
                                                   + (u.get("cache_creation_input_tokens") or 0))
                         usage["cached_tokens"] = cached
+                        usage["cache_write_tokens"] = u.get("cache_creation_input_tokens") or 0
                     elif mtype == "content_block_start":
                         block = data["content_block"]
                         if block["type"] == "tool_use":
@@ -351,6 +359,7 @@ class AnthropicProvider(AbortableHTTP):
                         out = data.get("usage", {}).get("output_tokens")
                         if out:
                             usage["completion_tokens"] = out
+                self.meter(model, usage)
                 yield ("done", usage)
         yield ("assistant", buf.finalize())
 
@@ -485,6 +494,7 @@ class OpenAICompatProvider(AbortableHTTP):
                                 buf.add_args(idx, fn["arguments"])
                     if data.get("usage"):
                         usage = data["usage"]
+                self.meter(model, usage)
                 yield ("done", usage)
             finally:
                 response.close()
@@ -514,4 +524,6 @@ def make_provider(model_config, settings) -> tuple[object, str]:
         if not model_config.base_url:
             raise SystemExit(f"model '{model_config.name}': openai provider needs base_url")
         provider = OpenAICompatProvider(api_key, base_url=model_config.base_url)
+    from . import spend
+    provider.billing = spend.account_for(model_config)
     return provider

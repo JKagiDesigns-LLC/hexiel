@@ -85,6 +85,7 @@ BUILTIN = [
     ("jobs", "", "scheduled jobs (ask hexiel to schedule something to create one)"),
     ("inbox", "", "results from scheduled jobs"),
     ("usage", "", "tokens used this session (in / cached / out)"),
+    ("spend", "[set ACCOUNT AMOUNT]", "what each paid account cost this cycle; set corrects it to the provider's billing page"),
     ("toolmodels", "[test]", "which tools use a helper model, whether it is ready (test = time each one)"),
     ("permissions", "", "show allow / ask / deny rules (incl. this session's 'always')"),
     ("memory", "", "show what hexiel remembers about you and this project"),

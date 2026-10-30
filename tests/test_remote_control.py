@@ -131,6 +131,33 @@ def test_a_real_web_mirror_shows_an_approval_to_a_phone_that_joins_after_it_was_
     assert not state.approvals
 
 
+def test_a_plan_step_asks_a_phone_that_turned_on_remote_control_after_the_step_began(tmp_path):
+    from hexiel import planner
+    from hexiel.webui import WebState
+    s = make_session(tmp_path)
+    s.messages = [{"role": "user", "content": "document the repo"}]
+    gate = threading.Event()
+    terminal = lambda *a: (gate.wait(5), "yes")[1]
+    s.on_approve = terminal
+    step_asks = lambda *a: planner._ask(s, *a)                 # wired when the step began: no phone yet
+    s.on_event("note", "▶ step 1/8: survey")
+    driver = type("Terminal", (), {"busy": lambda self: True})()
+    state = WebState(s, driver=driver)                         # remote control on, mid-turn
+    s.on_event("note", "planning the next step")
+    got = []
+    t = threading.Thread(target=lambda: got.append(step_asks("bash", {"command": "mkdir -p docs"})))
+    t.start()
+    for _ in range(50):
+        if state.approvals:
+            break
+        time.sleep(0.05)
+    view = state.catch_up()                                    # what the phone is sent when it opens the chat
+    assert len(view["approvals"]) == 1 and "mkdir -p docs" in view["approvals"][0]["args"]
+    assert [f["text"] for f in view["replay"]] == ["planning the next step"]
+    gate.set(); t.join(5)
+    assert got == ["yes"] and s._on_approve is terminal       # the chat's own prompt is left as it was
+
+
 def test_the_login_endpoint_never_crosses_the_tunnel():
     assert not remote.path_allowed("/api/remote/login")
 

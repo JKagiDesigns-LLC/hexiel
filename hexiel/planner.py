@@ -612,10 +612,10 @@ def _check_allowed(session, command: str) -> bool:
         return False
     from .permissions import commit_action
     if rule != "allow" and session.auto_approve and session.guard_commits and commit_action("bash", {"command": command}):
-        return session.on_approve("bash", {"command": command}) in ("yes", "always")   # commits are always asked
+        return _ask(session, "bash", {"command": command}) in ("yes", "always")   # commits are always asked
     if rule == "allow" or session.auto_approve or session.settings.delegate_approval:
         return True
-    return session.on_approve("bash", {"command": command}) in ("yes", "always")
+    return _ask(session, "bash", {"command": command}) in ("yes", "always")
 
 
 def run_check(session, task: Task) -> tuple[bool, str]:
@@ -653,7 +653,7 @@ def _run_task(session, plan: Plan, task: Task, helper_tools: list, system: str) 
             session.on_event(event, *p, **k)
 
     helper.on_event = forward
-    helper.on_approve = session.on_approve
+    helper.on_approve = lambda *a, **k: _ask(session, *a, **k)
     link = _link_stop(session, helper)
     retries = max(0, session.settings.delegate_retries)
     escalated = False
@@ -749,9 +749,6 @@ def execute(session, plan: Plan, resumed: bool = False) -> bool:
     total = len(plan.tasks)
     lock = threading.RLock()
     n_workers = worker_count(session)
-    if n_workers > 1 and session.on_approve:
-        inner = session.on_approve
-        session.on_approve = lambda *a, **k: _locked(session, inner, lock, *a, **k)
 
     def one(task: Task) -> bool:
         n = plan.tasks.index(task) + 1
@@ -772,40 +769,39 @@ def execute(session, plan: Plan, resumed: bool = False) -> bool:
 
     failed = False
     running: dict = {}
-    try:
-        with ThreadPoolExecutor(max_workers=n_workers, thread_name_prefix="hexiel-step") as pool:
-            while True:
-                if not failed and not session._stop.is_set() and session.has_pending() and not running:
-                    say(session, "⏸ pausing the plan because you sent a message — /delegate resume continues it")
-                    break
-                if not failed and not session._stop.is_set() and not session.has_pending():
-                    with lock:
-                        for task in runnable(plan)[:max(0, n_workers - len(running))]:
-                            task.status = "running"
-                            running[pool.submit(one, task)] = task
-                if not running:
-                    break
-                finished, _ = wait(list(running), return_when=FIRST_COMPLETED)
-                for f in finished:
-                    running.pop(f)
-                    try:
-                        ok = f.result()
-                    except Exception:
-                        ok = False
-                    failed = failed or not ok
-    finally:
-        if n_workers > 1 and session.on_approve and getattr(session.on_approve, "__name__", "") == "<lambda>":
-            session.on_approve = inner
+    with ThreadPoolExecutor(max_workers=n_workers, thread_name_prefix="hexiel-step") as pool:
+        while True:
+            if not failed and not session._stop.is_set() and session.has_pending() and not running:
+                say(session, "⏸ pausing the plan because you sent a message — /delegate resume continues it")
+                break
+            if not failed and not session._stop.is_set() and not session.has_pending():
+                with lock:
+                    for task in runnable(plan)[:max(0, n_workers - len(running))]:
+                        task.status = "running"
+                        running[pool.submit(one, task)] = task
+            if not running:
+                break
+            finished, _ = wait(list(running), return_when=FIRST_COMPLETED)
+            for f in finished:
+                running.pop(f)
+                try:
+                    ok = f.result()
+                except Exception:
+                    ok = False
+                failed = failed or not ok
     with lock:
         if all(t.status == "done" for t in plan.tasks):
             sync_todo(session, plan, left_off="plan finished")
     return all(t.status == "done" for t in plan.tasks)
 
 
-def _locked(session, fn, lock, *a, **k):
-    """Approval prompts from parallel steps take turns, so the user answers one dialog at a time."""
+def _ask(session, *a, **k):
+    """A step's approval goes to the chat's views as they are when it asks — not when the step began: a step
+    that kept the prompt it started with never reached a phone that turned remote control on (or re-attached)
+    later, which sat at "working…" while the terminal waited. Prompts from parallel steps take turns, so the
+    user answers one dialog at a time."""
     with session.__dict__.setdefault("_approve_lock", threading.Lock()):
-        return fn(*a, **k)
+        return session.on_approve(*a, **k)
 
 
 def summary_text(plan: Plan, finished: bool) -> str:

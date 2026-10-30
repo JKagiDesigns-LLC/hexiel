@@ -96,6 +96,9 @@ class WebState:
             session.on_approve = self.ask_approval
         else:
             session.add_mirror(self)
+            if self.is_busy():     # remote control turned on mid-turn: a view catches up from the request at work
+                users = [i for i, m in enumerate(session.messages) if m.get("role") == "user"]
+                self.turn_base = users[-1] if users else None
         # Every status frame says whether a turn is running, so a tab that joins (or reconnects) mid-turn shows Stop.
         session.busy_probe = self.is_busy
 

@@ -149,6 +149,22 @@ def looks_like_correction(text: str) -> bool:
 
 _NO_INFO = re.compile(r"^\s*(\(no output\)|no such file|not found|no matches?|command not found|cannot access)", re.I)
 
+STOP_ERRORS = 6               # consecutive failing tool calls: the turn ends, state preserved
+STOP_REPEATS = 5              # the very same call this many times: the same result, expected different
+
+
+def hard_stop(session) -> str | None:
+    """The runaway budget (Cline's mistake/loop guards as a hard stop): a reason string when the
+    turn must end NOW with state preserved — the session stays resumable, nothing was lost."""
+    st = _state(session)
+    if st["errors"] >= STOP_ERRORS:
+        return (f"{STOP_ERRORS} tool calls in a row failed — the turn stopped here. State preserved; "
+                "send a new message to resume, or /model to switch models")
+    if st["repeat"] >= STOP_REPEATS:
+        return (f"the same {st['sig'][0]} call was repeated {STOP_REPEATS} times without getting anywhere"
+                " — the turn stopped here. State preserved; send a new message to resume")
+    return None
+
 
 def _fresh_state() -> dict:
     return {"score": 0.0, "errors": 0, "sig": None, "repeat": 0, "steps": 0, "why": [], "advice_step": -99,

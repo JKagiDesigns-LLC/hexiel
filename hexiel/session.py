@@ -575,6 +575,11 @@ class Session:
                             return
                         self._execute_tool(call)
                         self._auto_todo_step(user_text, call, assistant, turn)
+                runaway = consult.hard_stop(self)         # Cline's mistake/loop budget as a hard stop
+                if runaway and not self._stop.is_set():
+                    self.on_event("note", f"🛑 {runaway}")
+                    self.on_event("turn_end", {"error": runaway})
+                    return
         finally:
             self._restore_weather_note()
             if self.model_config is not prev_mc and self._provider_override is None:

@@ -52,6 +52,39 @@ class ToolContext:
     on_step: object = None   # approve gate for propose flows: (kind, description) -> bool
     result_cache: dict = field(default_factory=dict)   # dedup pure lookups within a session
     dir_cache: dict = field(default_factory=dict)      # path/depth -> (fingerprint, output)
+    file_state: dict = field(default_factory=dict)     # path -> (mtime_ns, size) seen by a read/write, for the stale guard
+
+    # ---------------------------------------------------------------- stale-file guard
+
+    def note_file(self, path: str) -> None:
+        """Record what a read/write saw, so the next edit can notice someone else changed the file."""
+        try:
+            st = Path(path).stat()
+        except OSError:
+            self.read_files.add(path)
+            return
+        self.read_files.add(path)
+        self.file_state[path] = (st.st_mtime_ns, st.st_size)
+
+    def external_change(self, path: str) -> bool:
+        """True when the file differs from what this context last read or wrote: the user, the other
+        hexiel window, or a bare shell command changed it in between."""
+        seen = self.file_state.get(path)
+        if seen is None:
+            return False
+        try:
+            st = Path(path).stat()
+        except OSError:
+            return True                                  # gone since it was seen
+        return (st.st_mtime_ns, st.st_size) != seen
+
+    def stale_refusal(self, path: str) -> ToolResult | None:
+        """A change-since-read refusal text when the file is stale (read/write must re-read first)."""
+        if self.external_change(str(path)):
+            return text_result(f"error: {path} changed on disk since it was read (the user, another hexiel "
+                               "window, or a shell command). Read it again, then redo this edit on the "
+                               "new content", True)
+        return None
 
 
 # pure read tools whose identical calls can be answered from cache (token economy)
@@ -256,7 +289,7 @@ def _read(args: dict, ctx: ToolContext) -> ToolResult:
     out = f"{path}\n{numbered}{tail_note}"
     if len(out) > MAX_OUTPUT:
         out = out[:MAX_OUTPUT]
-    ctx.read_files.add(str(path))
+    ctx.note_file(str(path))
     return text_result(out)
 
 
@@ -267,13 +300,16 @@ def _resolve_path(rel: str, ctx: ToolContext) -> Path:
 def _write(args: dict, ctx: ToolContext) -> ToolResult:
     path = _resolve_path(args["path"], ctx)
     content = args.get("content", "")
+    stale = ctx.stale_refusal(str(path))     # overwriting a file that changed since it was read is refused
+    if stale is not None:
+        return stale
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         existed = path.exists()
         path.write_text(content)
     except OSError as exc:
         return text_result(f"error: {exc}", True)
-    ctx.read_files.add(str(path))
+    ctx.note_file(str(path))
     return text_result(f"{'updated' if existed else 'created'} {path} ({content.count(chr(10)) + 1} lines)"
                        + syntax_check(path))
 
@@ -312,6 +348,9 @@ def _edit(args: dict, ctx: ToolContext) -> ToolResult:
     path = _resolve_path(args["path"], ctx)
     if not path.exists():
         return text_result("error: file not found", True)
+    stale = ctx.stale_refusal(str(path))     # the file changed since it was read: the edit may hit different content
+    if stale is not None:
+        return stale
     old, new = args["old_string"], args.get("new_string", "")
     try:
         text = path.read_text()
@@ -328,7 +367,7 @@ def _edit(args: dict, ctx: ToolContext) -> ToolResult:
         path.write_text(text)
     except OSError as exc:
         return text_result(f"error: {exc}", True)
-    ctx.read_files.add(str(path))
+    ctx.note_file(str(path))
     return text_result(f"edited {path}" + syntax_check(path))
 
 

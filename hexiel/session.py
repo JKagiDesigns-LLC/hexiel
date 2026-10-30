@@ -115,6 +115,10 @@ TRUNCATION_NUDGE = ("(Your previous reply was cut off at the model's output-toke
                     "Continue from exactly where it stopped; if you were writing a large file, "
                     "keep going from that point instead of restarting it.)")
 
+CACHE_TTL = 3600                       # provider-side prompt caches live about an hour
+IDLE_COMPACT_MARGIN = 360              # compact this long BEFORE the TTL lapses
+IDLE_COMPACT_MIN_TOKENS = 20_000       # smaller prompts are cheaper to re-read than to compact
+
 
 def _is_empty_reply(msg: dict) -> bool:
     return (msg.get("role") == "assistant" and not (msg.get("content") or "").strip()
@@ -497,6 +501,8 @@ class Session:
         self._weather_card(user_text)
         prev_mc = self.model_config      # an overflow model for this one request only (router.py)
         self.__dict__["_turn_boot_model"] = prev_mc.name
+        self.__dict__.pop("_idle_token", None)   # any pending idle compaction is no longer wanted
+        self._model_activity_at = time.time()
         self.model_config = mc
         turn = {"tools": 0, "used_todo": False, "item": None, "ok": False, "nudges": 0}
         self.__dict__.pop("_fallback_tried", None)  # a new turn starts at the first link again
@@ -597,6 +603,7 @@ class Session:
             from . import hooks as hooks_mod
             hooks_mod.run(self.hooks, "Stop", self.cwd, self.id)
             self.save()
+            self._schedule_idle_compact()
 
     def _auto_commit(self, user_text: str) -> None:
         """Opt-in (settings.auto_commit): commit exactly the files hexiel changed
@@ -1261,6 +1268,42 @@ class Session:
         self.messages = self.messages[split:]
         self.last_usage = {}
         self.save()
+
+    # ---------------------------------------------------------------- idle compaction (cache-TTL aligned)
+
+    def _schedule_idle_compact(self) -> None:
+        """After an idle stretch with a big prompt, compact shortly before the provider's ~1 h cache
+        TTL expires (Claude-Code 'idle compaction'): the next message then re-reads the compacted
+        history at ~10% input cost instead of the whole uncached tail (or a long local re-process).
+        The timer dies the moment new work starts (its token goes stale)."""
+        size = max(self.estimate_tokens(), self.tokens_now())
+        if size < IDLE_COMPACT_MIN_TOKENS:
+            return
+        idle_for = time.time() - getattr(self, "_model_activity_at", 0.0)
+        delay = CACHE_TTL - IDLE_COMPACT_MARGIN - idle_for
+        if delay <= 0:
+            return
+        import threading
+        token = uuid.uuid4().hex
+        self.__dict__["_idle_token"] = token
+        timer = threading.Timer(delay, self._idle_compact, (token,))
+        timer.daemon = True
+        timer.start()
+        self.__dict__["_idle_compact_timer"] = timer
+
+    def _idle_compact(self, token: str) -> None:
+        if self.__dict__.get("_idle_token") != token or self._stop.is_set():
+            return                      # new activity since: it is somebody else's context now
+        if self.compacting or self.has_pending():
+            return                      # a turn is starting anyway, with the pending input in it
+        try:
+            provider = self._provider_override or llm.make_provider(self.model_config, self.settings)
+        except Exception:               # noqa: BLE001 - compaction needs a provider; without one, skip
+            return
+        try:
+            self.compact(provider)
+        except Exception:               # noqa: BLE001 - an idle compaction must never disturb anything
+            pass
 
     # ---------------------------------------------------------------- compaction
 

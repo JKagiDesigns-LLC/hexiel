@@ -472,6 +472,12 @@ class Session:
         if topics:
             entry["content"] += f"\n\n[project instructions relevant to this request]\n{topics}"
         self.checkpoints.append([])        # file snapshots taken during this turn
+        from . import checkpoints as ckpt_mod
+        try:                               # durable copy on a private git ref: /undo survives a restart
+            self.__dict__.pop("_ckpt_ref", None)
+            self.__dict__["_ckpt_ref"] = ckpt_mod.snapshot(self.cwd, self.id)
+        except Exception:                  # noqa: BLE001 - the durable copy is a bonus; memory undo continues
+            pass
         from . import hooks as hooks_mod
         for out in hooks_mod.run(self.hooks, "UserPromptSubmit", self.cwd, self.id, prompt=user_text):
             if out.blocked:
@@ -1123,9 +1129,19 @@ class Session:
         self.checkpoints[-1].append((path, original))
 
     def undo(self) -> list[str]:
-        """Revert the most recent turn that changed files; returns what was restored."""
+        """Revert the most recent turn that changed files; returns what was restored. In-memory first
+        (this process's tracked file edits), then the durable git checkpoint (restart-proof)."""
         while self.checkpoints and not self.checkpoints[-1]:
             self.checkpoints.pop()
+        if not self.checkpoints:
+            from . import checkpoints as ckpt_mod
+            if ckpt_mod.is_repo(self.cwd):
+                notes, refusal = ckpt_mod.restore_last(self.cwd, self.id)
+                if notes:
+                    return notes
+                if refusal and "no checkpoint" not in refusal:
+                    return [f"⧖ {refusal} — nothing undone"]     # a real refusal (e.g. a commit since)
+            return []
         if not self.checkpoints:
             return []
         restored = []

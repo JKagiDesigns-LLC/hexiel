@@ -1670,10 +1670,10 @@ class HexielTUI(App):
             return
         restored = self.session.undo()
         if not restored:
-            self.add_note("nothing to undo — no file changes recorded this session")
+            self.add_note("nothing to undo — no checkpoint has file changes")
             return
         self.add_note("↶ undid the last turn's file changes:\n" + "\n".join(restored)
-                      + "\n(changes made by shell commands aren't tracked)")
+                      + "\n(when the repo is git, this also covers shell-command changes: the durable turn checkpoints)")
 
     def cmd_remote_control(self, arg: str) -> None:
         """/remote-control [on|off|status] — drive this same chat from remote.hexiel.tech."""

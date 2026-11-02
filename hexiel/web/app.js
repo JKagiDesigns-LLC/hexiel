@@ -382,11 +382,44 @@ function applyStatus(status) {
   $("#ctx-label").title = label;              // hover/long-press reads the whole string
   $("#todo-badge").textContent = status.todo || "";
   $("#todo-badge").title = status.todo || "";
+  tests = status.tests || [];
+  renderTests();
   timers = status.timers || [];
   if (status.now) clockSkew = status.now * 1000 - Date.now();
   renderTimers();
   updateSendButton();
 }
+
+// ---------------------------------------------------------------- test runs (progress hexiel reads off the suite itself)
+
+let tests = [];
+
+function testPct(t, now) {
+  if (t.how === "time" && t.est) return Math.min((now - t.started) / t.est, 0.95);   // no output signal: follow the clock
+  return t.pct;                                                                     // null = unknown (indeterminate bar)
+}
+
+function renderTests() {
+  const badge = $("#test-badge");
+  if (!tests.length) { badge.hidden = true; return; }
+  const now = (Date.now() + clockSkew) / 1000;
+  const t = [...tests].sort((a, b) => a.started - b.started)[0];
+  const pct = testPct(t, now);
+  const elapsed = now - t.started;
+  const bits = [fmtDuration(elapsed)];
+  if (t.done && t.total) bits.unshift(`${t.done}/${t.total}`);
+  if (pct && pct > 0.02 && elapsed > 3) bits.push(`~${fmtDuration(elapsed * (1 - pct) / pct)} left`);
+  if (t.failed) bits.push(`${t.failed} failed`);
+  badge.hidden = false;
+  badge.classList.toggle("failing", t.failed > 0);
+  badge.innerHTML = `<span class="tb-label">🧪 ${t.label}</span><span class="tb-bar${pct == null ? " indeterminate" : ""}">` +
+                    `<i style="width:${pct == null ? 30 : Math.round(pct * 100)}%"></i></span>` +
+                    `<span class="tb-text">${pct == null ? "" : Math.round(pct * 100) + "% · "}${bits.join(" · ")}` +
+                    `${tests.length > 1 ? ` (+${tests.length - 1})` : ""}</span>`;
+  badge.title = tests.map((x) => `${x.cmd}\n${x.last || ""}`).join("\n\n");
+}
+
+setInterval(() => { if (tests.length) renderTests(); }, 1000);
 
 // ---------------------------------------------------------------- timers (the agent's estimates for long waits)
 

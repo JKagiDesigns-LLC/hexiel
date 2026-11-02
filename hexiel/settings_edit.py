@@ -24,6 +24,9 @@ FIELDS = [
     {"key": "model.context_window", "label": "Context window", "kind": "number",
      "options": [32768, 65536, 131072, 200000, 262144],
      "help": "tokens before auto-compaction; keep in sync with the server's limit"},
+    {"key": "model.compact_threshold", "label": "Compact at (this model)", "kind": "number",
+     "options": [0, 0.4, 0.5, 0.6, 0.7, 0.82],
+     "help": "this model's own compaction point as a share of its window; 0 = use the global 'Compact at'"},
     {"key": "model.max_output_tokens", "label": "Max output", "kind": "number",
      "options": [4096, 8192, 16384, 32768], "help": "longest single reply"},
     {"key": "settings.auto_approve", "label": "Auto-approve", "kind": "choice",
@@ -187,7 +190,7 @@ def coerce(key: str, value):
         return bool(value)
     if kind == "number":
         num = float(value)
-        return int(num) if key != "settings.compact_threshold" else num
+        return int(num) if key not in ("settings.compact_threshold", "model.compact_threshold") else num
     return str(value).strip()
 
 

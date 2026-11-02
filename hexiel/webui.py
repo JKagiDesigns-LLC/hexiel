@@ -20,6 +20,7 @@ from . import memory as memory_mod
 from . import settings_edit
 from .config import approve_mode
 from . import skills as skills_mod
+from . import testrun as testrun_mod
 from . import timers as timers_mod
 from . import todo as todo_mod
 from .config import load_config, home_data_dir
@@ -63,7 +64,7 @@ def status_state(session: Session) -> dict:
         "model_id": getattr(session, "active_model", "") or session.model_config.model,
         "context": {"tokens": tokens_now, "window": window,
                     "pct": min(100, 100 * tokens_now // max(window, 1)),
-                    "compact_at_pct": int(100 * session.settings.compact_threshold)},
+                    "compact_at_pct": int(100 * session.model_config.compact_share(session.settings.compact_threshold))},
         "auto_approve": session.auto_approve,
         "auto_mode": approve_mode(session.auto_approve, session.guard_commits),
         "busy": bool(session.busy_probe()) if getattr(session, "busy_probe", None) else False,
@@ -71,6 +72,7 @@ def status_state(session: Session) -> dict:
         # end times, not "time left": every view counts down on its own clock and stays in step
         "timers": [{"id": t["id"], "label": t["label"], "started": t["started"], "ends": t["ends"]}
                    for t in timers_mod.live(session)],
+        "tests": testrun_mod.snapshots(),       # test suites running right now: label, pct, elapsed, failed, eta
         "now": time.time(),
     }
 
@@ -101,6 +103,8 @@ class WebState:
                 self.turn_base = users[-1] if users else None
         # Every status frame says whether a turn is running, so a tab that joins (or reconnects) mid-turn shows Stop.
         session.busy_probe = self.is_busy
+        if driver is None:
+            self.start_wake_watcher()
 
     def has_viewers(self) -> bool:
         return bool(self.clients)
@@ -112,6 +116,49 @@ class WebState:
 
     def is_busy(self) -> bool:
         return self.driver.busy() if self.driver is not None else self.busy
+
+    def launch_turn(self, text: str) -> None:
+        """Run a turn (and any follow-ups typed as it ends) on a worker thread. Caller holds self.lock."""
+        session = self.session
+        self.busy = True
+
+        def run(first):
+            nxt = first
+            while nxt:
+                try:
+                    session.run_turn(nxt)
+                finally:
+                    left = session.take_pending()      # arrived as the turn was ending
+                    nxt = "\n\n".join(left) if left else None
+                    if not nxt:
+                        with self.lock:
+                            self.busy = False
+                    self.broadcast({"t": "status", "status": status_state(session)})
+        threading.Thread(target=run, args=(text,), daemon=True).start()
+
+    def start_wake_watcher(self) -> None:
+        """A background test run or task that finishes while nothing is running wakes the model with its result
+        (the terminal UI does the same from its own tick)."""
+        def watch():
+            from . import tools as tools_mod
+            from .session import WAKE_PROMPT
+            while True:
+                time.sleep(2)
+                try:
+                    if not getattr(self.session.settings, "auto_wake", True):
+                        continue
+                    with self.lock:
+                        if self.busy or self.session.compacting:
+                            continue
+                        notes = tools_mod.finished_for_wake()
+                        if not notes:
+                            continue
+                        for note in notes:
+                            self.broadcast({"t": "note", "text": note})
+                        self.launch_turn(WAKE_PROMPT.format(notes="\n".join(notes)))
+                except Exception:                      # noqa: BLE001 - a watcher must never die
+                    pass
+        threading.Thread(target=watch, daemon=True, name="hexiel-wake").start()
 
     def broadcast(self, message: dict) -> None:
         # called from worker threads: serialize onto the queue; the drain task
@@ -189,7 +236,7 @@ class WebState:
             when = f" (at {payload[3]})" if len(payload) > 3 else ""
             self.broadcast({"t": "note", "text": f"⏸ rate limited{attempt} resuming automatically in "
                                                  f"~{int(payload[0] // 60)}m{int(payload[0] % 60):02d}s{when}"})
-        elif event in ("model_active", "timers"):
+        elif event in ("model_active", "timers", "tests"):
             self.broadcast({"t": "status", "status": status_state(self.session)})
         elif event == "note":
             self.broadcast({"t": "note", "text": str(payload[0])})
@@ -592,20 +639,7 @@ def make_app(session: Session, driver=None) -> web.Application:
                     session.queue_message(text)
                     state.broadcast(queued_note(text))
                     return
-                state.busy = True
-                def run(first):
-                    nxt = first
-                    while nxt:
-                        try:
-                            session.run_turn(nxt)
-                        finally:
-                            left = session.take_pending()      # arrived as the turn was ending
-                            nxt = "\n\n".join(left) if left else None
-                            if not nxt:
-                                with state.lock:
-                                    state.busy = False
-                            state.broadcast({"t": "status", "status": status_state(session)})
-                threading.Thread(target=run, args=(text,), daemon=True).start()
+                state.launch_turn(text)
         elif data.get("t") == "stop":
             session.stop()
         elif data.get("t") == "approve":

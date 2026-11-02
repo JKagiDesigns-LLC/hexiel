@@ -19,6 +19,7 @@ from pathlib import Path
 import httpx
 
 from . import skills as skills_mod
+from . import testrun
 from .tooling import Toolchain
 
 MAX_OUTPUT = 30_000       # characters returned to the model from any tool
@@ -55,6 +56,7 @@ class ToolContext:
     result_cache: dict = field(default_factory=dict)   # dedup pure lookups within a session
     dir_cache: dict = field(default_factory=dict)      # path/depth -> (fingerprint, output)
     file_state: dict = field(default_factory=dict)     # path -> (mtime_ns, size) seen by a read/write, for the stale guard
+    test_commands: tuple = ()                      # extra regexes that mark a command as a test run (testrun.py)
 
     # ---------------------------------------------------------------- stale-file guard
 
@@ -132,6 +134,8 @@ class ShellTask:
     done: bool = False
     code: int | None = None
     reaped: bool = False                             # its completion was already reported to a session
+    run: object = None                               # testrun.Run when the command is a test suite: progress for every view
+    wake: bool = False                               # an idle session is woken with its completion note
 
     def running(self) -> bool:
         return not self.done
@@ -155,6 +159,13 @@ def _pump(task: ShellTask) -> None:
                 task.out.append(line)
                 if sum(len(l) for l in task.out) > _TASK_KEEP_CHARS:
                     del task.out[0]                  # newest output wins, like head+tail capping
+            if task.run is not None:
+                try:
+                    task.run.feed(line)
+                    if task.run._dirty:
+                        testrun.notify(task.run)
+                except Exception:                    # noqa: BLE001 - progress is a bonus, never a reason to lose output
+                    pass
     except Exception:                                # noqa: BLE001 - a closed/cancelled pipe just ends the pump
         pass
     try:
@@ -167,6 +178,12 @@ def _pump(task: ShellTask) -> None:
         task.code = -1
     with task.lock:
         task.done = True
+    if task.run is not None:
+        try:
+            task.run.finish(task.code)
+            testrun.notify(task.run, force=True)
+        except Exception:                            # noqa: BLE001
+            pass
 
 
 def _register_task(task: ShellTask) -> None:
@@ -182,11 +199,14 @@ def _register_task(task: ShellTask) -> None:
         _TASKS[task.id] = task
 
 
-def _new_task(argv: list[str], label: str, cwd: str) -> ShellTask:
+def _new_task(argv: list[str], label: str, cwd: str, *, track: str = "", cmd: str = "",
+              wake: bool = False) -> ShellTask:
     proc = subprocess.Popen(argv, cwd=cwd, stdin=subprocess.DEVNULL,
                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
                             bufsize=1, start_new_session=(os.name != "nt"))
-    task = ShellTask(f"bg-{next(_task_seq)}", label[:80], proc, time.time())
+    task = ShellTask(f"bg-{next(_task_seq)}", label[:80], proc, time.time(), wake=wake)
+    if track:
+        task.run = testrun.start(cmd, cwd, track)
     threading.Thread(target=_pump, args=(task,), daemon=True, name="hexiel-shell-task").start()
     _register_task(task)
     return task
@@ -201,10 +221,37 @@ def drain_finished() -> list[str]:
     for task in tasks:
         if task.done and not task.reaped:
             task.reaped = True
-            size = sum(len(l) for l in task.out)
-            notes.append(f"background task {task.id} finished (exit code {task.code}) — {task.label}: "
-                         f"{size} chars of output ready; call the tasks tool (op='output', id='{task.id}') to read it")
+            notes.append(_finished_note(task))
     return notes
+
+
+def finished_for_wake() -> list[str]:
+    """Like drain_finished, but only for tasks that should wake an idle session (background test runs and
+    tasks the model started in the background) — the front ends poll this while no turn is running."""
+    notes = []
+    with _task_lock:
+        tasks = list(_TASKS.values())
+    for task in tasks:
+        if task.done and not task.reaped and task.wake:
+            task.reaped = True
+            notes.append(_finished_note(task))
+    return notes
+
+
+def _finished_note(task: ShellTask) -> str:
+    size = sum(len(l) for l in task.out)
+    extra = ""
+    if task.run is not None:
+        s = task.run.snapshot()
+        extra = (f" [{task.run.label}: {fmt_outcome(task.run)}, took {testrun.fmt_clock(s['elapsed'])}]")
+    return (f"background task {task.id} finished (exit code {task.code}) — {task.label}{extra}: "
+            f"{size} chars of output ready; call the tasks tool (op='output', id='{task.id}') to read it")
+
+
+def fmt_outcome(run) -> str:
+    if run.code == 0:
+        return "passed"
+    return f"FAILED ({run.failed} failing)" if run.failed else "FAILED"
 
 
 def _park_on_timeout(proc: subprocess.Popen, label: str, parked: dict) -> subprocess.Popen:
@@ -251,6 +298,8 @@ def _tasks_tool(args: dict, ctx: ToolContext) -> ToolResult:
         for t in tasks:
             size = sum(len(l) for l in t.out)
             state = f"finished (exit code {t.code})" if t.done else f"running {int(time.time() - t.started)}s"
+            if t.run is not None and not t.done:
+                state += " · " + testrun.line(t.run.snapshot())
             lines.append(f"{t.id}  {state}  {size} chars of output — {t.label}")
         return text_result("\n".join(lines) or "no background tasks")
     tid = str(args.get("id", ""))
@@ -260,6 +309,8 @@ def _tasks_tool(args: dict, ctx: ToolContext) -> ToolResult:
     if op == "output":
         with task.lock:
             body = "".join(task.out).strip()
+        if task.run is not None and not task.done:
+            return text_result(testrun.progress_note(task.run) + (f"\nlatest output:\n{task.run.tail(6)}" if body else ""))
         out = head_tail(body) if body else "(no output yet)"
         if task.done:
             out += f"\n(finished, exit code {task.code})"
@@ -337,12 +388,20 @@ def _run_shell(args: dict, ctx: ToolContext, argv: list[str], shell_label: str) 
     cmd = args.get("command", "").strip()
     if not cmd:
         return text_result("error: command is required", True)
-    timeout = float(args.get("timeout") or 120)
+    framework = testrun.detect(cmd, ctx.test_commands)
+    timeout = float(args.get("timeout") or (TEST_TIMEOUT if framework else 120))
     if bool(args.get("run_in_background")):
-        task = _new_task(argv, f"{shell_label}: {cmd}", ctx.cwd)
+        task = _new_task(argv, f"{shell_label}: {cmd}", ctx.cwd, track=framework, cmd=cmd, wake=True)
+        if framework:
+            return text_result(f"{framework} is running in the background as task {task.id}; the user sees a live "
+                               "progress bar. Do NOT poll it — carry on with other work or end your turn: you are "
+                               "woken automatically with the result when it finishes. "
+                               "Note: it dies if this hexiel process exits.")
         return text_result(f"running in the background as task {task.id} — poll it with the tasks tool "
                            f"(op='output', id='{task.id}'); you will be told when it finishes. "
                            "Note: it dies if this hexiel process exits.")
+    if framework:
+        return _run_test_suite(argv, cmd, framework, timeout, ctx, shell_label)
     parked = {}
     try:
         proc = run_cancellable(argv, cwd=ctx.cwd, timeout=timeout, stop=ctx.stop_event,
@@ -372,6 +431,44 @@ def _run_shell(args: dict, ctx: ToolContext, argv: list[str], shell_label: str) 
     if proc.returncode != 0:
         summary += f"\n(exit code {proc.returncode})"
     return text_result(summary, is_error=proc.returncode != 0)
+
+
+TEST_TIMEOUT = 2 * 3600          # a test suite is not a stuck command: waited for this long unless the model says otherwise
+
+
+def _run_test_suite(argv: list[str], cmd: str, framework: str, timeout: float, ctx: ToolContext,
+                    shell_label: str) -> ToolResult:
+    """A recognised test run: it executes as a tracked task (progress bar in every view) and this call waits
+    for it — no polling and no tokens spent while it runs. Cancelling kills it; outliving `timeout` parks it
+    as a background task that wakes the session when it ends."""
+    try:
+        task = _new_task(argv, f"{shell_label}: {cmd}", ctx.cwd, track=framework, cmd=cmd)
+    except FileNotFoundError:
+        return text_result(f"error: {shell_label} not installed", True)
+    except PermissionError:
+        return text_result(f"error: {shell_label} is not executable", True)
+    deadline = time.time() + timeout
+    while not task.done:
+        time.sleep(0.2)
+        if ctx.stop_event is not None and ctx.stop_event.is_set():
+            _kill_tree(task.proc)
+            task.reaped = True
+            tail = head_tail(_clean(task.text().strip()), 2000, 1000) if task.text().strip() else ""
+            return text_result("error: cancelled by the user — the command was killed before it finished"
+                               + (f"\npartial output:\n{tail}" if tail else ""), True)
+        if time.time() > deadline:
+            task.wake = True
+            return text_result(f"{framework} outlived its {timeout:.0f}s timeout — it keeps running as background "
+                               f"task {task.id} with a progress bar for the user. Do NOT poll it: you are woken "
+                               f"automatically with the result when it finishes.\n{testrun.progress_note(task.run)}")
+    time.sleep(0.05)                                         # the pump's last bookkeeping
+    task.reaped = True
+    body = head_tail(_clean(task.text()).strip()) or "(no output)"
+    run = task.run
+    header = f"[{framework}: {fmt_outcome(run)} in {testrun.fmt_clock(run.elapsed())}]"
+    if task.code != 0:
+        body += f"\n(exit code {task.code})"
+    return text_result(f"{header}\n{body}", is_error=task.code != 0)
 
 
 def _pwsh_argv() -> str | None:
@@ -1208,6 +1305,10 @@ def build_tools(chain: Toolchain) -> list[ToolDef]:
                 "Use for git, builds, installs, anything without a dedicated tool. "
                 "Set run_in_background=true for dev servers / builds / watchers: you get a task id, "
                 "can read its output with the tasks tool, and are told when it finishes. "
+                "Test suites (pytest, jest, go test, cargo test, mvn/gradle test, rspec, dotnet test, make test... "
+                "any framework) are recognised automatically: the user sees a live progress bar, this call waits "
+                "for the run without a short timeout, and run_in_background=true wakes you with the result — "
+                "never poll or sleep-loop a test run. "
                 "On Windows this falls back to PowerShell when bash is absent.",
                 obj(command={"type": "string"}, timeout={"type": "number"},
                     run_in_background={"type": "boolean"}),

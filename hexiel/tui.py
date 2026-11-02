@@ -703,7 +703,11 @@ class StatusLine(Static):
                 mode = f"[b {RED}]AUTO-APPROVE ALL[/]"
             from . import timers as timers_mod
             timer = timers_mod.summary(session)
+            from . import testrun as testrun_mod
+            tests = testrun_mod.summary(int(time.time() * 2), 12)
             segments = [(f"[b {GOLD}]{timer}[/]", timer)] if timer else []      # first: it is what you're watching
+            if tests:
+                segments.insert(0, (f"[b {GOLD}]{tests}[/]", tests))
             segments += [
                 (f"[{FAINT}]ctrl+p[/] [{MUTED}]model[/]", "ctrl+p model"),
                 (f"[{FAINT}]ctrl+b[/] [{MUTED}]sidebar[/]", "ctrl+b sidebar"),
@@ -790,7 +794,7 @@ class Sidebar(Vertical):
         window = session.model_config.context_window
         tokens_now = session.tokens_now()
         pct = 100 * tokens_now // max(window, 1)
-        compact_at = int(100 * session.settings.compact_threshold)
+        compact_at = int(100 * session.model_config.compact_share(session.settings.compact_threshold))
         if getattr(session, "plan_mode", False):
             mode = f"[b {YELLOW}]plan mode[/]"
         elif not session.auto_approve:
@@ -945,6 +949,14 @@ def prepare_terminal_graphics() -> None:
     tgp._send_tgp_message = quiet_send
 
 
+def copy_selection(app, text: str) -> None:
+    """Selected text -> the clipboard: OSC 52 (works over SSH) and the system helper (wl-copy/xclip/pbcopy),
+    because some terminals and multiplexers ignore OSC 52."""
+    from .clipboard import copy_text
+    app.copy_to_clipboard(text)
+    copy_text(text)
+
+
 class PromptInput(TextArea):
     """The prompt: multiline. Enter sends; Shift+Enter / Ctrl+J / Alt+Enter insert a newline (pasted
     newlines are kept). ↑/↓, Tab, Esc drive the slash menu while it is open."""
@@ -1008,6 +1020,9 @@ class PromptInput(TextArea):
         if not clean.strip():                    # an image-only clipboard arrives as an empty paste
             self.action_paste_image()
             return
+        self._insert_paste(clean)
+
+    def _insert_paste(self, clean: str) -> None:
         lines = clean.count("\n") + 1
         if len(clean) > self.PASTE_COLLAPSE_CHARS or lines > self.PASTE_COLLAPSE_LINES:
             tag = f"[Pasted text #{len(self._pastes) + 1} +{lines} lines]"
@@ -1016,14 +1031,20 @@ class PromptInput(TextArea):
         self.replace(clean, *self.selection)
 
     def action_paste_image(self) -> None:
-        from .clipboard import paste_clipboard_image
-        path = paste_clipboard_image(getattr(getattr(self.app, "session", None), "cwd", None) or os.getcwd())
+        """Ctrl+V / Alt+V: paste what the system clipboard holds — an image becomes an attachment path,
+        text is inserted like a terminal paste (long text collapses to a placeholder)."""
+        from . import clipboard
+        path = clipboard.paste_clipboard_image(getattr(getattr(self.app, "session", None), "cwd", None) or os.getcwd())
         if path:
             self.replace(f'"{path}" ' if " " in path else f"{path} ", *self.selection)
-        else:
-            self.app.notify("No image on the clipboard (needs wl-paste or xclip). "
-                            "Try an update if you use /update: hexiel installs what pasting needs.",
-                            severity="warning")
+            return
+        text = clipboard.clipboard_text()
+        clean = sanitize_paste(text) if text else ""
+        if clean.strip():
+            self._insert_paste(clean)
+            return
+        hint = clipboard.missing_helper_hint()
+        self.app.notify(hint or "Nothing to paste: the clipboard has no text or image.", severity="warning")
 
     def _watch_selection(self, previous_selection, selection) -> None:
         """Select-to-copy: any text selected in the prompt (mouse drag, double-click,
@@ -1039,7 +1060,7 @@ class PromptInput(TextArea):
     def _copy_selected(self) -> None:
         self._copy_timer = None
         if self.selected_text:
-            self.app.copy_to_clipboard(self.selected_text)
+            copy_selection(self.app, self.selected_text)
 
     def expanded(self) -> str:
         text = self.text
@@ -1167,6 +1188,12 @@ class ActivityLine(Static):
             at = time.strftime("%H:%M", time.localtime(getattr(self, "_deadline", now)))
             self.update(f"[{YELLOW}]⏸[/] [{TEXT}]Rate limited[/]  [{MUTED}]resuming in {clock} "
                         f"(at {at}) ·[/] [b]ctrl+c[/b] [{MUTED}]to stop[/]")
+            return
+        from . import testrun
+        if testrun.active():                 # a test suite is running: its progress bar is the activity
+            self.update(f"[{GOLD}]{self.FRAMES[self._frame % len(self.FRAMES)]}[/] "
+                        f"[b {TEXT}]{testrun.summary(self._frame // 2, 14)}[/]  [{MUTED}]· waiting costs no tokens · "
+                        f"[b]ctrl+c[/b] to stop[/]")
             return
         # long waits rotate the verb so the line visibly stays alive
         if self._phase == "waiting" and now - self._verb_since > 8:
@@ -1592,7 +1619,8 @@ class HexielTUI(App):
             base = self.session.model_config
             self.session.model_config = ModelConfig(
                 name=arg, provider="openai", base_url=base.base_url, model=arg,
-                context_window=base.context_window, max_output_tokens=base.max_output_tokens)
+                context_window=base.context_window, max_output_tokens=base.max_output_tokens,
+                compact_threshold=base.compact_threshold)
             self.add_note(f"profile '{arg}' created on the fly ({arg} @ {base.base_url})")
         self._refresh_status()
 
@@ -1976,7 +2004,7 @@ class HexielTUI(App):
         if event == "model_active":
             self._refresh_status()
             return
-        if event == "timers":
+        if event in ("timers", "tests"):
             self._refresh_status()
             return
         if event == "graphic":
@@ -2143,7 +2171,22 @@ class HexielTUI(App):
         if self._stream_wid is not None:
             self._stream_wid.update(self._stream_text)
         self._timers_due()
+        self._wake_if_finished()
         self._refresh_status()
+
+    def _wake_if_finished(self) -> None:
+        """A background test run / task finished while nothing is running: hand its result to the model."""
+        if not getattr(self.session.settings, "auto_wake", True):
+            return
+        if (self._thread and self._thread.is_alive()) or self.session.compacting:
+            return
+        from . import tools as tools_mod
+        from .session import WAKE_PROMPT
+        notes = tools_mod.finished_for_wake()
+        if notes:
+            for note in notes:
+                self.add_note(note)
+            self._start_turn(WAKE_PROMPT.format(notes="\n".join(notes)))
 
     def _timers_due(self) -> None:
         """Say so once when a timer runs out (the footer keeps showing it as over until it is stopped)."""
@@ -2153,8 +2196,19 @@ class HexielTUI(App):
             if timer["ends"] <= time.time() and timer["id"] not in done:
                 done.add(timer["id"])
                 took = timers_mod.fmt_duration(timer["ends"] - timer["started"])
-                self.add_note(f"⏱ time's up: {timer['label']} (estimated {took})".replace("[", "\\["))
-                self.notify_user("hexiel timer", f"{timer['label']}: the {took} estimate is up")
+                self.add_note(f"⏱ {timer['label']}: the {took} estimate has passed — nothing was stopped, "
+                              "hexiel keeps working until the task is done".replace("[", "\\["))
+                self.notify_user("hexiel timer", f"{timer['label']}: the {took} estimate has passed (still running)")
+
+    def on_text_selected(self, event) -> None:
+        """Mouse released after highlighting text anywhere in the chat: copy it, no extra keystroke."""
+        try:
+            text = self.screen.get_selected_text()
+        except Exception:                                    # noqa: BLE001 - copying is a convenience
+            text = None
+        if text and text.strip():
+            copy_selection(self, text)
+            self.notify(f"copied {len(text)} characters", timeout=1.5)
 
     def on_app_focus(self, event) -> None:
         self._terminal_focused = True

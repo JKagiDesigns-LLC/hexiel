@@ -197,6 +197,10 @@ def _left_out(tool, args, exc: KeyError) -> bool:
             and key in ((tool.parameters or {}).get("properties") or {}))
 
 
+WAKE_PROMPT = ("[system] {notes}\nRead the result and carry on with the task you were doing "
+               "(fix failures, or report that it passed).")
+
+
 class Session:
     def __init__(self, model_config: ModelConfig, settings: Settings, cwd: str,
                  tools: list, system_prompt: str, on_event: Callable = None,
@@ -221,6 +225,8 @@ class Session:
         self.loaded_toolsets: set = set()   # optional tool groups in use (toolsets.py)
         self.checkpoints: list[list] = []   # per turn: [(path, original bytes | None)] for /undo
         self.timers: list[dict] = []        # countdowns for long waits (timers.py), shown in every view
+        from . import testrun as testrun_mod
+        testrun_mod.listen(self._tests_changed)   # test-suite progress (testrun.py) reaches every view
         from . import hooks as hooks_mod
         self.hooks = hooks_mod.load(cwd)     # user commands on agent events (hooks.py)
         self.usage_totals = {"requests": 0, "prompt_tokens": 0, "cached_tokens": 0,
@@ -1241,11 +1247,17 @@ class Session:
                 total += image.get("approx_tokens", 800)
         return total
 
+    def _tests_changed(self, snapshot: dict) -> None:
+        try:
+            self.on_event("tests", snapshot)
+        except Exception:                    # noqa: BLE001 - a view must never break a test run
+            pass
+
     def compaction_needed(self) -> bool:
         if not self.messages:
             return False
         current = max(self.estimate_tokens(), self.tokens_now())
-        return current >= self.model_config.context_window * self.settings.compact_threshold
+        return current >= self.model_config.context_window * self.model_config.compact_share(self.settings.compact_threshold)
 
     SUPERSEDE_MIN_CHARS = 64 * 1024     # a history rewrite invalidates the prompt cache from that block on:
                                         # only rewrite when the reclaim justifies the one cache miss

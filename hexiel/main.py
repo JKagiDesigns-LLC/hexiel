@@ -66,7 +66,8 @@ def build_session(cwd: str, model_name: str | None, resumed: dict | None = None)
         tools = tools + [t for t in tool_defs if t.name not in known]
     tool_ctx = ToolContext(cwd=cwd, chain=chain,
                            search_backend=settings.search_backend,
-                           searxng_url=settings.searxng_url, skills=skills)
+                           searxng_url=settings.searxng_url, skills=skills,
+                           test_commands=tuple(settings.test_commands))
 
     system = prompt_mod.build_system_prompt(
         cwd, skills_mod.prompt_section(skills), toolchain_section(chain, cwd),

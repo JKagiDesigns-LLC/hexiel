@@ -72,6 +72,7 @@ searxng_url = ""            # e.g. http://localhost:8888 when search_backend = "
 # cloud_fallback_profile = "glm-flash"   # cloud tasks only (plans, advice, compaction summaries): used when the planner/summary model fails or is limited
 # planner_profile = "kimi"      # model that writes the plan ("" = fallback_profile, else the current model)
 # workers = "auto"             # steps run at once when independent: "auto" = every core but one, or a number (1 = one at a time)
+# test_commands = []            # extra regexes marking a command as a test run, e.g. ["^./ci/run-suite"] (pytest, jest, go test, cargo test... are recognised already)
 # worker_fallback_profile = ""  # used for a step while the worker is busy (e.g. a slow local model serving another session)
 # executor_profile = ""         # model that does each task ("" = the current model)
 # auto_delegate = "ask"         # "off" | "ask" (offer to delegate big requests) | "auto"
@@ -168,7 +169,12 @@ class ModelConfig:
     echo_reasoning: bool = False     # send reasoning back as reasoning_content (DeepSeek, Together, Kimi)
     max_tokens_param: str = ""       # "" = auto (max_completion_tokens for OpenAI/Azure, else max_tokens)
     fallbacks: tuple[str, ...] = ()  # profiles tried in order when this model is unreachable or over its limit
+    compact_threshold: float = 0.0   # this model's own auto-compact point (share of its window); 0 = use [settings] compact_threshold
     billing: str = ""                # the bill it is paid from, for spend tracking: "" = worked out (spend.py), "none" = free
+
+    def compact_share(self, default: float) -> float:
+        """Share of the window that triggers compaction: the profile's own value, else the global default."""
+        return self.compact_threshold if 0 < self.compact_threshold <= 1 else default
 
     def __post_init__(self):
         # accept "name" as well as ["name", "name2"]
@@ -197,6 +203,8 @@ class Settings:
     planner_profile: str = ""         # /delegate: model that writes the plan ("" = fallback_profile, else the current model)
     executor_profile: str = ""        # /delegate: model that does each task ("" = the current model)
     workers: object = "auto"          # /delegate: steps run at once when independent — "auto" = every core but one, or a number
+    auto_wake: bool = True            # a finished background test run/task wakes the model with its result
+    test_commands: tuple = ()         # extra regexes marking a shell command as a test run (progress bar + auto-wake)
     worker_fallback_profile: str = "" # /delegate: used for a step while the worker model is busy ("" = always wait for the worker)
     router_profile: str = ""          # a small cloud model that sorts each typed message (chat/small/work/big) — "" = no router
     overflow_profile: str = ""        # while the main model is busy, chat-sized requests run here ("" = queue as usual)
@@ -329,6 +337,8 @@ def _settings_from(settings_raw: dict) -> "Settings":
         executor_profile=str(settings_raw.get("executor_profile", "")),
         workers=(lambda v: max(1, int(v)) if str(v).isdigit() else "auto")(settings_raw.get("workers", "auto")),
         worker_fallback_profile=str(settings_raw.get("worker_fallback_profile", "")),
+        auto_wake=bool(settings_raw.get("auto_wake", True)),
+        test_commands=tuple(str(p) for p in (settings_raw.get("test_commands") or []) if isinstance(p, str)),
         router_profile=str(settings_raw.get("router_profile", "")),
         overflow_profile=str(settings_raw.get("overflow_profile", "")),
         overflow_daily_tokens=max(0, int(settings_raw.get("overflow_daily_tokens", 0))),

@@ -57,3 +57,49 @@ def save_image(data: bytes, mime: str, cwd: str, name: str = "") -> str:
 def paste_clipboard_image(cwd: str) -> str | None:
     found = clipboard_image()
     return save_image(*found, cwd) if found else None
+
+
+# ---------------------------------------------------------------- text: the system clipboard both ways
+# OSC 52 (what Textual does on its own) only writes, and some terminals/multiplexers drop it; reading the
+# clipboard needs a helper program. These use whichever one this machine has.
+
+_TEXT_WRITERS = [["wl-copy"], ["xclip", "-selection", "clipboard", "-i"], ["xsel", "--clipboard", "--input"],
+                 ["pbcopy"], ["clip.exe"], ["clip"]]
+_TEXT_READERS = [["wl-paste", "--no-newline", "--type", "text"],        # a text type: an image copy must not come back as bytes
+                 ["xclip", "-selection", "clipboard", "-t", "UTF8_STRING", "-o"],
+                 ["xsel", "--clipboard", "--output"], ["pbpaste"],
+                 ["powershell.exe", "-NoProfile", "-Command", "Get-Clipboard -Raw"]]
+
+
+def copy_text(text: str) -> bool:
+    """Put text on the system clipboard with the first helper that works; False when none is installed."""
+    for cmd in _TEXT_WRITERS:
+        if not shutil.which(cmd[0]):
+            continue
+        try:
+            # wl-copy/xclip fork a background owner of the selection: don't wait on their pipes
+            proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
+                                    stderr=subprocess.DEVNULL, start_new_session=True)
+            proc.stdin.write(text.encode("utf-8"))
+            proc.stdin.close()
+            return True
+        except (OSError, subprocess.SubprocessError):
+            continue
+    return False
+
+
+def clipboard_text() -> str | None:
+    """Text on the system clipboard, or None (no helper installed, or it holds no text)."""
+    for cmd in _TEXT_READERS:
+        if not shutil.which(cmd[0]):
+            continue
+        data = _run(cmd)
+        if data and b"\x00" not in data[:4096] and not data.startswith(b"\x89PNG"):
+            return data.decode("utf-8", "replace")
+    return None
+
+
+def missing_helper_hint() -> str:
+    if shutil.which("wl-paste") or shutil.which("xclip") or shutil.which("xsel") or shutil.which("pbpaste"):
+        return ""
+    return "install wl-clipboard (Wayland) or xclip (X11) so hexiel can read and write the clipboard"

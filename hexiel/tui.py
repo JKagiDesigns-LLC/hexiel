@@ -704,7 +704,8 @@ class StatusLine(Static):
             from . import timers as timers_mod
             timer = timers_mod.summary(session)
             from . import testrun as testrun_mod
-            tests = testrun_mod.summary(int(time.time() * 2), 12)
+            activity = getattr(self.app, "activity", None)        # during a turn the activity line already draws the bar
+            tests = "" if getattr(activity, "display", False) else testrun_mod.summary(int(time.time() * 2), 12)
             segments = [(f"[b {GOLD}]{timer}[/]", timer)] if timer else []      # first: it is what you're watching
             if tests:
                 segments.insert(0, (f"[b {GOLD}]{tests}[/]", tests))

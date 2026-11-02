@@ -34,7 +34,7 @@ def test_ignores_other_commands(cmd):
 
 def test_extra_patterns():
     assert testrun.detect("./ci/run-suite --fast", [r"^\./ci/run-suite"]) == "tests"
-    assert testrun.detect("./ci/run-suite", ["(unclosed"]) == ""
+    assert testrun.detect("mytool --fast", ["(unclosed"]) == ""
 
 
 def _run(cmd="pytest"):
@@ -133,9 +133,9 @@ def test_background_run_wakes_instead_of_polling(tmp_path):
     notes = []
     while time.time() < deadline and not notes:
         time.sleep(0.2)
-        notes = finished_for_wake()
+        notes = finished_for_wake(force=True)
     assert notes and "finished (exit code 0)" in notes[0] and "passed" in notes[0]
-    assert finished_for_wake() == []
+    assert finished_for_wake(force=True) == []
 
 
 def test_tasks_tool_does_not_hand_over_output_of_running_suite(tmp_path):
@@ -168,3 +168,98 @@ def test_copy_text_without_helpers(monkeypatch):
     monkeypatch.setattr(clipboard.shutil, "which", lambda name: None)
     assert clipboard.copy_text("x") is False
     assert "wl-clipboard" in clipboard.missing_helper_hint()
+
+
+# ---------------------------------------------------------------- custom test scripts and gherkin/playwright output
+
+@pytest.mark.parametrize("cmd", [
+    "cd /x/glimpse && e2e-bdd/run.sh --smoke", "./scripts/test.sh", "bash run_tests.sh", "sh ./qa/smoke.sh",
+    "python scripts/e2e/run.py", "node e2e/run.js", "make e2e", "npm run smoke", "pwsh ./ci/run-suite.ps1",
+])
+def test_detects_test_scripts_by_path_and_name(cmd):
+    assert testrun.detect(cmd)
+
+
+@pytest.mark.parametrize("cmd", ["./deploy.sh", "bash build.sh", "./mvnw package", "git add tests/x.py",
+                                 "python -m http.server", "./scripts/release.sh", "node server.js", "ls e2e"])
+def test_ordinary_scripts_are_not_test_runs(cmd):
+    assert testrun.detect(cmd) == ""
+
+
+def test_playwright_announced_total_counts_ticks():
+    r = _run()
+    r.feed("Running 4 tests using 2 workers")
+    r.feed("  ✓  1 [chromium] › a.spec.ts:3:1 › one (1s)")
+    r.feed("  ✓  2 [chromium] › a.spec.ts:9:1 › two (1s)")
+    assert r.fraction() == (0.5, "output")
+
+
+def test_gherkin_scenarios_use_previous_run_as_total():
+    r = _run()
+    r.prev = {"duration": 300, "units": 10, "kind": "scenario"}
+    r.feed("  Scenario: pinned post")
+    r.feed("  Scenario: unpinned post")
+    frac, how = r.fraction()
+    assert how == "history" and 0.15 < frac < 0.25
+
+
+# ---------------------------------------------------------------- watching what a command does
+
+def test_loose_detect_sees_the_runner_behind_a_wrapper():
+    assert testrun.loose_detect("docker compose run --rm e2e npx playwright test") == "playwright"
+    assert testrun.loose_detect("/usr/bin/node /app/node_modules/.bin/jest --ci") == "jest"
+    assert testrun.loose_detect("java -cp x org.apache.maven.surefire.booter.ForkedBooter") == "junit"
+    assert testrun.loose_detect("bash ./pytest") == "pytest"
+
+
+def test_loose_detect_ignores_lookalikes():
+    for cmdline in ("grep pytest foo.txt", "docker pull alpine/minio", "tail -f tests/log", "node server.js"):
+        assert testrun.loose_detect(cmdline) == ""
+
+
+def _wait(pred, seconds=10):
+    end = time.time() + seconds
+    while time.time() < end:
+        if pred():
+            return True
+        time.sleep(0.1)
+    return False
+
+
+def test_long_opaque_command_gets_a_bar_and_becomes_a_test_run(tmp_path, monkeypatch):
+    monkeypatch.setattr(testrun, "PROMOTE_AFTER", 0.3)
+    (tmp_path / "pytest").write_text("#!/bin/bash\nsleep 3\n")
+    (tmp_path / "wrapper.sh").write_text("#!/bin/bash\nbash ./pytest\n")
+    import threading
+    box = {}
+    threading.Thread(target=lambda: box.setdefault("out", _run_bash({"command": "bash ./wrapper.sh"}, _ctx(tmp_path))),
+                     daemon=True).start()
+    assert _wait(lambda: bool(testrun.active()))                                          # promoted after PROMOTE_AFTER
+    assert _wait(lambda: any(r.is_tests and r.label == "pytest" for r in testrun.active()))   # the tree revealed it
+    assert _wait(lambda: "out" in box and not testrun.active(), 15)
+    assert testrun.known_test(str(tmp_path), "bash ./wrapper.sh") == "pytest"            # remembered for next time
+
+
+def test_a_plain_long_command_is_shown_as_a_command(tmp_path, monkeypatch):
+    monkeypatch.setattr(testrun, "PROMOTE_AFTER", 0.3)
+    import threading
+    threading.Thread(target=lambda: _run_bash({"command": "sleep 2"}, _ctx(tmp_path)), daemon=True).start()
+    assert _wait(lambda: any(r.cmd == "sleep 2" for r in testrun.active()))
+    run = next(r for r in testrun.active() if r.cmd == "sleep 2")
+    assert run.snapshot()["kind"] == "command" and not run.is_tests
+    assert _wait(lambda: not testrun.active())
+    assert testrun.known_test(str(tmp_path), "sleep 2") == ""
+
+
+def test_quick_commands_never_show_a_bar(tmp_path, monkeypatch):
+    monkeypatch.setattr(testrun, "PROMOTE_AFTER", 5.0)
+    _run_bash({"command": "echo hi"}, _ctx(tmp_path))
+    assert not testrun.active()
+
+
+def test_a_learned_test_command_runs_with_output_tracking(tmp_path):
+    h = testrun._load_history()
+    h[testrun._hkey(str(tmp_path), "./mystery-suite")] = {"duration": 5, "units": 3, "kind": "dots", "tests": True,
+                                                         "label": "pytest", "at": int(time.time())}
+    testrun.history_file().write_text(__import__("json").dumps(h))
+    assert testrun.known_test(str(tmp_path), "./mystery-suite") == "pytest"

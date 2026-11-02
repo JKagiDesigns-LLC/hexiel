@@ -412,7 +412,7 @@ function renderTests() {
   if (t.failed) bits.push(`${t.failed} failed`);
   badge.hidden = false;
   badge.classList.toggle("failing", t.failed > 0);
-  badge.innerHTML = `<span class="tb-label">🧪 ${t.label}</span><span class="tb-bar${pct == null ? " indeterminate" : ""}">` +
+  badge.innerHTML = `<span class="tb-label">${t.kind === "command" ? "⏳" : "🧪"} ${t.label}</span><span class="tb-bar${pct == null ? " indeterminate" : ""}">` +
                     `<i style="width:${pct == null ? 30 : Math.round(pct * 100)}%"></i></span>` +
                     `<span class="tb-text">${pct == null ? "" : Math.round(pct * 100) + "% · "}${bits.join(" · ")}` +
                     `${tests.length > 1 ? ` (+${tests.length - 1})` : ""}</span>`;

@@ -14,4 +14,6 @@ def isolated_dirs(tmp_path_factory, monkeypatch):
     for key in ("OLLAMA_API_KEY", "ANTHROPIC_ADMIN_KEY", "OPENAI_ADMIN_KEY"):
         monkeypatch.delenv(key, raising=False)          # nor ask a real provider what was spent (spend.py)
     import hexiel.config as config
+    import hexiel.tools as tools_mod
+    monkeypatch.setattr(tools_mod, "WAKE_ENABLED", False)   # wake watchers left over from other tests must not reap tasks
     monkeypatch.setattr(config, "CONFIG_FILE", home / "config.toml")   # resolved at import time

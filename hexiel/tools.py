@@ -225,9 +225,14 @@ def drain_finished() -> list[str]:
     return notes
 
 
-def finished_for_wake() -> list[str]:
+WAKE_ENABLED = True              # tests switch this off so stray watcher threads never reap another test's task
+
+
+def finished_for_wake(force: bool = False) -> list[str]:
     """Like drain_finished, but only for tasks that should wake an idle session (background test runs and
     tasks the model started in the background) — the front ends poll this while no turn is running."""
+    if not WAKE_ENABLED and not force:
+        return []
     notes = []
     with _task_lock:
         tasks = list(_TASKS.values())
@@ -278,7 +283,7 @@ def _park_on_timeout(proc: subprocess.Popen, label: str, parked: dict) -> subpro
             fcntl.fcntl(fd, fcntl.F_SETFL, fcntl.fcntl(fd, fcntl.F_GETFL) & ~fcntl.O_NONBLOCK)
         except Exception:                                # noqa: BLE001 - preview is best effort only
             grabbed = ""
-    task = ShellTask(f"bg-{next(_task_seq)}", label[:80], proc, time.time())
+    task = ShellTask(f"bg-{next(_task_seq)}", label[:80], proc, time.time(), wake=True)
     if grabbed:
         task.out.append(grabbed)
     threading.Thread(target=_pump, args=(task,), daemon=True, name="hexiel-shell-task").start()
@@ -348,7 +353,8 @@ def _kill_tree(proc: subprocess.Popen) -> None:
         proc.kill()
 
 
-def run_cancellable(argv, *, cwd=None, timeout=None, stop=None, input=None, on_timeout=None) -> subprocess.CompletedProcess:
+def run_cancellable(argv, *, cwd=None, timeout=None, stop=None, input=None, on_timeout=None,
+                    on_start=None) -> subprocess.CompletedProcess:
     """subprocess.run(capture_output, text) that notices `stop` (a threading.Event) within ~0.25 s and kills
     the whole process group instead of blocking until the command finishes. Raises ToolCancelled on stop and
     subprocess.TimeoutExpired on timeout (both after killing the command) — unless `on_timeout` is given,
@@ -356,6 +362,11 @@ def run_cancellable(argv, *, cwd=None, timeout=None, stop=None, input=None, on_t
     proc = subprocess.Popen(argv, cwd=cwd, stdin=subprocess.PIPE if input is not None else None,
                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
                             start_new_session=(os.name != "nt"))
+    if on_start is not None:
+        try:
+            on_start(proc)                       # e.g. testrun.watch: a progress bar for a command that runs long
+        except Exception:                        # noqa: BLE001 - watching is a bonus, never a reason to fail the command
+            pass
     deadline = time.time() + timeout if timeout else None
     pending = input
     while True:
@@ -388,7 +399,7 @@ def _run_shell(args: dict, ctx: ToolContext, argv: list[str], shell_label: str) 
     cmd = args.get("command", "").strip()
     if not cmd:
         return text_result("error: command is required", True)
-    framework = testrun.detect(cmd, ctx.test_commands)
+    framework = testrun.detect(cmd, ctx.test_commands) or testrun.known_test(ctx.cwd, cmd)
     timeout = float(args.get("timeout") or (TEST_TIMEOUT if framework else 120))
     if bool(args.get("run_in_background")):
         task = _new_task(argv, f"{shell_label}: {cmd}", ctx.cwd, track=framework, cmd=cmd, wake=True)
@@ -405,7 +416,8 @@ def _run_shell(args: dict, ctx: ToolContext, argv: list[str], shell_label: str) 
     parked = {}
     try:
         proc = run_cancellable(argv, cwd=ctx.cwd, timeout=timeout, stop=ctx.stop_event,
-                               on_timeout=lambda p: _park_on_timeout(p, f"{shell_label}: {cmd}", parked))
+                               on_timeout=lambda p: _park_on_timeout(p, f"{shell_label}: {cmd}", parked),
+                               on_start=lambda p: testrun.watch(p, cmd, ctx.cwd))
     except ToolCancelled as exc:
         return _cancelled_result(exc)
     except subprocess.TimeoutExpired:

@@ -51,10 +51,27 @@ _SUB = {                        # first word -> (subcommands that mean "run the 
 _NODE_PM = {"npm", "yarn", "pnpm", "bun"}
 _BUILD_TOOLS = {"mvn": ("maven", {"test", "verify", "integration-test", "surefire:test", "failsafe:integration-test"}),
                 "mvnw": ("maven", {"test", "verify", "integration-test"}),
-                "gradle": ("gradle", None), "gradlew": ("gradle", None), "make": ("make", {"test", "tests", "check", "unittest", "ci"}),
+                "gradle": ("gradle", None), "gradlew": ("gradle", None), "make": ("make", {"test", "tests", "check", "unittest", "ci", "e2e", "smoke", "integration", "verify", "bdd"}),
                 "ninja": ("ninja", {"test", "check"}), "just": ("just", {"test", "tests", "check", "ci"}),
                 "task": ("task", {"test", "tests", "check", "ci"})}
-_TEST_WORD = re.compile(r"(^|[:_-])(test|tests|spec|specs|e2e|ci|check|integration|unit)($|[:_-])")
+_TEST_WORD = re.compile(r"(^|[:_-])(test|tests|spec|specs|e2e|ci|check|integration|unit|smoke|bdd|cucumber|qa)($|[:_-])")
+# a script that is evidently a test run by where it lives or what it is called: e2e-bdd/run.sh, ./scripts/test.sh,
+# run_tests.sh, bash qa/smoke.sh ... (any path component named like test/e2e/bdd/smoke/spec/integration/qa/ci)
+_TEST_PATH_WORD = re.compile(r"^(.*[-_.])?(e2e|bdd|smoke|tests?|specs?|integration|qa|ci|acceptance|regression)([-_.].*)?$", re.I)
+_INTERPRETERS = {"bash", "sh", "zsh", "dash", "ksh", "fish", "pwsh", "powershell", "node", "ruby", "perl", "php", "python", "python3", "py"}
+_SCRIPT_EXT = re.compile(r"\.(sh|bash|zsh|ps1|py|rb|js|mjs|cjs|ts|pl|php|bat|cmd)$", re.I)
+
+
+def _is_test_script(token: str) -> bool:
+    if not token or token.startswith("-") or "=" in token.split("/")[0]:
+        return False
+    pathlike = "/" in token or token.startswith(".") or bool(_SCRIPT_EXT.search(token))
+    if not pathlike:
+        return False
+    parts = [p for p in re.split(r"[\\/]+", token) if p and p not in (".", "..", "~")]
+    return any(_TEST_PATH_WORD.match(re.sub(_SCRIPT_EXT, "", p)) for p in parts)
+
+
 _SPLIT = re.compile(r"\s*(?:&&|\|\||;|\n|\|)\s*")
 
 
@@ -124,6 +141,16 @@ def detect(cmd: str, extra=()) -> str:
             prog = prog[:-4]
         rest = [a for a in argv[1:]]
         subs = [a for a in rest if not a.startswith("-")]
+        if prog in _INTERPRETERS and subs:
+            base = re.sub(r"\.(c|m)?js$|\.py$", "", Path(subs[0]).name)
+            if base in _BARE:
+                inner = detect(" ".join([base] + [shlex.quote(x) for x in rest[rest.index(subs[0]) + 1:]]))
+                if inner:
+                    return inner
+        script = argv[0] if ("/" in argv[0] or argv[0].startswith(".")) and prog not in _INTERPRETERS else (
+            subs[0] if prog in _INTERPRETERS and subs else "")
+        if script and _is_test_script(script) and not (prog in ("python", "python3", "py") and rest[:1] == ["-m"]):
+            return "tests"
         if prog in ("python", "python3", "py") and rest[:1] == ["-m"] and len(rest) > 1:
             prog = rest[1]                                  # `python -m pytest` when the prefix strip missed it
             rest, subs = rest[2:], [a for a in rest[2:] if not a.startswith("-")]
@@ -174,6 +201,7 @@ _UNITS = [
     ("cargo", re.compile(r"^test .+ \.\.\. (ok|FAILED|ignored|bench)")),
     ("tap", re.compile(r"^\s*(not )?ok \d+")),
     ("verbose", re.compile(r"\b(PASSED|FAILED|SKIPPED|XFAIL|XPASS|ERROR)\b(?!\s*:?\s*\d+ )")),
+    ("scenario", re.compile(r"^\s*Scenario( Outline)?:")),                                         # Cucumber / Behave / Gherkin
     ("jestfile", re.compile(r"^\s*(PASS|FAIL)\s+\S")),
     ("tick", re.compile(r"^\s*(✓|✔|√|✗|✘|×|✕)")),
     ("gotest", re.compile(r"^(--- (PASS|FAIL|SKIP):|ok\s+\S+\s|FAIL\s+\S+\s+[\d.]+s)")),
@@ -187,6 +215,7 @@ _FAILED = re.compile(r"\b(FAILED|FAIL|FAILURE|not ok|ERROR)\b|^\s*(✗|✘|×|�
 _PCT = re.compile(r"\[\s*(\d{1,3})%\]")
 _FRACTION = re.compile(r"(?:^|\s)(\d+)/(\d+)\s+(?:Test|test)\b|^\s*Test\s+#?(\d+)\s*/\s*(\d+)\b|^\[(\d+)/(\d+)\]")
 _CARGO_TOTAL = re.compile(r"^running (\d+) tests?")
+_ANNOUNCED = re.compile(r"^\s*Running (\d+) tests?( using|\b)|^\s*(\d+) (scenarios?|tests?) to run", re.I)   # Playwright, Cypress-style plans
 _TAP_PLAN = re.compile(r"^1\.\.(\d+)\s*$")
 _SUMMARY = re.compile(r"(\d+) (passed|failed|failures?|errors?|skipped|tests? run)|Tests:\s+.*?(\d+) total|"
                       r"Ran (\d+) tests?|\bok\s+\S+\s+[\d.]+s", re.I)
@@ -225,6 +254,7 @@ class Run:
     pct_out: float | None = None      # percentage the framework itself printed (0..1)
     prev: dict = field(default_factory=dict)          # the last finished run of this command: duration, units, kind
     last_line: str = ""
+    is_tests: bool = True             # False for a long command that has not (yet) shown itself to be a test run
     _dirty: bool = False
     _notified: float = 0.0
     _tail: list = field(default_factory=list)
@@ -250,6 +280,9 @@ class Run:
         if m:
             self.total = (self.total or 0) + int(m.group(1)) if self.kind == "cargo" else int(m.group(1))
             self.kind = "cargo"
+        m = _ANNOUNCED.match(line)
+        if m and not self.total:
+            self.total = int(m.group(1) or m.group(3))
         m = _TAP_PLAN.match(line)
         if m:
             self.total, self.kind = int(m.group(1)), "tap"
@@ -267,10 +300,11 @@ class Run:
     def finish(self, code: int | None) -> None:
         self.ended, self.code = time.time(), code
         self._dirty = True
-        if code == 0 or not self.prev:
+        if code == 0 or (not self.prev and (code or 0) >= 0):          # a killed run's duration says nothing
             h = _load_history()
             h[_hkey(self.cwd, self.cmd)] = {"duration": round(self.ended - self.started, 1), "units": self.units,
-                                            "kind": self.kind, "at": int(self.ended)}
+                                            "kind": self.kind, "at": int(self.ended), "tests": self.is_tests,
+                                            "label": self.label if self.is_tests else ""}
             if len(h) > 400:
                 for k in sorted(h, key=lambda k: h[k].get("at", 0))[:len(h) - 400]:
                     h.pop(k, None)
@@ -307,7 +341,7 @@ class Run:
             eta = max(self.elapsed() * (1 - frac) / frac, 0)
         elif how == "time":
             eta = max((self.prev.get("duration") or 0) - self.elapsed(), 0)
-        return {"id": self.id, "label": self.label, "cmd": self.cmd[:200], "started": self.started,
+        return {"id": self.id, "label": self.label, "kind": "tests" if self.is_tests else "command", "cmd": self.cmd[:200], "started": self.started,
                 "elapsed": round(self.elapsed(), 1), "pct": None if frac is None else round(frac, 4), "how": how,
                 "done": self.units, "total": self.total or (self.prev.get("units") or None
                                                            if how == "history" else None),
@@ -325,6 +359,97 @@ RUNS: dict[str, Run] = {}
 _lock = threading.Lock()
 _listeners: list = []                 # weak refs to callables (sessions) told when progress moves
 KEEP_FINISHED = 20
+
+
+def known_test(cwd: str, cmd: str) -> str:
+    """The label of a command hexiel has seen running tests before ("" when unknown) — learned by watch()."""
+    rec = _load_history().get(_hkey(cwd, cmd), {})
+    return (rec.get("label") or "tests") if rec.get("tests") else ""
+
+
+# ---------------------------------------------------------------- watching a command that is not obviously a test
+
+PROMOTE_AFTER = 8.0               # seconds a foreground command runs before it earns a progress bar
+_CARRIERS = {"docker", "podman", "docker-compose", "kubectl", "ssh", "nsenter", "bash", "sh", "zsh", "env", "sudo",
+             "timeout", "nohup", "xvfb-run", "uv", "poetry", "npx", "pnpm", "yarn", "npm", "make", "just", "task",
+             "flock", "stdbuf", "script", "time", "nice"}
+
+
+def loose_detect(cmdline: str) -> str:
+    """detect(), but also finds the runner behind a wrapper (docker compose run ... playwright test, bash -c ...,
+    java -cp ... surefire) in a running process's command line."""
+    label = detect(cmdline)
+    if label:
+        return label
+    try:
+        tokens = shlex.split(cmdline)
+    except ValueError:
+        tokens = cmdline.split()
+    if not tokens:
+        return ""
+    prog = Path(tokens[0]).name
+    if prog in _CARRIERS:
+        for i in range(1, len(tokens)):
+            label = detect(" ".join(shlex.quote(t) for t in tokens[i:]))
+            if label:
+                return label
+    if prog == "java" and re.search(r"surefire|failsafe|junit|testng|cucumber", cmdline, re.I):
+        return "junit"
+    if prog == "dotnet" and re.search(r"vstest|testhost", cmdline):
+        return "dotnet test"
+    return ""
+
+
+def _descendants(root: int) -> list[str]:
+    """Command lines of every process below `root` (Linux and macOS: via ps; elsewhere nothing)."""
+    try:
+        import subprocess
+        out = subprocess.run(["ps", "-A", "-o", "pid=,ppid=,args="], capture_output=True, text=True, timeout=3).stdout
+    except Exception:                                         # noqa: BLE001 - no ps (Windows): no tree to read
+        return []
+    kids: dict[int, list[int]] = {}
+    cmds: dict[int, str] = {}
+    for ln in out.splitlines():
+        parts = ln.split(None, 2)
+        if len(parts) == 3 and parts[0].isdigit() and parts[1].isdigit():
+            kids.setdefault(int(parts[1]), []).append(int(parts[0]))
+            cmds[int(parts[0])] = parts[2]
+    found, queue = [], list(kids.get(root, []))
+    while queue and len(found) < 400:
+        pid = queue.pop()
+        found.append(cmds.get(pid, ""))
+        queue.extend(kids.get(pid, []))
+    return found
+
+
+def watch(proc, cmd: str, cwd: str) -> None:
+    """Start watching a foreground command: once it has run PROMOTE_AFTER seconds it gets a progress bar (from the
+    previous run of the same command, else a sweeping one), and the processes it started are read every second —
+    the moment one of them is a test runner the bar becomes a test run, and that is remembered for next time."""
+    threading.Thread(target=_watch, args=(proc, cmd, cwd), daemon=True, name="hexiel-watch").start()
+
+
+def _watch(proc, cmd: str, cwd: str) -> None:
+    began = time.time()
+    while proc.poll() is None and time.time() - began < PROMOTE_AFTER:
+        time.sleep(0.25)
+    if proc.poll() is not None:
+        return
+    run = start(cmd, cwd, "running")
+    run.is_tests, run.started = False, began
+    try:
+        while proc.poll() is None:
+            if not run.is_tests:
+                for child in _descendants(proc.pid):
+                    label = loose_detect(child)
+                    if label:
+                        run.label, run.is_tests = label, True
+                        break
+            notify(run, force=True)
+            time.sleep(1.0)
+    finally:
+        run.finish(proc.returncode if proc.returncode is not None else -1)
+        notify(run, force=True)
 
 
 def start(cmd: str, cwd: str, label: str) -> Run:
@@ -410,7 +535,7 @@ def summary(tick: int = 0, width: int = 16) -> str:
     runs = sorted(active(), key=lambda r: r.started)
     if not runs:
         return ""
-    return "🧪 " + line(runs[0].snapshot(), width, tick) + (f" (+{len(runs) - 1})" if len(runs) > 1 else "")
+    return ("🧪 " if runs[0].is_tests else "⏳ ") + line(runs[0].snapshot(), width, tick) + (f" (+{len(runs) - 1})" if len(runs) > 1 else "")
 
 
 def progress_note(run: Run) -> str:

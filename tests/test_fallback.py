@@ -239,3 +239,28 @@ def test_cloud_model_never_checks_its_queue(env, monkeypatch):
 
     monkeypatch.setattr(modelbusy, "others", no_others)
     assert router.overflow_or_main(s, "anything", route="work").name == "anthropic-sonnet"
+
+
+def test_empty_reply_recovers_unattended_by_failing_over(env, monkeypatch):
+    s, events = env
+    turn = {}
+    assert s._recover_unattended(turn, "the connection dropped mid-reply") is True
+    assert s.model_config.name != "gmktec"          # moved on down the chain
+    assert turn["recoveries"] == 1
+
+
+def test_recovery_gives_up_after_the_cap_or_when_auto_resume_off(env):
+    import hexiel.session as session_module
+    s, events = env
+    assert s._recover_unattended({"recoveries": session_module.MAX_UNATTENDED_RECOVERIES}, "x") is False
+    s.settings.auto_resume = False
+    assert s._recover_unattended({}, "x") is False
+
+
+def test_recovery_backs_off_when_chain_exhausted(env, monkeypatch):
+    s, events = env
+    monkeypatch.setattr(s, "_switch_to_fallback", lambda r: False)
+    slept = []
+    monkeypatch.setattr(s, "_sleep_interruptibly", lambda secs: slept.append(secs) or True)
+    assert s._recover_unattended({}, "empty") is True
+    assert slept == [30]

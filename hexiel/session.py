@@ -164,6 +164,7 @@ def repair_tool_pairs(messages: list[dict]) -> bool:
     return changed
 
 
+MAX_UNATTENDED_RECOVERIES = 4   # failovers/backoffs per turn after a dropped or empty reply before asking the user
 MAX_TIMEOUT_RETRIES = 2   # consecutive request timeouts before giving up (each already waited request_timeout)
 FALLBACK_COOLDOWN = 1800.0    # a profile that hit its usage limit is skipped by fallbacks this long —
                               # retrying it with every request would raise the same error again; try again later.
@@ -540,10 +541,14 @@ class Session:
                     finally:
                         self.messages.pop()
                 if _is_empty_reply(assistant):
+                    had_error = bool(getattr(self, "_provider_error", None))
+                    recoverable = self.__dict__.pop("_error_recoverable", False) or not had_error
                     error = getattr(self, "_provider_error", None) or (
                         "the model returned an empty reply twice — try rephrasing, /compact, "
                         "or /model to switch models")
                     self._provider_error = None
+                    if recoverable and self._recover_unattended(turn, error, backoff=had_error):
+                        continue                  # failed over / backed off: keep the turn going
                     if not self._stop.is_set():
                         self.on_event("turn_end", {"error": error})
                     else:
@@ -801,6 +806,28 @@ class Session:
         """Local clock time of the retry, for 'resuming at 12:41:05' notes."""
         return (datetime.datetime.now() + datetime.timedelta(seconds=wait)).strftime("%H:%M:%S")
 
+    def _recover_unattended(self, turn: dict, error: str, backoff: bool = True) -> bool:
+        """A dropped connection, empty or degenerate reply used to end the turn and wait for the user to
+        type again — a stall whenever nobody is watching. With auto_resume on, move to the next model in
+        the fallback chain (or back off and retry the same one) up to MAX_UNATTENDED_RECOVERIES times."""
+        if self._stop.is_set() or not self.settings.auto_resume:
+            return False
+        if turn.get("recoveries", 0) >= MAX_UNATTENDED_RECOVERIES:
+            return False
+        turn["recoveries"] = turn.get("recoveries", 0) + 1
+        self.on_event("note", f"…{error[:120]} — recovering automatically "
+                              f"({turn['recoveries']}/{MAX_UNATTENDED_RECOVERIES})")
+        if self._switch_to_fallback(error):
+            return True
+        if not backoff:                      # a bare empty reply: only a different model can help, never a wait
+            return False
+        if llm._LONG_TERM.search(error):     # a spent quota won't come back by retrying the same model
+            return False
+        wait = min(30 * 2 ** (turn["recoveries"] - 1), 240)    # chain exhausted: back off, retry the same model
+        self.__dict__.pop("_fallback_tried", None)              # let the chain be walked again next time
+        self.on_event("model_unreachable", wait, error[:200], turn["recoveries"], self._retry_at(wait))
+        return self._sleep_interruptibly(wait)
+
     def _switch_to_fallback(self, reason: str) -> bool:
         """Switch to the next profile left in this model's fallback chain ([models.*] `fallbacks`;
         with none set, the old fallback_profile). The tried names pile up for this turn, so a chain
@@ -859,6 +886,7 @@ class Session:
                     streamed.append(payload[0])
                     if len(streamed) % 20 == 0 and _degenerate("".join(streamed)[-600:]):
                         self._provider_error = DEGENERATE_HELP
+                        self._error_recoverable = True
                         return {"role": "assistant", "content": ""}
                 elif event == "thinking":
                     self.on_event("thinking", payload[0])
@@ -894,6 +922,7 @@ class Session:
                     timed_out=timed_out) from exc
             self._provider_error = (f"the connection to the model server dropped mid-reply "
                                     f"({type(exc).__name__}) — send your message again to retry")
+            self._error_recoverable = True
         except llm.ProviderError as exc:
             self._provider_error = str(exc)
         finally:

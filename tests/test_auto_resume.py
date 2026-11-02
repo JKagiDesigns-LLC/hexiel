@@ -145,7 +145,28 @@ def test_empty_reply_is_nudged_and_never_stored(tmp_path, monkeypatch, clock):
     assert [m["content"] for m in s.messages] == ["old", "continue", "here is the answer"]
 
 
+def test_dropped_reply_recovers_on_its_own_when_unattended(tmp_path, monkeypatch, clock):
+    s, events = make(tmp_path, monkeypatch, [{"role": "assistant", "content": ""},
+                                             {"role": "assistant", "content": "back on track"}])
+    s._provider_error = None
+    orig = Session._stream_assistant
+    calls = []
+
+    def flaky(self, provider, tool_defs):
+        calls.append(1)
+        if len(calls) == 1:
+            self._provider_error = "the connection to the model server dropped mid-reply (ReadError)"
+            self._error_recoverable = True
+            return {"role": "assistant", "content": ""}
+        return {"role": "assistant", "content": "back on track"}
+    monkeypatch.setattr(Session, "_stream_assistant", flaky)
+    s.run_turn("continue")
+    assert s.messages[-1]["content"] == "back on track"
+    assert any(e[0] == "model_unreachable" for e in events)
+
+
 def test_two_empty_replies_report_an_error(tmp_path, monkeypatch, clock):
+    monkeypatch.setattr(session_mod, "MAX_UNATTENDED_RECOVERIES", 0)    # attended: report instead of recovering
     s, events = make(tmp_path, monkeypatch, [{"role": "assistant", "content": ""},
                                              {"role": "assistant", "content": "  "}])
     s.run_turn("continue")

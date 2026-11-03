@@ -115,6 +115,12 @@ TRUNCATION_NUDGE = ("(Your previous reply was cut off at the model's output-toke
                     "Continue from exactly where it stopped; if you were writing a large file, "
                     "keep going from that point instead of restarting it.)")
 
+MALFORMED_CALL_RETRIES = 3             # re-asks per turn when the model's own tool call was unparseable
+MALFORMED_CALL_NUDGE = ("(Your previous tool call was malformed and the server could not parse it, so it "
+                        "did not run. Call the tool again with well-formed arguments. Keep the arguments "
+                        "short: for a large file, write it in several smaller pieces instead of one long "
+                        "command, and use the exact parameter names from the tool definition.)")
+
 CACHE_TTL = 3600                       # provider-side prompt caches live about an hour
 IDLE_COMPACT_MARGIN = 360              # compact this long BEFORE the TTL lapses
 IDLE_COMPACT_MIN_TOKENS = 20_000       # smaller prompts are cheaper to re-read than to compact
@@ -553,6 +559,15 @@ class Session:
                         "the model returned an empty reply twice — try rephrasing, /compact, "
                         "or /model to switch models")
                     self._provider_error = None
+                    if had_error and llm.is_malformed_tool_call(error) and not self._stop.is_set() \
+                            and turn.get("malformed", 0) < MALFORMED_CALL_RETRIES:
+                        # the model's own tool call was unparseable (provider 500): no failover or wait helps,
+                        # so tell it and let it try again — at most a few times per turn
+                        turn["malformed"] = turn.get("malformed", 0) + 1
+                        self.on_event("note", f"…the model wrote a malformed tool call — asking it to retry "
+                                              f"({turn['malformed']}/{MALFORMED_CALL_RETRIES})")
+                        self.messages.append({"role": "user", "content": MALFORMED_CALL_NUDGE})
+                        continue
                     if recoverable and self._recover_unattended(turn, error, backoff=had_error):
                         continue                  # failed over / backed off: keep the turn going
                     if not self._stop.is_set():
@@ -931,6 +946,8 @@ class Session:
             self._error_recoverable = True
         except llm.ProviderError as exc:
             self._provider_error = str(exc)
+            if llm.is_malformed_tool_call(str(exc)):
+                self._error_recoverable = True       # a different model may write the call properly
         finally:
             slot.release()
         final = final if final is not None else {"role": "assistant", "content": ""}

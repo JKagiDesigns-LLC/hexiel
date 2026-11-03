@@ -179,6 +179,18 @@ def is_context_overflow(text: str) -> bool:
     return bool(_OVERFLOW_TEXT.search(text))
 
 
+_MALFORMED_CALL_TEXT = re.compile(
+    r"XML syntax error|error parsing tool call|failed to parse (the )?tool.?call|tool.?call.{0,40}(parse|invalid|malformed)|"
+    r"(parse|invalid|malformed).{0,40}tool.?call|invalid (character|JSON).{0,80}function|"
+    r"unexpected end of JSON input|element <\w+> closed by", re.I)
+
+
+def is_malformed_tool_call(text: str) -> bool:
+    """A provider rejection (usually a 500 from Ollama's tool-call parser) because the MODEL wrote a broken
+    tool call — an unclosed XML tag, truncated JSON. The server is fine; asking again usually works."""
+    return bool(_MALFORMED_CALL_TEXT.search(text))
+
+
 def est_tokens(text: str) -> int:
     """Cheap heuristic; exact usage from the API is preferred whenever available."""
     return (len(text) + 3) // 4

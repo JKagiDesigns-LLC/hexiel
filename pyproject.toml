@@ -1,6 +1,6 @@
 [project]
 name = "hexiel"
-version = "0.8.2"
+version = "0.8.3"
 description = "Open-source AI coding agent for the terminal and browser — runs on local Ollama models (even on modest hardware) or any cloud LLM. A self-hostable alternative to Claude Code and opencode."
 readme = "README.md"
 license = "LicenseRef-GPL-3.0-with-Commons-Clause"

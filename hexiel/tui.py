@@ -758,6 +758,21 @@ def spend_rows(settings, inner: int, in_use: set) -> list[str]:
     return out
 
 
+WHERE_ICONS = {"ssh": "⇄", "docker": "▣", "podman": "▣", "k8s": "☸", "lxc": "▣", "container": "▣", "wsl": "❖"}
+
+
+def where_rows(inner: int) -> list[str]:
+    """One chip per place hexiel is running in (container, ssh session, ...): '▣ docker  sci-dev'.
+    Nothing at all for a plain local terminal."""
+    from .where import where
+    rows = []
+    for kind, name in where():
+        label = f"{WHERE_ICONS.get(kind, '▣')} {kind}"
+        rows.append(f"[b {BLUE}]{label}[/] [{TEXT}]{fit(name, max(inner - len(label) - 1, 4))}[/]" if name
+                    else f"[b {BLUE}]{label}[/]")
+    return rows
+
+
 class Sidebar(Vertical):
     """A quiet opencode-style rail: where you are, what is answering, how full the context is."""
 
@@ -816,6 +831,7 @@ class Sidebar(Vertical):
         ]
         if branch:
             rows.append(f"[{MUTED}]⎇ {fit(branch, inner - 2)}[/]")
+        rows += where_rows(inner)
         rows += [
             "",
             f"[{FAINT}]MODEL[/]",

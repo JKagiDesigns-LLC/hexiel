@@ -10,6 +10,7 @@ from . import __version__
 from . import memory as memory_mod
 from . import openwebui_compat
 from . import prompt as prompt_mod
+from . import prompt_edit
 from . import settings_edit
 from . import skills as skills_mod
 from . import todo as todo_mod
@@ -73,6 +74,7 @@ def build_session(cwd: str, model_name: str | None, resumed: dict | None = None)
         cwd, skills_mod.prompt_section(skills), toolchain_section(chain, cwd),
         task_state=(todo_mod.summary_line(cwd) if resumed else ""))
     session = Session(model_config, settings, cwd, tools, system)
+    prompt_edit.startup(session, resumed)          # an edited /prompt (session copy, dir or global file) takes over
     session.mcp_servers = mcp_servers
     from . import permissions
     session.rules = permissions.load(cwd, config.permissions)
@@ -101,6 +103,19 @@ def build_session(cwd: str, model_name: str | None, resumed: dict | None = None)
     if resumed:
         session.id = resumed["id"]
         session.messages = resumed.get("messages", [])
+        from . import redact
+        if getattr(settings, "redact_secrets", "full") != "off":
+            # sessions saved before scrubbing existed still hold secrets in old messages: clean them
+            # once as they load (idempotent — already-scrubbed text comes back unchanged)
+            for m in session.messages:
+                if isinstance(m.get("content"), str):
+                    m["content"] = redact.scrub(m["content"])
+                for block_kind in ("tool_calls",):
+                    for c in m.get(block_kind) or []:
+                        if isinstance(c.get("arguments"), dict):
+                            for k, v in c["arguments"].items():
+                                if isinstance(v, str):
+                                    c["arguments"][k] = redact.scrub(v)
         session.timers = [t for t in resumed.get("timers", []) if isinstance(t, dict) and "ends" in t]
         settings_edit.restore_auto_mode(session, resumed)
     return session

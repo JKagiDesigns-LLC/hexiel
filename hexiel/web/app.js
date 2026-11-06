@@ -540,8 +540,50 @@ $("#settings-btn").addEventListener("click", () => {
 });
 $("#settings-close").addEventListener("click", () => $("#settings-back").classList.remove("show"));
 document.addEventListener("keydown", ev => {
-  if (ev.key === "Escape" && !$("#scope-back").classList.contains("show")) $("#settings-back").classList.remove("show");
+  if (ev.key !== "Escape" || $("#scope-back").classList.contains("show")) return;
+  $("#settings-back").classList.remove("show");
+  $("#prompt-back").classList.remove("show");
 });
+
+// ---------------------------------------------------------------- system prompt editor
+
+async function loadPrompt() {
+  const d = await (await fetch("api/prompt")).json();
+  $("#prompt-source").textContent = d.source === "default"
+    ? "This is the default prompt hexiel builds from your project and settings. Edit it, then pick where your edit lives (and it applies to the model's very next step)."
+    : `Currently shown: an override saved for ${d.source === "session" ? "this session" : d.source === "directory" ? "this directory" : "global use"}. Reset restores the default.`;
+  $("#prompt-text").value = d.text || "";
+}
+
+async function savePrompt(scope) {
+  const text = $("#prompt-text").value.trim();
+  if (!text) { $("#prompt-msg").textContent = "⚠ the prompt can't be empty — Reset to go back to the default"; return; }
+  const resp = await (await fetch("api/prompt", { method: "POST",
+    body: JSON.stringify({ text, scope }), headers: { "content-type": "application/json" } })).json();
+  $("#prompt-msg").textContent = resp.error ? "⚠ " + resp.error : "✓ " + resp.message;
+  refreshState();
+}
+
+async function resetPrompt() {
+  const resp = await (await fetch("api/prompt", { method: "POST",
+    body: JSON.stringify({ action: "reset" }), headers: { "content-type": "application/json" } })).json();
+  $("#prompt-msg").textContent = resp.error ? "⚠ " + resp.error : "✓ " + resp.message;
+  await loadPrompt();
+  refreshState();
+}
+
+function openPrompt() {
+  $("#prompt-msg").textContent = "";
+  $("#prompt-back").classList.add("show");
+  loadPrompt();
+}
+
+$("#prompt-session").addEventListener("click", () => savePrompt("session"));
+$("#prompt-dir").addEventListener("click", () => savePrompt("directory"));
+$("#prompt-global").addEventListener("click", () => savePrompt("global"));
+$("#prompt-reset").addEventListener("click", resetPrompt);
+$("#prompt-close").addEventListener("click", () => $("#prompt-back").classList.remove("show"));
+$("#prompt-cancel").addEventListener("click", () => $("#prompt-back").classList.remove("show"));
 
 // ---------------------------------------------------------------- self-heal review
 let healFiles = [], healSel = 0;
@@ -677,6 +719,7 @@ fetch("api/commands").then(r => r.json()).then(d => {
   if (location.hash === "#slash") { input.value = "/u"; renderSlash(); }      // demo / screenshots
 }).catch(() => {});
 const CLIENT_COMMANDS = { model: () => openPicker(), config: () => $("#settings-btn").click(),
+                          prompt: () => openPrompt(),
                           update: () => { const b = $("#update-btn"); b.style.display ? checkUpdate() : b.click(); } };
 
 function renderSlash() {

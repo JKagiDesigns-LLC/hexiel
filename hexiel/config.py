@@ -82,6 +82,7 @@ searxng_url = ""            # e.g. http://localhost:8888 when search_backend = "
 # consult_mode = "auto"         # ask the planner model for advice when stuck: "auto" | "tool" (only if the model asks) | "off"
 # delegate_review = "auto"      # the planner reviews the finished diff and fixes problems: "auto" | "always" | "off"
 # error_reports = "account"     # send hexiel's own errors (scrubbed of paths and secrets) for tracking: "account" (signed in to Hexiel Remote) | "all" (anyone, to the public queue at hexiel.tech/support) | "off"
+# redact_secrets = "full"       # hide credentials (API keys, tokens, passwords) from the AI: scrubbed out of tool output and typed text before it reaches any model | "off" = send everything as-is
 
 [models.glm-flash]
 provider = "openai"         # "openai" = any OpenAI-compatible /chat/completions endpoint
@@ -215,6 +216,7 @@ class Settings:
     escalate_mode: str = "auto"       # when the working model is struggling, let the planner model take over for a few steps: "auto" | "off"
     consult_mode: str = "auto"        # ask the planner model for advice: "auto" (the model may ask, and hexiel asks when it is stuck) | "tool" (only when the model asks) | "off"
     error_reports: str = "account"    # send hexiel's own errors to remote.hexiel.tech for tracking: "account" (when signed in to Hexiel Remote) | "all" (also anonymously, to the public queue) | "off"
+    redact_secrets: str = "full"      # scrub credentials out of everything the AI reads: "full" (tool output AND typed text) | "off"
     cloud_fallback_profile: str = ""  # cloud tasks only (plans, advice, compaction summaries): used when the cloud model fails or is limited
     tool_models: dict = field(default_factory=dict)   # [tool_models]: tool -> profile that condenses its big output (see digest.py)
     digest_min_chars: int = 3000      # tool output shorter than this is never condensed by a tool model

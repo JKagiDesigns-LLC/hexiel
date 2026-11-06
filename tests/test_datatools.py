@@ -93,7 +93,9 @@ def test_chart_html(tmp_path):
     assert "vega-lite" in html and '"total"' in html and "3 point(s)" in r.text
 
 
-def test_data_tools_load_lazily(tmp_path):
+def test_data_tools_load_lazily(tmp_path, monkeypatch):
+    monkeypatch.delenv("DISPLAY", raising=False)
+    monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)    # not on a desktop for this test
     from hexiel import toolsets
     from hexiel.config import ModelConfig, Settings
     from hexiel.session import Session

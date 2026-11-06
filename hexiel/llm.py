@@ -191,6 +191,22 @@ def is_malformed_tool_call(text: str) -> bool:
     return bool(_MALFORMED_CALL_TEXT.search(text))
 
 
+_TOOL_ID_BAD = re.compile(r"[^a-zA-Z0-9_-]")
+
+
+def safe_tool_id(call_id) -> str:
+    """Anthropic requires tool_use ids to match ^[a-zA-Z0-9_-]+ (64 chars max); Ollama servers
+    emit ids like 'functions.bash:175', which make every request to a Claude model fail (HTTP 400)
+    the moment a fallback chain switches to one — each failure still paying for the whole prompt.
+    Sanitizing at the provider boundary (both directions, both providers) keeps the raw history
+    intact and rescues sessions saved before the fix without any migration."""
+    sid = _TOOL_ID_BAD.sub("_", str(call_id or "").strip()) or "call_unknown"
+    if len(sid) > 64:
+        import hashlib
+        sid = sid[:55] + "_" + hashlib.sha1(sid.encode(), usedforsecurity=False).hexdigest()[:8]
+    return sid
+
+
 def est_tokens(text: str) -> int:
     """Cheap heuristic; exact usage from the API is preferred whenever available."""
     return (len(text) + 3) // 4
@@ -295,7 +311,7 @@ class AnthropicProvider(AbortableHTTP):
                 for call in msg.get("tool_calls", []):
                     blocks.append({
                         "type": "tool_use",
-                        "id": call["id"],
+                        "id": safe_tool_id(call["id"]),
                         "name": call["name"],
                         "input": call["arguments"],
                     })
@@ -314,7 +330,7 @@ class AnthropicProvider(AbortableHTTP):
 
     @classmethod
     def _tool_result_blocks(cls, msg: dict) -> list[dict]:
-        blocks = [{"type": "tool_result", "tool_use_id": msg["tool_call_id"],
+        blocks = [{"type": "tool_result", "tool_use_id": safe_tool_id(msg["tool_call_id"]),
                    "content": msg.get("content", "")}]
         for image in msg.get("images", []):
             blocks.append({
@@ -416,7 +432,7 @@ class OpenAICompatProvider(AbortableHTTP):
             if msg["role"] == "tool":
                 converted.append({
                     "role": "tool",
-                    "tool_call_id": msg["tool_call_id"],
+                    "tool_call_id": safe_tool_id(msg["tool_call_id"]),
                     "content": msg.get("content", ""),
                 })
                 # OpenAI protocol carries images in user messages, not tool messages
@@ -437,7 +453,7 @@ class OpenAICompatProvider(AbortableHTTP):
                     "content": msg.get("content") or None,
                     "tool_calls": [
                         {
-                            "id": c["id"],
+                            "id": safe_tool_id(c["id"]),
                             "type": "function",
                             "function": {
                                 "name": c["name"],
@@ -520,7 +536,7 @@ class OpenAICompatProvider(AbortableHTTP):
                             fn = tc.get("function", {})
                             buf.ensure_call(idx)
                             if tc.get("id") or fn.get("id"):
-                                buf.tool_calls[idx]["id"] = tc.get("id") or fn.get("id", "")
+                                buf.tool_calls[idx]["id"] = safe_tool_id(tc.get("id") or fn.get("id", ""))
                             if fn.get("name"):
                                 buf.tool_calls[idx]["name"] = fn["name"]
                             if fn.get("arguments"):

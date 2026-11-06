@@ -17,6 +17,7 @@ from aiohttp import WSMsgType, web
 
 from . import media as media_mod
 from . import memory as memory_mod
+from . import prompt_edit
 from . import settings_edit
 from .config import approve_mode
 from . import skills as skills_mod
@@ -879,6 +880,24 @@ def make_app(session: Session, driver=None) -> web.Application:
         rows = await loop.run_in_executor(None, lambda: settings_edit.rows(session, with_options=True))
         return _json_response({"ok": True, "message": msg, "rows": rows})
 
+    async def api_prompt_get(request):
+        try:
+            return _json_response(prompt_edit.get(session))
+        except Exception as exc:  # noqa: BLE001 - report, don't crash the server
+            return _json_response({"error": str(exc)}, 500)
+
+    async def api_prompt_set(request):
+        data = await request.json()
+        try:
+            if data.get("action") == "reset":
+                msg = prompt_edit.reset(session)
+            else:
+                msg = prompt_edit.save(session, str(data.get("text", "")), data.get("scope", "session"))
+        except (ValueError, OSError) as exc:
+            return _json_response({"error": str(exc)}, 400)
+        state.broadcast({"t": "status", "status": status_state(session)})
+        return _json_response({"ok": True, "message": msg})
+
     async def api_approve(request):
         data = await request.json()
         holder = state.approvals.get(int(data.get("id", 0)))
@@ -981,6 +1000,8 @@ def make_app(session: Session, driver=None) -> web.Application:
     app.router.add_post("/api/update", api_update_post)
     app.router.add_get("/api/config", api_config_get)
     app.router.add_post("/api/config", api_config_set)
+    app.router.add_get("/api/prompt", api_prompt_get)
+    app.router.add_post("/api/prompt", api_prompt_set)
     app.router.add_post("/api/approve", api_approve)
     app.router.add_post("/api/remote/login", api_remote_login)
     app.router.add_post("/api/clear", api_clear)

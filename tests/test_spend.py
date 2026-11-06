@@ -4,6 +4,7 @@ import datetime as dt
 import json
 import sys
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
@@ -81,6 +82,7 @@ def test_free_models_and_old_cycles_do_not_count():
 
 class Fake(BaseHTTPRequestHandler):
     seen: list = []
+    allowance: float = 0.0         # what /api/balance reports this run: 0 = the endpoint says nothing
 
     def log_message(self, *a):
         pass
@@ -96,6 +98,9 @@ class Fake(BaseHTTPRequestHandler):
                 {"from": "2026-10-28T00:00:00Z", "usage_usd": 0.41}],
                 "totals": {"groups": [{"model": "glm-5.3-flash", "usage_usd": 2.0,
                                        "input_tokens": 900_000, "output_tokens": 100_000}]}}
+        elif url.path == "/api/balance":
+            body = ({"balance_usd": 20.0, "allowance_usd": Fake.allowance, "period": "monthly",
+                     "plan": "Max"} if Fake.allowance else {})
         elif url.path == "/v1/organizations/cost_report":          # amounts in cents, paginated
             body = ({"data": [{"results": [{"amount": "123.50", "currency": "USD"}]}], "has_more": True,
                      "next_page": "p2"} if "page" not in q else
@@ -127,6 +132,7 @@ def fake(monkeypatch):
     for name in ("OLLAMA_URL", "ANTHROPIC_URL", "OPENAI_URL"):
         monkeypatch.setattr(spend, name, base)
     Fake.seen = []
+    Fake.allowance = 0.0
     yield Fake
     server.shutdown()
 
@@ -156,6 +162,65 @@ def test_the_providers_own_figures_win_over_estimates(fake, monkeypatch):
     # the rate Ollama charged is kept, so a request is still estimated if ollama.com can't be reached later
     rates = spend._read("spend-remote.json")["ollama"]["rates"]
     assert rates["glm-5.3-flash"] == pytest.approx(2.0)
+
+
+def test_the_plan_allowance_is_picked_up_and_followed_when_it_changes(fake, monkeypatch):
+    """The limit is not frozen at config.toml: the provider's plan allowance is checked on the same
+    periodic refresh as the spend figure, so an upgrade (Pro → Max) shows up without edits."""
+    monkeypatch.setenv("OLLAMA_API_KEY", "olk")
+    monkeypatch.setattr(spend, "cycle_start", lambda day, today=None: dt.date(2026, 10, 23))
+    monkeypatch.setattr(spend, "SNAPSHOT_SECONDS", 0)
+    s = Settings(spend={"ollama": {"limit": 200, "cycle_day": 23}})      # config written under the old plan
+    Fake.allowance = 60.0
+    spend.refresh(s, force=True)                                   # the first balance read says Pro
+    [row] = spend.totals(s)
+    assert row["limit"] == 60 and row["limit_source"] == "plan" and row["plan_name"] == "Max"
+    note = spend.alerts(s)
+    assert len(note) == 1 and "$60.00" in note[0] and "(Max)" in note[0]
+    assert spend.alerts(s) == []                                   # said once, not every turn
+    Fake.allowance = 120.0
+    spend.refresh(s, force=True)                                   # the plan upgraded → Max
+    [row] = spend.totals(s)
+    assert row["limit"] == 120 and row["limit_source"] == "plan"
+    note = spend.alerts(s)
+    assert len(note) == 1 and "$120.00" in note[0]
+    assert spend.alerts(s) == []
+    assert "(plan)" in spend.summary_lines(s)[0] and "$120.00 (plan) (4%)" in spend.summary_lines(s)[0]
+    # a balance read that says nothing keeps the last known allowance
+    Fake.allowance = 0.0
+    spend.refresh(s, force=True)
+    [row] = spend.totals(s)
+    assert row["limit"] == 120 and row["limit_source"] == "plan"
+
+
+def test_plan_allowances_are_told_apart_from_spend_and_remainder():
+    assert spend._plan_allowance({"allowance_usd": 60}) == 60
+    assert spend._plan_allowance({"data": {"allowance_cents": 20_000}}) == 200
+    assert spend._plan_allowance({"monthly_limit_usd": 80}) == 80
+    assert spend._plan_allowance({"monthly_usd": 45.5}) is None          # could be spend: not taken
+    assert spend._plan_allowance({"remaining_percent": 45}) is None
+    assert spend._plan_allowance({"limit": 5}) is None
+
+
+def test_detect_limits_false_pins_the_configured_limit(fake, monkeypatch):
+    monkeypatch.setenv("OLLAMA_API_KEY", "olk")
+    monkeypatch.setattr(spend, "cycle_start", lambda day, today=None: dt.date(2026, 10, 23))
+    s = Settings(spend={"ollama": {"limit": 30, "cycle_day": 23, "detect_limits": False}})
+    Fake.allowance = 60.0
+    spend.refresh(s, force=True)
+    [row] = spend.totals(s)
+    assert row["limit"] == 30 and row["limit_source"] == "config"
+
+
+def test_the_sidebar_marks_a_plan_sourced_limit(fake, monkeypatch):
+    from hexiel.tui import spend_rows
+    monkeypatch.setattr(spend, "cycle_start", lambda day, today=None: dt.date(2026, 10, 23))
+    _write_remote = spend._write
+    _write_remote("spend-remote.json",
+                  {"ollama": {"at": time.time(), "since": "2026-10-23", "usd": 42.0, "plan_usd": 60.0}})
+    monkeypatch.setattr(spend, "SNAPSHOT_SECONDS", 0)
+    rows = spend_rows(Settings(spend={"ollama": {"limit": 200}}), 27, {"ollama"})
+    assert "$42.00 / $60.00 plan" in "\n".join(rows)
 
 
 def test_a_provider_that_fails_falls_back_to_the_estimate(fake, monkeypatch):

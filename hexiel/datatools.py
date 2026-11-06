@@ -359,4 +359,107 @@ def data_tools() -> list[ToolDef]:
                 _o(title=S, type=S, files={"type": "array", "items": S}, sql=S,
                    rows={"type": "array", "items": A}, columns={"type": "array", "items": S},
                    x=S, y=S, color=S, out=S), run=_chart),
+        ToolDef("notebook", "Work with a Jupyter .ipynb notebook: action=cells lists every cell "
+                "with its index, type and first lines; replace/insert/delete edit cells by index "
+                "(replace writes `source`, insert adds after `index`, -1 = at the end; new cells "
+                "default to type `code`, use markdown for prose). Outputs are kept except on the "
+                "replaced cell — clear them with clear_output.",
+                _o(action={"type": "string", "enum": ["cells", "replace", "insert", "delete",
+                                                      "clear_output"]},
+                   path=S, index={"type": "integer"}, source=S,
+                   kind={"type": "string", "enum": ["code", "markdown", "raw"]}), run=_notebook),
     ]
+
+
+# ---------------------------------------------------------------- notebook (.ipynb)
+
+_NOTEBOOK_CAP = 120          # cells shown in action=cells before the list is cut
+
+
+def _nb_source(cell: dict) -> str:
+    src = cell.get("source", "")
+    return "".join(src) if isinstance(src, list) else str(src)
+
+
+def _read_notebook(path: Path) -> dict:
+    try:
+        nb = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"could not read {path.name}: {exc}")
+    if not isinstance(nb, dict) or not isinstance(nb.get("cells"), list):
+        raise RuntimeError(f"{path.name} is not a Jupyter notebook (no cells)")
+    return nb
+
+
+def _notebook(args, ctx) -> ToolResult:
+    action = args.get("action", "cells")
+    path = _resolve_path(str(args.get("path", "")), ctx)
+    index = int(args.get("index", 0) or 0)
+    if action == "cells":
+        try:
+            nb = _read_notebook(path)
+        except RuntimeError as exc:
+            return text_result(f"error: {exc}", True)
+        ctx.note_file(str(path))       # read-before-edit tracking, as for the file tools
+        rows = []
+        for i, cell in enumerate(nb["cells"]):
+            first = _nb_source(cell).strip().splitlines()
+            head = first[0][:90] if first else "(empty)"
+            suffix = f" · output" if cell.get("outputs") else ""
+            rows.append(f"[{i}] {cell.get('cell_type', '?')}{suffix}: {head}")
+            if i >= _NOTEBOOK_CAP:
+                rows.append(f"…[{len(nb['cells']) - _NOTEBOOK_CAP - 1} more cells]")
+                break
+        return text_result(f"{path.name}: {len(nb['cells'])} cells\n" + "\n".join(rows))
+    # everything below rewrites the file: stale-guard + read-before-write as for the file tools
+    stale = ctx.stale_refusal(str(path))
+    if stale:
+        return stale
+    try:
+        nb = _read_notebook(path)
+    except RuntimeError as exc:
+        return text_result(f"error: {exc}", True)
+    cells = nb["cells"]
+    if action in ("replace", "delete", "clear_output") and not 0 <= index < len(cells):
+        return text_result(f"error: cell index {index} is out of range (0…{len(cells) - 1})", True)
+    source = args.get("source")
+    if action in ("replace", "insert"):
+        if not isinstance(source, str) or not source.strip():
+            return text_result("error: source (the cell's text) is required for replace/insert", True)
+    if action == "replace":
+        cells[index] = {**cells[index], "cell_type": args.get("kind", cells[index]["cell_type"]),
+                        "source": source.splitlines(keepends=True),
+                        "outputs": [], "execution_count": None}
+        msg = f"replaced cell [{index}] ({cells[index]['cell_type']}); prior outputs cleared"
+    elif action == "insert":
+        kind = args.get("kind", "code")
+        after = index if index >= 0 else len(cells) - 1
+        new_cell = {"cell_type": kind, "metadata": {}, "source": source.splitlines(keepends=True)}
+        if kind == "code":
+            new_cell.update(outputs=[], execution_count=None)
+        cells.insert(after + 1, new_cell)
+        msg = f"inserted {kind} cell [{after + 1}]"
+    elif action == "delete":
+        gone = cells.pop(index)
+        msg = f"deleted cell [{index}] ({gone.get('cell_type', '?')})"
+    elif action == "clear_output":
+        cells[index].setdefault("outputs", [])
+        del cells[index]["outputs"][:]
+        cells[index]["execution_count"] = None
+        msg = f"cleared outputs of cell [{index}]"
+    else:
+        return text_result("error: unknown action", True)
+    err = _write_notebook(path, nb)
+    if not err:
+        ctx.note_file(str(path))       # the write is now what we last saw
+    return err or text_result(msg)
+
+
+def _write_notebook(path: Path, nb: dict) -> ToolResult | None:
+    """Persist a mutation; an error tool-result (rare, e.g. disk full) is returned instead of the ok text."""
+    try:
+        path.write_text(json.dumps(nb, indent=1, ensure_ascii=False) + "\n")
+    except (OSError, TypeError) as exc:
+        return text_result(f"error: could not save {path.name}: {exc}", True)
+    return None
+

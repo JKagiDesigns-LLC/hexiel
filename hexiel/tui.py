@@ -11,6 +11,7 @@ from pathlib import Path
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.geometry import Offset
 from textual.screen import ModalScreen
 from textual.message import Message
 from textual.theme import Theme
@@ -114,7 +115,7 @@ def _git_branch(cwd: str) -> str:
 
 
 class TurnThread(threading.Thread):
-    """Runs the agentic loop in the background; events come via call_from_thread."""
+    """Runs the agentic loop in the background; events arrive via HexielTUI._post."""
 
     def __init__(self, app: "HexielTUI", prompt: str) -> None:
         super().__init__(daemon=True)
@@ -123,20 +124,20 @@ class TurnThread(threading.Thread):
 
     def run(self) -> None:
         session = self.app_ref.session
-        app = self.app_ref.app
-        session.on_event = lambda event, *p, **kw: app.call_from_thread(
-            lambda: self.app_ref.handle_event(event, *p, **kw))
-        session.on_approve = self.app_ref.ask_approval
+        app = self.app_ref
+        post = app._post
+        session.on_event = lambda event, *p, **kw: post(app.handle_event, event, *p, **kw)
+        session.on_approve = app.ask_approval
         try:
             session.run_turn(self.prompt)
         except Exception as exc:  # noqa: BLE001 - surface the crash in the UI
-            app.call_from_thread(self.app_ref.add_note, f"agent crashed: {exc!r}")
+            post(app.add_note, f"agent crashed: {exc!r}")
         finally:
             session.save()
-            app.call_from_thread(self.app_ref.activity.stop)
+            post(app.activity.stop)
             leftover = session.take_pending()      # typed after the last step: answer it as a follow-up turn
             if leftover:
-                app.call_from_thread(self.app_ref.start_followup, "\n\n".join(leftover))
+                post(app.start_followup, "\n\n".join(leftover))
 
 
 class ApproveScreen(ModalScreen):
@@ -250,7 +251,7 @@ class _RemoteDriver:
         return bool(thread and thread.is_alive())
 
     def submit(self, text: str) -> None:
-        self.tui.call_from_thread(self.tui.submit_text, text)      # typed in the browser: shown and run here
+        self.tui._post(self.tui.submit_text, text)      # typed in the browser: shown and run here
 
 
 class ScopeScreen(ModalScreen):
@@ -278,6 +279,65 @@ class ScopeScreen(ModalScreen):
 
     def action_pick(self, scope: str) -> None:
         self.dismiss(scope or None)
+
+
+class PromptScreen(ModalScreen):
+    """/prompt: view and edit the system prompt; save it per session, per directory or globally."""
+
+    BINDINGS = [("s", "save('session')", "This session"), ("d", "save('directory')", "This directory"),
+                ("g", "save('global')", "Globally"), ("r", "reset", "Reset"),
+                ("escape", "cancel", "Cancel")]
+    DEFAULT_CSS = """
+    PromptScreen { align: center middle; }
+    #prompt-box { width: 100%; max-width: 100; height: 85%; padding: 1 2;
+                  border: round #c8b6ff; background: #141821; }
+    #prompt-edit { height: 1fr; margin: 1 0 0 0; border: round #2b3040; background: #11141a; }
+    #prompt-buttons { height: auto; padding: 1 0 0 0; }
+    #prompt-buttons Button { margin: 0 1 0 0; }
+    """
+
+    def __init__(self, source: str, text: str) -> None:
+        super().__init__()
+        self._source = source
+        self._text = text
+
+    def compose(self) -> ComposeResult:
+        note = ("the default prompt hexiel builds — edit it, then pick where it lives"
+                if self._source == "default" else f"currently: a {self._source} override")
+        with Vertical(id="prompt-box"):
+            yield Label(f"[b]System prompt[/b]  [dim]{note} · Esc to cancel[/dim]")
+            yield TextArea(self._text, id="prompt-edit")
+            with Horizontal(id="prompt-buttons"):
+                yield Button("This session  \\[s]", variant="primary", id="prompt-session")
+                yield Button("This directory  \\[d]", id="prompt-dir")
+                yield Button("Globally  \\[g]", id="prompt-global")
+                yield Button("Reset to default  \\[r]", variant="error", id="prompt-reset")
+                yield Button("Cancel  \\[esc]", id="prompt-cancel")
+
+    def on_mount(self) -> None:
+        self.query_one("#prompt-edit").focus()
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        event.stop()
+        if event.button.id == "prompt-reset":
+            self.action_reset()
+        elif event.button.id == "prompt-cancel":
+            self.dismiss(None)
+        else:
+            self.action_save(event.button.id.removeprefix("prompt-"))
+
+    # the modal's shown text
+    def shown(self) -> str:
+        return self.query_one("#prompt-edit").text
+
+    def action_save(self, scope: str) -> None:
+        self.dismiss(("save", scope, self.shown()))
+
+    def action_reset(self) -> None:
+        self.dismiss(("reset", None, None))
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
 
 
 class ConfigScreen(ModalScreen):
@@ -414,7 +474,7 @@ class ModelPicker(ModalScreen):
         self._pk_status()
 
         def work() -> None:
-            model_catalog.discover(cfg, lambda ep, found, err: self.app.call_from_thread(
+            model_catalog.discover(cfg, lambda ep, found, err: self.app._post(
                 self._pk_arrived, ep, found, err))
         threading.Thread(target=work, daemon=True).start()
 
@@ -634,6 +694,81 @@ def thumbnail_for(info: dict):
     return widget
 
 
+class ChatScroll(VerticalScroll):
+    """The chat transcript, pinned to the newest messages.
+
+    While you are at the bottom the widget stays "anchored" there: every new message, streamed
+    reply and tool line follows as it arrives (Textual's compositor keeps it pinned — no per-event
+    scrolling needed). Scroll up to read and the anchor is released: hexiel keeps working and
+    appending below, but never yanks the view. Come back down (or click the jump button) and the
+    anchor re-engages on its own."""
+
+    def anchor(self, anchor: bool = True) -> None:
+        super().anchor(anchor)
+        self._emit_follow(anchor)
+
+    def release_anchor(self) -> None:
+        """A user scroll let go of the bottom; re-check after the refresh settles (a scroll that
+        hits the floor, e.g. wheel-down while already at the bottom, keeps the anchor)."""
+        super().release_anchor()
+        self.call_after_refresh(self._recheck_follow)
+
+    def _check_anchor(self) -> None:
+        released = self._anchor_released
+        super()._check_anchor()
+        if released and not self._anchor_released:
+            self._emit_follow(True)
+
+    def _recheck_follow(self) -> None:
+        self._check_anchor()
+        self._emit_follow(self._anchored and not self._anchor_released)
+
+    def _emit_follow(self, following: bool) -> None:
+        try:
+            setter = getattr(self.app, "_set_following", None)
+        except Exception:  # noqa: BLE001 - not running yet: nobody to tell
+            return
+        if setter is not None:
+            setter(following)
+
+
+def jump_offset(wrap, button) -> Offset:
+    """Anchor a floating overlay to the bottom-right of `wrap` (absolute widgets take no layout
+    space, so showing/hiding the button never shifts the text you are reading)."""
+    return Offset(max(wrap.size.width - button.size.width - 1, 0),
+                  max(wrap.size.height - button.size.height - 2, 0))
+
+
+class JumpBottom(Button):
+    """The floating "↓ scroll to bottom" tag, shown only while the view is scrolled up.
+    Clicking it snaps to the newest messages and re-engages the follow."""
+
+    def __init__(self) -> None:
+        super().__init__("↓ scroll to bottom", id="jump-bottom")
+        self.can_focus = False          # clicking must never steal the keyboard from the prompt
+        self.display = False
+
+    def on_resize(self) -> None:
+        self.call_after_refresh(self._pin)
+
+    def _pin(self) -> None:
+        wrap = self.parent
+        if isinstance(wrap, ChatWrap) and wrap.size.width and self.size.width:
+            self.offset = jump_offset(wrap, self)
+
+    def on_button_pressed(self) -> None:
+        self.app.chat.anchor()
+        self.display = False
+
+
+class ChatWrap(Vertical):
+    """The chat area: the transcript plus the overlay button, floating so text never shifts."""
+
+    def on_resize(self) -> None:
+        for jump in self.query(JumpBottom):
+            jump._pin()                  # noqa: SLF001 - pinning itself is the button's own job
+
+
 class UserMessage(Static):
     """A request, with its time — quiet label, readable body, a single accent rule."""
 
@@ -746,6 +881,8 @@ def spend_rows(settings, inner: int, in_use: set) -> list[str]:
     for r in rows:
         mark = "" if r["source"] == "provider" else "≈"
         figure = mark + spend.money(r["usd"]) + (f" / {spend.money(r['limit'])}" if r["limit"] else "")
+        if r["limit"] and r.get("limit_source") == "plan":
+            figure += " plan"        # the limit comes from the provider's plan, not config.toml
         name = fit(r["account"], max(4, inner - len(figure) - 1))
         colour = TEXT
         if r["limit"]:
@@ -784,6 +921,7 @@ class Sidebar(Vertical):
             f"[{FAINT}]ctrl+b[/]  [{MUTED}]sidebar[/]\n"
             f"[{FAINT}]ctrl+l[/]  [{MUTED}]clear[/]\n"
             f"[{FAINT}]ctrl+c[/]  [{MUTED}]stop / quit[/]\n"
+            f"[{FAINT}]esc esc[/] [{MUTED}]stop task[/]\n"
             f"[{FAINT}]/[/]       [{MUTED}]commands[/]",
             id="sidebar-keys")
 
@@ -908,7 +1046,8 @@ class CommandMenu(OptionList):
         self.display = True
 
     def hide(self) -> None:
-        self.display = False
+        if self._items or self.display:
+            self.display = False
         self._items = []
 
     def selected(self) -> tuple[str, str] | None:
@@ -1022,12 +1161,16 @@ class PromptInput(TextArea):
 
     @property
     def menu(self) -> CommandMenu:
-        return self.app.query_one(CommandMenu)
+        app = self.app
+        if getattr(app, "_menu", None) is None:
+            app._menu = app.query_one(CommandMenu)
+        return app._menu
 
     def on_text_area_changed(self, event: TextArea.Changed) -> None:
         event.stop()
-        self.styles.height = min(self.text.count("\n") + 1, 8) + 2   # grow with the text
-        self.refresh(layout=True)
+        height = min(self.text.count("\n") + 1, 8) + 2   # grow with the text
+        if self.styles.height != height:
+            self.styles.height = height                   # reflows only when the height changed
         self.post_message(self.ValueChanged(self, self.text))
 
     async def _on_paste(self, event) -> None:
@@ -1100,17 +1243,58 @@ class PromptInput(TextArea):
     def action_menu_up(self) -> None:
         if self.menu.display:
             self.menu.action_cursor_up()
+        elif self._history_up():
+            return
         else:
             self.action_cursor_up()
 
     def action_menu_down(self) -> None:
         if self.menu.display:
             self.menu.action_cursor_down()
+        elif self._history_down():
+            return
         else:
             self.action_cursor_down()
 
+    # terminal-style recall of what was sent this session (see HexielTUI._history)
+
+    def _history_up(self) -> bool:
+        """↑ on the first prompt line steps back through this session's inputs. False when the
+        history is empty (or the cursor is inside the text, where ↑ must move the cursor)."""
+        app = self.app
+        history = getattr(app, "_history", None)
+        if not history or self.cursor_location[0] != 0:
+            return False
+        if app._hist_pos is None:
+            app._hist_draft = self.text
+            app._hist_pos = len(history) - 1
+        elif app._hist_pos > 0:
+            app._hist_pos -= 1
+        self.value = history[app._hist_pos]
+        return True
+
+    def _history_down(self) -> bool:
+        """↓ steps forward again, back to the draft being typed; False while not browsing."""
+        app = self.app
+        history = getattr(app, "_history", None)
+        if app._hist_pos is None or not history:
+            return False
+        if app._hist_pos + 1 < len(history):
+            app._hist_pos += 1
+            self.value = history[app._hist_pos]
+        else:                                       # past the newest: back to what was being typed
+            app._hist_pos = None
+            draft, app._hist_draft = app._hist_draft, ""
+            self.value = draft
+        return True
+
     def action_menu_close(self) -> None:
-        self.menu.hide()
+        if self.menu.display:
+            self.menu.hide()
+            return
+        escape = getattr(self.app, "escape_pressed", None)
+        if escape:
+            escape()
 
     def action_menu_complete(self) -> None:
         if self.menu.display:
@@ -1314,7 +1498,12 @@ class HexielTUI(App):
 
     #banner { width: 100%; height: 2; padding: 0 2; content-align: left middle;
               background: #11141a; border-bottom: solid #232834; }
+    #chat-wrap { height: 1fr; }
     #chat { height: 1fr; padding: 1 2 0 2; scrollbar-size-vertical: 1; }
+    #jump-bottom { position: absolute; height: 1; padding: 0 1; border: none; min-width: 0;
+                   background: #141821 90%; color: #7d8595; }
+    #jump-bottom:hover { background: #1d2230; color: #d6dae2; }
+    #jump-bottom:focus { text-style: none; }
     #activity { height: 1; padding: 0 2; margin: 0 0 1 0; }
 
     /* ---------------------------------------------------------------- messages */
@@ -1382,12 +1571,44 @@ class HexielTUI(App):
         self._stream_wid = None
         self._stream_header = None
         self._stream_text = ""
-        self._last_flush = 0.0
+        self._rendered_stream = ""  # what the Markdown widget currently shows (paint only when it changes)
+        self._flush_timer = None    # coalesces streamed deltas into a few repaints a second
         self._think_chars = 0       # reasoning chars this step (summarized in chat)
         self._tool_widgets: dict[str, ToolLine] = {}
         self._heal = None           # active self-heal: original session, workspace, incidents
         self._heal_pending = None   # a reviewed-later fix waiting for /heal review
         self._sidebar_forced: bool | None = None   # Ctrl+B overrides the responsive default
+        self._esc_armed_at = 0.0    # Esc pressed while a task runs: a second Esc stops it
+        self._chat = None           # cached widgets: query_one walks the whole DOM on every use
+        self._menu = None
+        self._following = True
+        self._history: list[str] = []       # this session's inputs, newest last (↑/↓ recall)
+        self._hist_pos: int | None = None   # where ↑/↓ are in the history right now
+        self._hist_draft = ""               # the text being typed when ↑ was first pressed
+        self._profile_cache = (0.0, {})     # /model menu: config read at most every few seconds
+        self._commands_cache = (0.0, {})    # custom commands: the directory is walked at most every few seconds
+
+    @property
+    def chat(self) -> "ChatScroll":
+        """The scrolling transcript (cached; a query on every streamed event walks the whole DOM)."""
+        if self._chat is None:
+            self._chat = self.query_one("#chat", ChatScroll)
+        return self._chat
+
+    @property
+    def menu(self) -> CommandMenu:
+        if self._menu is None:
+            self._menu = self.query_one(CommandMenu)
+        return self._menu
+
+    def _set_following(self, following: bool) -> None:
+        """The chat told us the view started/stopped following the bottom: flip the jump button."""
+        if following == self._following:
+            return
+        self._following = following
+        jump = self.query(JumpBottom)
+        if jump:
+            jump.first().display = not following and self.chat.max_scroll_y > 0
 
     # ---------------------------------------------------------------- layout
 
@@ -1396,8 +1617,10 @@ class HexielTUI(App):
             yield Sidebar()
             with Vertical(id="main"):
                 yield Banner(self.session.cwd)
-                with VerticalScroll(id="chat"):
-                    pass
+                with ChatWrap(id="chat-wrap"):
+                    with ChatScroll(id="chat"):
+                        pass
+                    yield JumpBottom()
                 yield ActivityLine()
                 yield CommandMenu()
                 with Horizontal(id="input-row"):
@@ -1413,9 +1636,10 @@ class HexielTUI(App):
         self.query_one("#prompt", PromptInput).focus()
         self.set_interval(1.0, self._tick)
         self._apply_sidebar_visibility()
-        chat = self.query_one("#chat", VerticalScroll)
+        chat = self.chat
         chat.mount(Welcome(self.session.cwd))
         self.replay_history()
+        chat.anchor()               # follow the newest messages until you scroll up
         self._refresh_status()
         self._inbox_notice()
         if not os.environ.get("HEXIEL_NO_UPDATE_CHECK"):
@@ -1439,7 +1663,7 @@ class HexielTUI(App):
 
     def replay_history(self) -> None:
         """Render an existing conversation (e.g. after -c resume) into the chat."""
-        chat = self.query_one("#chat", VerticalScroll)
+        chat = self.chat
         # A resumed conversation is no longer empty — drop the welcome card.
         for child in list(chat.children):
             if getattr(child, "id", None) == "welcome" or isinstance(child, Welcome):
@@ -1478,33 +1702,58 @@ class HexielTUI(App):
                                  for c in m["tool_calls"] if c["id"] == msg.get("tool_call_id")), {})
                     wid.complete(call_short(call), msg.get("content", ""),
                                  bool(msg.get("is_error")), 0.0)
-        chat.scroll_end(animate=False)
 
     # ---------------------------------------------------------------- input
 
     def on_prompt_input_value_changed(self, event: PromptInput.ValueChanged) -> None:
-        from .config import load_config
         text = event.value
         if not text.startswith("/") or "\n" in text:
-            self.query_one(CommandMenu).hide()
+            self.menu.hide()
             return
-        try:
-            profiles = load_config().models if text.startswith("/model ") else {}
-        except SystemExit:
-            profiles = {}
-        from . import commands as commands_mod
-        self.query_one(CommandMenu).show_for(text, self.skills, profiles,
-                                             self.session.model_config.name,
-                                             commands_mod.discover(self.session.cwd))
+        profiles = self._cached_profiles() if text.startswith("/model ") else {}
+        self.menu.show_for(text, self.skills, profiles,
+                           self.session.model_config.name, self._cached_commands())
+
+    MENU_CACHE_SECONDS = 3.0
+
+    def _cached_profiles(self) -> dict:
+        """Model profiles for the /model menu (config.toml parsed at most every few seconds — the
+        menu redraws per keystroke, and parsing the file on each key showed up in typing lag)."""
+        at, value = self._profile_cache
+        now = time.time()
+        if now - at > self.MENU_CACHE_SECONDS:
+            from .config import load_config
+            try:
+                value = load_config().models
+            except SystemExit:
+                value = {}
+            self._profile_cache = (now, value)
+        return self._profile_cache[1]
+
+    def _cached_commands(self) -> dict:
+        """Custom /commands from the project and home dirs (walked at most every few seconds)."""
+        at, value = self._commands_cache
+        now = time.time()
+        if now - at > self.MENU_CACHE_SECONDS:
+            from . import commands as commands_mod
+            value = commands_mod.discover(self.session.cwd)
+            self._commands_cache = (now, value)
+        return self._commands_cache[1]
+
+    @property
+    def prompt(self) -> PromptInput:
+        if getattr(self, "_prompt", None) is None:
+            self._prompt = self.query_one("#prompt", PromptInput)
+        return self._prompt
 
     def accept_menu(self, run: bool) -> bool:
         """Apply the highlighted menu entry. Returns True when it consumed the key."""
-        menu = self.query_one(CommandMenu)
+        menu = self.menu
         picked = menu.selected()
         if not picked:
             return False
         kind, value = picked
-        prompt = self.query_one("#prompt", PromptInput)
+        prompt = self.prompt
         takes_arg = kind in ("skill", "custom") or any(n == value and a for n, a, _ in COMMANDS)
         if kind == "model":
             line, run_now = f"/model {value}", run
@@ -1525,13 +1774,17 @@ class HexielTUI(App):
 
     def on_prompt_input_submitted(self, event: PromptInput.Submitted) -> None:
         event.input.value = ""
-        self.query_one(CommandMenu).hide()
+        self.menu.hide()
         self.submit_text(event.value)
 
     def submit_text(self, text: str) -> None:
         text = text.strip()
         if not text:
             return
+        self._remember(text)
+        self._hist_pos = None
+        self._hist_draft = ""
+        self.chat.anchor()          # sending something means you're following the reply again
         text = self.maybe_command(text)
         if not text:
             return
@@ -1540,8 +1793,18 @@ class HexielTUI(App):
         self.show_attachments(text)
         self._start_turn(text)
 
+    HISTORY_MAX = 25              # the recall window: the last 25 things you sent this session
+
+    def _remember(self, text: str) -> None:
+        """Track what you sent for ↑/↓ recall. Attachments are named in the text (path/@file.png),
+        so a recalled entry brings its images and PDFs back with it."""
+        if not text or self._history[-1:] == [text]:
+            return
+        self._history.append(text)
+        del self._history[:-self.HISTORY_MAX]
+
     def remove_welcome(self) -> None:
-        chat = self.query_one("#chat", VerticalScroll)
+        chat = self.chat
         for child in list(chat.children):
             if getattr(child, "id", None) == "welcome" or isinstance(child, Welcome):
                 child.remove()
@@ -1554,12 +1817,11 @@ class HexielTUI(App):
             self.mount_attachment(info)
 
     def mount_attachment(self, info: dict) -> None:
-        chat = self.query_one("#chat", VerticalScroll)
+        chat = self.chat
         thumb = thumbnail_for(info)
         if thumb is not None:
             chat.mount(thumb)
         chat.mount(AttachmentChip(info))
-        chat.scroll_end(animate=False)
 
     def maybe_command(self, text: str) -> str | None:
         if not text.startswith("/"):
@@ -1571,6 +1833,7 @@ class HexielTUI(App):
         handler = {
             "help": self.cmd_help, "clear": self.cmd_clear, "compact": self.cmd_compact,
             "config": self.cmd_config, "update": self.cmd_update, "mcp": self.cmd_mcp,
+            "prompt": self.cmd_prompt,
             "plan": self.cmd_plan, "permissions": self.cmd_permissions,
             "undo": self.cmd_undo, "usage": self.cmd_usage, "spend": self.cmd_spend, "toolmodels": self.cmd_toolmodels, "jobs": self.cmd_jobs, "knowledge": self.cmd_knowledge, "inbox": self.cmd_inbox,
             "model": self.cmd_model, "models": self.cmd_models, "auto": self.cmd_auto,
@@ -1604,7 +1867,7 @@ class HexielTUI(App):
     def cmd_clear(self, arg: str) -> None:
         self.session.messages = []
         self.session.last_usage = {}
-        self.query_one("#chat", VerticalScroll).remove_children()
+        self.chat.remove_children()
         self._refresh_status()
 
     def cmd_compact(self, arg: str) -> None:
@@ -1655,7 +1918,7 @@ class HexielTUI(App):
         from . import updater
         info = updater.check()
         if info["available"]:
-            self.call_from_thread(
+            self._post(
                 self.add_note, f"[b]⬆ hexiel {info['latest']} is available[/b] "
                 f"(you have {info['current']}) — type /update to install it and restart")
 
@@ -1668,16 +1931,16 @@ class HexielTUI(App):
         def work() -> None:
             info = updater.check(force=True)
             if not info["available"]:
-                self.call_from_thread(self.add_note, f"hexiel {info['current']} is the newest release "
-                                      f"(latest on GitLab: {info['latest'] or 'unknown'})")
+                self._post(self.add_note, f"hexiel {info['current']} is the newest release "
+                           f"(latest on GitLab: {info['latest'] or 'unknown'})")
                 return
-            self.call_from_thread(self.add_note, f"updating {info['current']} → {info['latest']}…")
+            self._post(self.add_note, f"updating {info['current']} → {info['latest']}…")
             ok, log = updater.apply_update()
-            self.call_from_thread(self.add_note, log.replace("[", "\\["))
+            self._post(self.add_note, log.replace("[", "\\["))
             if ok:
-                self.call_from_thread(self._offer_restart, info["latest"])
+                self._post(self._offer_restart, info["latest"])
         self.activity.start()
-        threading.Thread(target=lambda: (work(), self.call_from_thread(self.activity.stop)),
+        threading.Thread(target=lambda: (work(), self._post(self.activity.stop)),
                          daemon=True).start()
 
     def _offer_restart(self, version: str, headline: str = "") -> None:
@@ -1704,10 +1967,9 @@ class HexielTUI(App):
             self.add_note("the inbox is empty — scheduled job results appear here")
             return
         (jobs.inbox_dir() / ".seen").write_text(files[0].name)
-        chat = self.query_one("#chat", VerticalScroll)
+        chat = self.chat
         for f in files:
             chat.mount(Markdown(f.read_text()[:4000]))
-        chat.scroll_end(animate=False)
 
     def cmd_undo(self, arg: str) -> None:
         if self._thread and self._thread.is_alive():
@@ -1725,7 +1987,7 @@ class HexielTUI(App):
         from . import remote_control as rc
         word = arg.lower()
         if word in ("off", "stop"):
-            threading.Thread(target=lambda: self.call_from_thread(self.add_note, rc.stop(self.session)),
+            threading.Thread(target=lambda: self._post(self.add_note, rc.stop(self.session)),
                              daemon=True).start()
         elif word == "status" or rc.active(self.session):
             self.add_note(rc.status_text(self.session))
@@ -1745,17 +2007,17 @@ class HexielTUI(App):
             try:
                 rc.sign_in(*creds)
             except (RuntimeError, OSError) as exc:
-                self.call_from_thread(self.add_note, f"sign-in failed: {exc}")
+                self._post(self.add_note, f"sign-in failed: {exc}")
                 return
-            self.call_from_thread(self._remote_on)
+            self._post(self._remote_on)
         self.add_note("signing in…")
         threading.Thread(target=work, daemon=True).start()
 
     def _remote_on(self) -> None:
         from . import remote_control as rc
         self.add_note("connecting to Hexiel Remote…")
-        say = lambda text: self.call_from_thread(self.add_note, "remote: " + text)      # noqa: E731
-        threading.Thread(target=lambda: self.call_from_thread(
+        say = lambda text: self._post(self.add_note, "remote: " + text)      # noqa: E731
+        threading.Thread(target=lambda: self._post(
             self.add_note, rc.start(self.session, driver=_RemoteDriver(self), say=say)), daemon=True).start()
 
     def _dismiss_approval(self) -> None:
@@ -1765,15 +2027,26 @@ class HexielTUI(App):
                 self.screen.dismiss("no")
         self._post(close)
 
-    def _post(self, fn) -> None:
-        """Run fn on the UI thread without waiting for it: once the app is closing, waiting never ends."""
+    def _post(self, fn, *args) -> None:
+        """Run fn (with args) on the UI thread without waiting. Every worker→UI path goes through
+        this: the old call_from_thread calls blocked the agent thread on drawing, and once the
+        window was closing they raised out of the worker threads — tracebacks on close. Scheduled
+        in order and dropped quietly at shutdown instead."""
         loop = getattr(self, "_loop", None)
         if loop is None or loop.is_closed():
             return
 
         async def run() -> None:
             with self._context():             # as call_from_thread does: widgets need the active app
-                fn()
+                try:
+                    fn(*args)
+                except Exception as exc:  # noqa: BLE001 - a widget bug must not kill the feed
+                    if getattr(self, "_exit", False):
+                        return                # the window is closing: widgets are being torn down
+                    try:
+                        self.add_note(f"ui error: {exc!r}")
+                    except Exception:  # noqa: BLE001
+                        pass
         try:
             asyncio.run_coroutine_threadsafe(run(), loop)
         except RuntimeError:                  # closed in the meantime
@@ -1790,7 +2063,7 @@ class HexielTUI(App):
         """/bug <what happened> and /feature <idea> — send it to the hexiel team."""
         from . import heal as heal_mod, reporter
         recent = heal_mod.unhealed(self.session.cwd, 3)
-        threading.Thread(target=lambda: self.call_from_thread(
+        threading.Thread(target=lambda: self._post(
             self.add_note, reporter.file_report(kind, arg, recent)), daemon=True).start()
 
     def cmd_feature(self, arg: str) -> None:
@@ -1798,7 +2071,7 @@ class HexielTUI(App):
 
     def cmd_bugs(self, arg: str) -> None:
         from . import reporter
-        threading.Thread(target=lambda: self.call_from_thread(
+        threading.Thread(target=lambda: self._post(
             self.add_note, reporter.my_reports_text()), daemon=True).start()
 
     def cmd_usage(self, arg: str) -> None:
@@ -1826,7 +2099,7 @@ class HexielTUI(App):
             self.add_note(digest.status_text(self.session))
             return
         self.add_note("timing each tool model…")
-        threading.Thread(target=lambda: self.call_from_thread(self.add_note, digest.status_text(self.session, True)),
+        threading.Thread(target=lambda: self._post(self.add_note, digest.status_text(self.session, True)),
                          daemon=True).start()
 
     def cmd_plan(self, arg: str) -> None:
@@ -1861,7 +2134,7 @@ class HexielTUI(App):
                 if started and not started[0].error:
                     self.session.mcp_servers.extend(started)
                     self.session.tools.extend(mcp_client.tool_defs(started))
-                self.call_from_thread(self.add_note, "\n".join(
+                self._post(self.add_note, "\n".join(
                     line.replace("[", "\\[") for line in mcp_client.status_lines(started)))
             threading.Thread(target=work, daemon=True).start()
             return
@@ -1874,6 +2147,23 @@ class HexielTUI(App):
 
     def cmd_config(self, arg: str) -> None:
         self.push_screen(ConfigScreen(self.session))
+
+    def cmd_prompt(self, arg: str) -> None:
+        from . import prompt_edit
+        info = prompt_edit.get(self.session)
+
+        def done(result) -> None:
+            if result is None:
+                return
+            kind, scope, text = result
+            try:
+                self.add_note(prompt_edit.save(self.session, text, scope)
+                              if kind == "save" else prompt_edit.reset(self.session))
+            except ValueError as exc:
+                self.add_note(f"⚠ {exc}")
+            self._refresh_status()
+
+        self.push_screen(PromptScreen(info["source"], info["text"]), callback=done)
 
     def action_pick_model(self) -> None:
         """Ctrl+P or /model: live, searchable list of every reachable model."""
@@ -1952,9 +2242,7 @@ class HexielTUI(App):
 
     def cmd_memory(self, arg: str) -> None:
         body = memory_mod.index_text(self.session.cwd)
-        self.query_one("#chat", VerticalScroll).mount(
-            Static(body.replace("[", "\\["), classes="note"))
-        self.query_one("#chat", VerticalScroll).scroll_end(animate=False)
+        self.chat.mount(Static(body.replace("[", "\\["), classes="note"))
 
     def cmd_skills(self, arg: str) -> None:
         for skill in self.skills:
@@ -1970,13 +2258,17 @@ class HexielTUI(App):
         if self._thread and self._thread.is_alive():
             self.set_timer(0.2, lambda: self.start_followup(text))
             return
+        if getattr(self, "_exit", False) or self._loop is None or self._loop.is_closed():
+            return          # the window closed before the queued message could run: leave it
         self._start_turn(text)
 
     def _start_turn(self, prompt: str) -> None:
         if self._thread and self._thread.is_alive():
+            self._esc_armed_at = 0.0
             self.session.queue_message(prompt)
             self.add_note("↳ sent — hexiel will read this before its next step (Ctrl+C stops the current work)")
             return
+        self._esc_armed_at = 0.0
         self._thread = TurnThread(self, prompt)
         self.activity.start()
         self._thread.start()
@@ -1994,12 +2286,12 @@ class HexielTUI(App):
         threading.Thread(target=bg, daemon=True).start()
 
     def _push(self, event) -> None:
-        self.call_from_thread(self.handle_event, *event)
+        self._post(self.handle_event, *event)
 
     # callbacks used by session ------------------------------------------------
 
     def handle_event(self, event, *payload, **_kw) -> None:
-        chat = self.query_one("#chat", VerticalScroll)
+        chat = self.chat
         if event == "thinking":
             # reasoning models can think for minutes; the activity line shows progress
             self._think_chars += len(payload[0])
@@ -2090,20 +2382,10 @@ class HexielTUI(App):
         if event == "text":
             delta = payload[0]
             self._stream_text += delta
-            now = time.time()
-            if self._stream_wid is None:
-                # construct with the text: an update() issued before the mount
-                # completes is silently dropped by Textual
-                self._stream_header = ResponseHeader(now_stamp())
-                self._stream_wid = Markdown(self._stream_text, classes="assistant-msg")
-                chat.mount(self._stream_header)
-                chat.mount(self._stream_wid)
-                chat.scroll_end(animate=False)
-                self._last_flush = now
-            elif now - self._last_flush > 0.15:
-                self._stream_wid.update(self._stream_text)
-                self._last_flush = now
-                chat.scroll_end(animate=False)
+            if self._flush_timer is None:
+                # coalesce: paint at most ~8 times a second (fewer on long replies), never per delta —
+                # a full Markdown re-render behind every token queued up behind your keystrokes
+                self._flush_timer = self.set_timer(self._flush_after(), self._flush_stream)
         elif event == "turn_end":
             self.finalize_stream()
             error = payload[0].get("error") if payload and isinstance(payload[0], dict) else None
@@ -2119,7 +2401,6 @@ class HexielTUI(App):
             self._tool_widgets[call["id"]] = wid
             wid.running(short)
             chat.mount(wid)
-            chat.scroll_end(animate=False)
         elif event == "tool_result":
             call, text, is_error = payload[0], payload[1], payload[2]
             elapsed = payload[3] if len(payload) > 3 else 0.0
@@ -2136,7 +2417,6 @@ class HexielTUI(App):
         elif event == "compact_start":
             self.finalize_stream()
             chat.mount(Static("… compacting context (summarizing history) …", classes="note"))
-            chat.scroll_end(animate=False)
         elif event == "compact_end":
             stats = payload[0] if payload else {}
             if stats:
@@ -2151,9 +2431,63 @@ class HexielTUI(App):
             self._refresh_status()
         elif event == "ship_done":
             chat.mount(Static(f"[green]{_literal(payload[0])}[/green]", classes="note"))
-        chat.scroll_end(animate=False)
+
+    # the chat scrolls itself: while the view is anchored to the bottom (see ChatScroll) every
+    # mounted widget and longer reply keeps the view pinned there with no scroll calls at all,
+    # and while you have scrolled up to read, nothing is allowed to yank it back down.
+
+    STREAM_FLUSH_SECONDS = 0.12      # fastest repaint while streaming (see _paint_stream/_flush_after)
+
+    def _flush_stream(self) -> None:
+        self._flush_timer = None
+        self._paint_stream()
+
+    def _paint_stream(self) -> None:
+        """Put the buffered reply into its widget, mounting header + Markdown on the step's first paint.
+
+        While a step's reply grows very long it is repainted through the whole accumulated text
+        every flush, and Rich's re-wrap of hundreds of thousands of characters blocks the event
+        loop for ~hundreds of ms each time — that was the typing lag. Live paints therefore show
+        only the tail once the text passes LIVE_STREAM_CHARS; the full reply renders once when
+        the step finishes."""
+        display = self._display_text()
+        if self._stream_wid is None:
+            if not self._stream_text:
+                return
+            # construct with the text: an update() issued before the mount completes is silently
+            # dropped by Textual
+            self._stream_header = ResponseHeader(now_stamp())
+            self._stream_wid = Markdown(display, classes="assistant-msg")
+            self.chat.mount(self._stream_header)
+            self.chat.mount(self._stream_wid)
+        elif display != self._rendered_stream:
+            self._stream_wid.update(display)
+        self._rendered_stream = display
+
+    LIVE_STREAM_CHARS = 16_000    # beyond this, live repaints show only the newest part
+    LIVE_STREAM_KEEP = 10_000     # ... this much of it (reparse cost stays small every flush)
+    LIVE_PAINT_SECONDS = 0.3      # and at a slower cadence: half a screen a frame is plenty
+
+    def _display_text(self) -> str:
+        """What the live Markdown shows right now: everything while short, tail + note when long."""
+        text = self._stream_text
+        if len(text) <= self.LIVE_STREAM_CHARS:
+            return text
+        return (f"*… ~{len(text):,} characters so far — the full reply appears when this step finishes.*\n\n"
+                + text[-self.LIVE_STREAM_KEEP:])
+
+    def _flush_after(self) -> float:
+        """Deltas merge at this interval. A long live repaint re-wraps the tail, so beyond the
+        live cap the cadence slows down as well."""
+        if len(self._stream_text) <= self.LIVE_STREAM_CHARS:
+            return self.STREAM_FLUSH_SECONDS
+        return self.LIVE_PAINT_SECONDS
 
     def finalize_stream(self, placeholder: bool = True) -> None:
+        if self._flush_timer is not None:
+            self._flush_timer.stop()
+            self._flush_timer = None
+        self._paint_stream()
         header = self._stream_header
         if self._stream_wid is not None:
             wid, text = self._stream_wid, self._stream_text
@@ -2162,31 +2496,30 @@ class HexielTUI(App):
                     text = "*(empty response)*"
                 elif header is not None:
                     header.display = False
-            if wid.is_mounted:
-                wid.update(text)
-            else:   # still mounting: an immediate update would be dropped
-                self.call_after_refresh(wid.update, text)
+            elif text != self._rendered_stream or not wid.is_mounted:
+                if wid.is_mounted:
+                    wid.update(text)
+                else:   # still mounting: an immediate update would be dropped
+                    self.call_after_refresh(wid.update, text)
             self._stream_wid = None
             self._stream_header = None
             self._stream_text = ""
+            self._rendered_stream = ""
         elif header is not None:
             header.display = False
             self._stream_header = None
         self._refresh_status()
 
     def add_user_msg(self, text: str, ts: str | None = None) -> None:
-        chat = self.query_one("#chat", VerticalScroll)
-        chat.mount(UserMessage(text, now_stamp() if ts is None else ts))
-        chat.scroll_end(animate=False)
+        self.chat.mount(UserMessage(text, now_stamp() if ts is None else ts))
 
     def add_note(self, text: str) -> None:
-        chat = self.query_one("#chat", VerticalScroll)
-        chat.mount(Static(f"[{FAINT}]·[/] {safe_markup(text)}", classes="note"))
-        chat.scroll_end(animate=False)
+        self.chat.mount(Static(f"[{FAINT}]·[/] {safe_markup(text)}", classes="note"))
 
     def _tick(self) -> None:
-        if self._stream_wid is not None:
-            self._stream_wid.update(self._stream_text)
+        if self._stream_wid is not None and self._stream_text \
+                and self._stream_text != self._rendered_stream:
+            self._paint_stream()        # safety net: a delta that arrives between paints
         self._timers_due()
         self._wake_if_finished()
         self._refresh_status()
@@ -2252,9 +2585,9 @@ class HexielTUI(App):
             pass
 
     def _refresh_status(self) -> None:
-        self.query_one(StatusLine).refresh_text()
-        try:
-            self.query_one(Sidebar).refresh_text()
+        self.status.refresh_text()               # cached widgets: a DOM walk here ran several
+        try:                                     # times a second while a turn was streaming
+            self.sidebar.refresh_text()
         except Exception:
             pass
 
@@ -2294,7 +2627,7 @@ class HexielTUI(App):
                 lines.append(knowledge.status())
             except Exception as exc:  # noqa: BLE001 - report, don't crash the UI
                 lines.append(f"sync failed: {exc}")
-            self.call_from_thread(self.add_note, "\n".join(lines[-8:]))
+            self._post(self.add_note, "\n".join(lines[-8:]))
         threading.Thread(target=work, daemon=True).start()
 
     def cmd_ship(self, arg: str) -> None:
@@ -2354,9 +2687,9 @@ class HexielTUI(App):
             try:
                 ws = contribute.prepare()
             except Exception as exc:  # noqa: BLE001 - surface, don't crash
-                self.call_from_thread(self.add_note, f"[red]could not prepare the heal workspace:[/] {exc}")
+                self._post(self.add_note, f"[red]could not prepare the heal workspace:[/] {exc}")
                 return
-            self.call_from_thread(self._enter_heal, original, ws, incidents, arg.strip())
+            self._post(self._enter_heal, original, ws, incidents, arg.strip())
         threading.Thread(target=work, daemon=True).start()
 
     def _enter_heal(self, original, ws, incidents, description: str) -> None:
@@ -2387,9 +2720,9 @@ class HexielTUI(App):
             try:
                 found = contribute.changes(heal["ws"])
             except Exception as exc:  # noqa: BLE001
-                self.call_from_thread(self.add_note, f"[red]could not read the fix:[/] {exc}")
+                self._post(self.add_note, f"[red]could not read the fix:[/] {exc}")
                 return
-            self.call_from_thread(self._show_review, found)
+            self._post(self._show_review, found)
         threading.Thread(target=work, daemon=True).start()
 
     def _show_review(self, found) -> None:
@@ -2438,19 +2771,19 @@ class HexielTUI(App):
                     msg += (f"; sent to hexiel for review: {sent['mr_url']}  — thank you, "
                             "everyone benefits once it's merged")
                 except Exception as exc:  # noqa: BLE001 - keep the fix, report the send failure
-                    self.call_from_thread(self.add_note, f"[red]sending failed:[/] {exc}")
+                    self._post(self.add_note, f"[red]sending failed:[/] {exc}")
                     self._heal_pending = heal
-                    self.call_from_thread(self.add_note, "the fix is applied locally; /heal review to retry sending")
-                    self.call_from_thread(self._exit_heal)
-                    self.call_from_thread(self._offer_restart, "", "self-heal fix applied")
+                    self._post(self.add_note, "the fix is applied locally; /heal review to retry sending")
+                    self._post(self._exit_heal)
+                    self._post(self._offer_restart, "", "self-heal fix applied")
                     return
             heal_mod.mark_healed(heal["original"].cwd)
             contribute.discard(heal["ws"])
-            self.call_from_thread(self.add_note, msg)
-            self.call_from_thread(self._exit_heal)
-            self.call_from_thread(self._offer_restart, "", "self-heal fix applied")
+            self._post(self.add_note, msg)
+            self._post(self._exit_heal)
+            self._post(self._offer_restart, "", "self-heal fix applied")
         self.activity.start()
-        threading.Thread(target=lambda: (work(), self.call_from_thread(self.activity.stop)),
+        threading.Thread(target=lambda: (work(), self._post(self.activity.stop)),
                          daemon=True).start()
 
     def _exit_heal(self) -> None:
@@ -2506,10 +2839,29 @@ class HexielTUI(App):
             self.session.stop()
             self.add_note("canceling turn…")
             return
-        if self.query_one("#prompt", PromptInput).value:
-            self.query_one("#prompt", PromptInput).value = ""
+        if self.prompt.value:
+            self.prompt.value = ""
+            self._hist_pos = None
+            self._hist_draft = ""
             return
         self.exit()
+
+    ESC_CANCEL_SECONDS = 1.5
+
+    def escape_pressed(self) -> None:
+        """First Esc asks for confirmation; a second Esc within 1.5s stops the current task
+        (Esc Esc) — the cancel key for people (and terminals) where Ctrl+C reads as 'close'."""
+        now = time.time()
+        if not (self._thread and self._thread.is_alive()):
+            self._esc_armed_at = 0.0
+            return
+        if now - self._esc_armed_at < self.ESC_CANCEL_SECONDS:
+            self._esc_armed_at = 0.0
+            self.session.stop()
+            self.add_note("stopping the current task… (Esc Esc)")
+        else:
+            self._esc_armed_at = now
+            self.notify("press Esc again to stop the current task", timeout=2)
 
     def action_clear_chat(self) -> None:
         self.cmd_clear("")

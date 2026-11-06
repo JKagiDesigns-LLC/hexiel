@@ -9,14 +9,17 @@ from pathlib import Path
 
 GROUPS = {
     "data": "spreadsheets & data: CSV/Excel/Parquet analysis with SQL, local SQLite databases, "
-            "Excel read/write, charts",
+            "Excel read/write, charts, Jupyter notebook (.ipynb) cell editing",
     "schedule": "scheduled/recurring jobs (cron-like, runs even when hexiel is closed)",
     "docs": "question-answering over PDFs / Word / Markdown documents with page citations",
     "knowledge": "the user's synced reference documentation library (versioned docs for the "
                  "technologies they use): knowledge_search",
     "research": "deep web research: many searches + pages read in parallel, cited evidence pack",
+    "desktop": "this machine's screen: screenshot capture, system clipboard read/write, "
+               "OCR text extraction from images",
 }
-DATA_EXTS = {".csv", ".tsv", ".xlsx", ".xlsm", ".xls", ".parquet", ".db", ".sqlite", ".sqlite3"}
+DATA_EXTS = {".csv", ".tsv", ".xlsx", ".xlsm", ".xls", ".parquet", ".db", ".sqlite", ".sqlite3",
+             ".ipynb"}
 SKIP = {".git", "node_modules", ".venv", "venv", "__pycache__", "dist", "build", ".hexiel"}
 
 
@@ -35,6 +38,9 @@ def _group_tools(group: str) -> list:
     if group == "research":
         from .research import research_tools
         return research_tools()
+    if group == "desktop":
+        from .desktop import desktop_tools
+        return desktop_tools()
     return []
 
 
@@ -78,6 +84,9 @@ def _looks_like(group: str, cwd: str) -> bool:
     if group == "knowledge":
         from .knowledge import has_content
         return has_content()
+    if group == "desktop":
+        from .desktop import _has_desktop
+        return _has_desktop()
     if group == "docs":
         exts = DOC_EXTS
     elif group == "data":

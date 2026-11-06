@@ -13,6 +13,7 @@ from pathlib import Path
 
 from . import consult
 from . import llm
+from . import prompt_edit
 from . import todo as todo_mod
 from .config import ModelConfig, Settings, home_data_dir
 from .tools import ToolResult, CACHEABLE_TOOLS
@@ -323,8 +324,10 @@ class Session:
         if not items:
             return
         for text in items:
-            self.messages.append({"role": "user", "content": STEERING_NOTE + text})
-            consult.note_user_message(self, text)
+            from . import redact as redact_mod
+            shown = redact_mod.scrub(text) if getattr(self.settings, "redact_secrets", "full") != "off" else text
+            self.messages.append({"role": "user", "content": STEERING_NOTE + shown})
+            consult.note_user_message(self, shown)
         self.on_event("note", "↳ hexiel read your new message" if len(items) == 1
                       else f"↳ hexiel read your {len(items)} new messages")
         self.save()
@@ -462,10 +465,13 @@ class Session:
             if user_text == prefix or user_text.startswith(prefix + " "):
                 user_text, delegate_mode = user_text[len(prefix):].strip(), mode
                 break
-        self._turn_request = user_text            # what consulting the strong model is told the user asked for
+        from . import redact as redact_mod
+        scrub_on = getattr(self.settings, "redact_secrets", "full") != "off"
+        user_shown = redact_mod.scrub(user_text) if scrub_on else user_text
+        self._turn_request = user_shown           # what consulting the strong model is told the user asked for
         consult.reset_turn(self)
         if not self.internal and any(m.get("role") == "assistant" for m in self.messages):
-            consult.note_user_message(self, user_text)        # a correction right after hexiel's last answer counts
+            consult.note_user_message(self, user_shown)        # a correction right after hexiel's last answer counts
         if cloud_turn and user_text:
             if not (consult.strong_available(self) and consult.escalate(self, "you asked for the cloud model", steps=10 ** 6)):
                 self.on_event("note", "no stronger model is available — set a Planner model in /config; carrying on locally")
@@ -474,8 +480,11 @@ class Session:
             self.on_event("turn_end")
             return
         images, notes = attach_images(user_text, self.cwd)
+        shown_content = user_shown
+        if self.plan_mode:
+            shown_content += "\n" + PLAN_MODE_NOTE
         entry = {"role": "user", "content": "\n".join(
-            [user_text, *notes, *([PLAN_MODE_NOTE] if self.plan_mode else [])]),
+            [shown_content, *notes]),
             "ts": time.time()}
         if images:
             entry["images"] = images
@@ -502,13 +511,15 @@ class Session:
                 return
             if out.code == 0 and out.stdout:
                 entry["content"] += f"\n\n[hook context]\n{out.stdout[:4000]}"
+        if scrub_on:
+            entry["content"] = redact_mod.scrub(entry["content"])   # the model never reads the raw text
         # empty assistant replies teach the model to keep answering with nothing
         self.messages = [m for m in self.messages if not _is_empty_reply(m)]
         self.messages.append(entry)
         self.save()
         self.on_event("turn_start")          # views that join mid-turn (a reconnecting browser) catch up from here
         from . import router as router_mod
-        mc, handled = router_mod.route_turn(self, user_text, delegate_mode, cloud_turn)
+        mc, handled = router_mod.route_turn(self, entry["content"], delegate_mode, cloud_turn)
         if handled:
             return
         self._weather_card(user_text)
@@ -1073,6 +1084,9 @@ class Session:
                 result = ToolResult(text=f"{result.text}\n\n[PostToolUse hook]\n{out.stderr[:4000]}",
                                     images=result.images, is_error=result.is_error)
         from . import digest
+        from . import redact as redact_mod
+        if getattr(self.settings, "redact_secrets", "full") != "off":
+            result.text = redact_mod.scrub(result.text)   # secrets never reach a model, not even the digest tool's
         shown = digest.maybe_digest(self, call, result)           # a tool's own model may condense a big output
         consult.record_result(self, call, bool(result.is_error), result.text)
         if cache_key is not None and not result.is_error:
@@ -1569,6 +1583,7 @@ class Session:
                 payload["auto_mode"] = self.auto_override
             if self.timers:
                 payload["timers"] = self.timers
+            payload.update(prompt_edit.save_extra(self))       # an edited /prompt rides the saved chat
             (sessions / f"{self.id}.json").write_text(json.dumps(payload))
         except OSError:
             pass

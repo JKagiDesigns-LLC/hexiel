@@ -17,6 +17,10 @@ Configured in config.toml:
     [spend.ollama]
     limit = 60          # dollars a cycle; the sidebar warns at warn_at (default 80 %) and at 100 %
     cycle_day = 23      # the day of the month the plan renews (1 = calendar months, the default)
+    detect_limits = false  # optional: pin the limit above instead of following the plan's own allowance
+                        # (the provider's plan allowance is read on the same periodic refresh as
+                        # the spend figure — Ollama Cloud: /api/balance — so an upgrade shows up
+                        # without touching this file)
     [spend.anthropic]
     limit = 25
     [spend.prices]      # dollars per million tokens, for models hexiel has no price for
@@ -195,7 +199,8 @@ def accounts(settings) -> dict:
         except (TypeError, ValueError):
             limit, day = 0.0, 1
         out[str(name).lower()] = {"limit": limit, "cycle_day": day,
-                                  "key_env": str(body.get("key_env", KEY_ENV.get(str(name).lower(), "")))}
+                                  "key_env": str(body.get("key_env", KEY_ENV.get(str(name).lower(), ""))),
+                                  "detect_limits": bool(body.get("detect_limits", True))}
     return out
 
 
@@ -269,6 +274,47 @@ def fetch_ollama(key: str, since: dt.date) -> tuple[float, dict]:
     return total, rates
 
 
+def _plan_allowance(data, _depth: int = 4) -> float | None:
+    """The plan's own dollar allowance from an ollama.com balance reply — the figure that changes
+    when you switch plans (Pro → Max). Only unambiguous cap-shaped keys are taken: an amount for
+    what you already spent or have left must never be mistaken for the budget."""
+    if _depth <= 0 or not isinstance(data, dict):
+        return None
+    for key, value in data.items():
+        lower = str(key).lower()
+        if isinstance(value, (int, float)) and not isinstance(value, bool) and value > 0:
+            says_left = any(w in lower for w in ("remaining", "percent", "used", "left", "balance"))
+            says_cap = ("allowance" in lower or "quota" in lower
+                        or ("limit" in lower and "monthly" in lower))
+            if says_cap and not says_left:
+                dollars = value / (100.0 if "cents" in lower else 1.0)
+                if 1.0 <= dollars <= 1_000_000.0:
+                    return dollars
+    for value in data.values():
+        if isinstance(value, dict):
+            found = _plan_allowance(value, _depth - 1)
+            if found is not None:
+                return found
+    return None
+
+
+def fetch_ollama_plan(key: str) -> tuple[float, str]:
+    """(monthly dollar allowance, plan name) from ollama.com/api/balance — raised when the reply
+    does not say, so the caller keeps whatever it had."""
+    data = _get(f"{OLLAMA_URL}/api/balance", {"authorization": f"Bearer {key}"}, None)
+    plan = _plan_allowance(data)
+    if not plan:
+        raise RuntimeError("no plan allowance in the balance reply")
+    name = ""
+    for candidate in ("plan", "tier", "name", "plan_name"):
+        value = data.get(candidate) or next(
+            (v.get(candidate) for v in data.values() if isinstance(v, dict) and v.get(candidate)), "")
+        if isinstance(value, str) and value.strip():
+            name = value.strip()
+            break
+    return plan, name
+
+
 def fetch_anthropic(key: str, since: dt.date) -> float:
     """Dollars on the Anthropic organisation's bill since `since` (Admin API cost report; amounts are in cents)."""
     total, page = 0.0, None
@@ -327,6 +373,11 @@ def refresh(settings, force: bool = False) -> None:
             try:
                 if name == "ollama":
                     entry["usd"], entry["rates"] = fetch_ollama(key, since)
+                    try:
+                        entry["plan_usd"], entry["plan_name"] = fetch_ollama_plan(key)
+                    except Exception:                    # noqa: BLE001 - the balance is best effort
+                        if cached.get("plan_usd"):
+                            entry["plan_usd"], entry["plan_name"] = cached["plan_usd"], cached.get("plan_name", "")
                 elif name == "anthropic":
                     entry["usd"] = fetch_anthropic(key, since)
                 else:
@@ -335,6 +386,8 @@ def refresh(settings, force: bool = False) -> None:
                 entry["error"] = f"{type(exc).__name__}: {exc}"[:200]
                 if cached.get("rates"):
                     entry["rates"] = cached["rates"]
+                if cached.get("plan_usd"):
+                    entry["plan_usd"], entry["plan_name"] = cached["plan_usd"], cached.get("plan_name", "")
             with _file_lock():
                 data = _read("spend-remote.json")
                 data[name] = entry
@@ -386,8 +439,14 @@ def totals(settings, today: dt.date | None = None) -> list[dict]:
             usd, source = float(reported["usd"]), "provider"
         if name not in accts and not requests and source == "estimate":
             continue                       # neither configured nor used this cycle
-        limit = conf["limit"]
-        rows.append({"account": name, "usd": usd, "limit": limit, "since": since, "source": source,
+        # the plan's own allowance wins when the provider reports one: it is what moves when you
+        # upgrade (Pro → Max); config.toml's limit keeps accounts without one. detect_limits = false
+        # in the account's table pins the limit to what you wrote instead.
+        limit, limit_source = conf["limit"], "config"
+        if conf.get("detect_limits", True) and reported.get("plan_usd"):
+            limit, limit_source = float(reported["plan_usd"]), "plan"
+        rows.append({"account": name, "usd": usd, "limit": limit, "limit_source": limit_source,
+                     "since": since, "source": source, "plan_name": reported.get("plan_name", ""),
                      "requests": requests, "unpriced": unpriced if source == "estimate" else 0,
                      "pct": int(100 * usd / limit) if limit else None, "error": reported.get("error", "")})
     rows.sort(key=lambda r: (not r["limit"], r["account"]))
@@ -433,6 +492,7 @@ def command(settings, arg: str) -> str:
             return f"not an amount: {parts[2]}"
         return set_spent(settings, parts[1], amount)
     _snap["at"] = 0.0
+    refresh_async(settings)                 # a plain /spend re-asks the providers that can say
     return "\n".join(summary_lines(settings)) or "no paid model has been used this cycle"
 
 
@@ -462,7 +522,8 @@ def summary_lines(settings) -> list[str]:
     """For /usage: one line per account."""
     lines = []
     for r in totals(settings):
-        cap = f" of {money(r['limit'])} ({r['pct']}%)" if r["limit"] else ""
+        cap = f" of {money(r['limit'])}{(' (plan)' if r.get('limit_source') == 'plan' else '')} ({r['pct']}%)" \
+            if r["limit"] else ""
         how = ("reported by the provider" if r["source"] == "provider"
                else "estimated from hexiel's own requests" + (f"; {r['unpriced']} request(s) have no price — add it "
                                                               "under [spend.prices]" if r["unpriced"] else ""))
@@ -472,7 +533,8 @@ def summary_lines(settings) -> list[str]:
 
 
 def alerts(settings) -> list[str]:
-    """Messages for an account that just passed warn_at or its limit — each said once per cycle, by one process."""
+    """Messages for an account that just passed warn_at or its limit — each said once per cycle, by one process.
+    Also said once per plan allowance: when the provider reports a new one (you changed your plan)."""
     level_at = warn_at(settings)
     rows = [r for r in snapshot(settings) if r["limit"]]
     if not rows:
@@ -482,6 +544,14 @@ def alerts(settings) -> list[str]:
         said = _read("spend-alerts.json")
         changed = False
         for r in rows:
+            if r["limit_source"] == "plan":
+                tag = f"{r['account']}:plan:{money(r['limit'])}"
+                if not said.get(tag):
+                    said[tag] = time.time()
+                    changed = True
+                    name = f" ({r['plan_name']})" if r.get("plan_name") else ""
+                    out.append(f"📈 {r['account']}'s plan{name} allows {money(r['limit'])} a cycle — the budget "
+                               f"line follows it (pin yours with detect_limits = false under [spend.{r['account']}])")
             if not r["limit"]:
                 continue
             share = r["usd"] / r["limit"]

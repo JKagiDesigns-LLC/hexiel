@@ -8,3 +8,6 @@ dist/
 # pasted clipboard images
 .hexiel/pastes/
 .hexiel
+
+# local python builds
+build/

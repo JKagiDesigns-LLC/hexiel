@@ -119,6 +119,22 @@
     </div>
   </div>
 
+  <div class="modal-back" id="prompt-back">
+    <div class="panel" id="prompt-box">
+      <div class="panel-head"><h4>System prompt</h4><button id="prompt-close" title="Close (Esc)">✕</button></div>
+      <div class="dim" id="prompt-source"></div>
+      <textarea id="prompt-text" spellcheck="false" autocomplete="off"></textarea>
+      <div class="row">
+        <button class="yes" id="prompt-session">This session</button>
+        <button id="prompt-dir">This directory</button>
+        <button id="prompt-global">Globally</button>
+        <button id="prompt-reset">Reset to default</button>
+        <button id="prompt-cancel">Close</button>
+      </div>
+      <div class="dim" id="prompt-msg"></div>
+    </div>
+  </div>
+
   <div class="modal-back" id="scope-back">
     <div class="panel" id="scope-box">
       <h4 id="scope-title"></h4>

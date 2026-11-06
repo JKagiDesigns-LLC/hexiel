@@ -71,6 +71,7 @@ def discover(cwd: str) -> dict[str, Command]:
 BUILTIN = [
     ("help", "", "list commands and skills"),
     ("config", "", "view and change settings (session or permanent)"),
+    ("prompt", "", "view and edit the system prompt (this session, this directory, or globally)"),
     ("model", "[name]", "pick from every model available right now (Ctrl+P), or switch by name"),
     ("models", "", "list models available on the Ollama server"),
     ("clear", "", "start a fresh conversation"),

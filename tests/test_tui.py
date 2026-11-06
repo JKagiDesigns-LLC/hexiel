@@ -1,4 +1,4 @@
-"""TUI behaviour: chronological turn rendering, slash menu, activity line, config screen."""
+"""TUI behaviour: chronological turn rendering, slash menu, activity line, config screen, input recall."""
 
 import asyncio
 import sys
@@ -8,14 +8,17 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from textual.widgets import Markdown
 
+from hexiel import prompt_edit
 from hexiel.config import ModelConfig, Settings
 from hexiel.session import Session
-from hexiel.tui import ActivityLine, CommandMenu, HexielTUI, ToolLine
+from hexiel.tui import ActivityLine, CommandMenu, HexielTUI, JumpBottom, PromptScreen, ToolLine
 
 
 def make_app(tmp_path) -> HexielTUI:
     mc = ModelConfig(name="t", provider="openai", model="m", base_url="")
-    return HexielTUI(Session(mc, Settings(), str(tmp_path), [], "sys"), [], set())
+    s = Session(mc, Settings(), str(tmp_path), [], "sys")
+    s.base_prompt = "sys"
+    return HexielTUI(s, [], set())
 
 
 def run(coro):
@@ -181,6 +184,97 @@ def test_paste_is_sanitized(tmp_path):
     assert run(go()) == "one\ntwo"
 
 
+def test_history_keeps_the_last_25_inputs(tmp_path):
+    app = make_app(tmp_path)
+    for i in range(30):
+        app._remember(f"msg {i}")
+    assert len(app._history) == 25 and app._history[0] == "msg 5" and app._history[-1] == "msg 29"
+    app._remember("msg 29")                       # sending the same thing again keeps it once
+    assert len(app._history) == 25
+    app._remember("")                             # blank sends are not remembered
+    assert len(app._history) == 25
+
+
+def test_arrow_keys_recall_the_session_inputs(tmp_path):
+    async def go():
+        from tests.test_images import PNG
+        shot = tmp_path / "shot.png"
+        shot.write_bytes(PNG)
+        app = make_app(tmp_path)
+        app._start_turn = lambda prompt: None      # record the input; no model call here
+        async with app.run_test(size=(100, 30)) as pilot:
+            for text in ("first idea", f"look at {shot}", "second idea"):
+                await pilot.press(*text)
+                await pilot.press("enter")
+            await pilot.pause()
+            prompt = app.query_one("#prompt")
+            await pilot.press("up")
+            newest = prompt.value
+            await pilot.press("up")
+            with_image = prompt.value
+            await pilot.press("up", "up")          # already at the oldest: it stays
+            oldest = prompt.value
+            await pilot.press("down", "down")
+            again = prompt.value
+            await pilot.press("down")
+            draft = prompt.value
+            await pilot.press(*"while I type")
+            await pilot.press("up", "down")
+            kept = prompt.value
+            return newest, with_image, oldest, again, draft, kept
+    newest, with_image, oldest, again, draft, kept = run(go())
+    assert newest == "second idea"
+    assert "shot.png" in with_image                # a recalled entry carries its image path back
+    assert oldest == "first idea" and again == "second idea" and draft == ""
+    assert kept == "while I type"                  # ↑/↓ return to the draft being typed
+
+
+def test_scrolled_up_reading_is_never_yanked_and_the_button_returns(tmp_path):
+    async def go():
+        app = make_app(tmp_path)
+        async with app.run_test(size=(80, 24)) as pilot:
+            chat = app.chat
+            chat.anchor()
+            for i in range(30):
+                app.add_note(f"note {i:02d} — line")
+            await pilot.pause(0.3)
+            pinned = abs(chat.scroll_y - chat.max_scroll_y) < 1.0
+            jump = app.query_one(JumpBottom)
+            hidden_while_following = not jump.display
+            chat.scroll_page_up(animate=False)     # you start reading above
+            await pilot.pause(0.2)
+            released = (not app._following, jump.display)
+            while_reading = chat.scroll_y
+            app.add_note("hexiel keeps appending quietly below")
+            await pilot.pause(0.2)
+            unmoved = chat.scroll_y == while_reading
+            await pilot.click(jump)
+            await pilot.pause(0.2)
+            back = (app._following, not jump.display, abs(chat.scroll_y - chat.max_scroll_y) < 1.0)
+            return pinned, hidden_while_following, released, unmoved, back
+    pinned, hidden_while_following, released, unmoved, back = run(go())
+    assert pinned and hidden_while_following
+    assert released == (True, True)                # scrolled up: the button appears
+    assert unmoved                                 # new messages do not steal the view
+    assert back == (True, True, True)              # the button snaps back to the newest
+
+
+def test_streamed_deltas_are_coalesced_into_one_paint(tmp_path):
+    async def go():
+        app = make_app(tmp_path)
+        async with app.run_test(size=(100, 30)) as pilot:
+            for _ in range(50):
+                app.handle_event("text", "chunk ")
+            buffered = (app._stream_wid is None, app._flush_timer is not None)
+            app.handle_event("turn_end")           # paints the whole reply synchronously
+            await pilot.pause()
+            sources = [w.source for w in app.chat.children if isinstance(w, Markdown)]
+            return buffered, sources
+    buffered, sources = run(go())
+    assert buffered == (True, True)                # deltas wait in the buffer; a timer paints
+    assert sources == ["chunk " * 50]
+
+
 def test_clipboard_save_image_roundtrip(tmp_path):
     from hexiel.clipboard import save_image
     from hexiel.tools import attach_images
@@ -206,8 +300,8 @@ def test_stopped_turn_does_not_crash_the_agent_thread():
         def take_pending(self):
             return []
 
-    app = SimpleNamespace(call_from_thread=lambda fn, *a: fn(*a))
-    app_ref = SimpleNamespace(session=FakeSession(), app=app,
+    app_ref = SimpleNamespace(session=FakeSession(),
+                              _post=lambda fn, *a, **k: fn(*a, **k),
                               handle_event=lambda event, *p, **kw: seen.append((event, p, kw)),
                               add_note=notes.append, ask_approval=None,
                               activity=SimpleNamespace(stop=lambda: None))
@@ -344,3 +438,126 @@ def test_quitting_ends_a_step_still_waiting_for_an_approval(tmp_path):
     t = asyncio.run(go())
     t.join(5)
     assert not t.is_alive() and got == ["no"]
+
+
+def test_closing_the_window_mid_turn_is_quiet(tmp_path, monkeypatch):
+    """Workers fed the UI by call_from_thread used to raise while the app was exiting — a traceback
+    on the screen when the window was closed mid-turn. Events are now dropped quietly."""
+    import threading
+    import time
+    threading_problems = []
+    monkeypatch.setattr(threading, "excepthook", lambda args: threading_problems.append(args.exc_value))
+
+    async def go():
+        app = make_app(tmp_path)
+        session = app.session
+
+        def slow_stream(prompt):
+            for i in range(1000):
+                if session._stop.is_set():
+                    return
+                session.on_event("text", "chunk ")
+                time.sleep(0.003)
+
+        session.run_turn = slow_stream
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            app._start_turn("stream for a while")
+            await pilot.pause(0.15)
+            assert app._thread and app._thread.is_alive()
+            app.exit()                     # the window closes mid-stream
+        app._thread.join(10)
+        return app._thread.is_alive()
+    alive = asyncio.run(go())
+    assert not alive and not threading_problems
+
+
+def test_worker_arrivals_after_the_window_is_gone_are_dropped(tmp_path):
+    """The update-checker, heal, remote threads and friends kept calling call_from_thread after the
+    app was gone; each raised out of its thread at shutdown. _post drops those instead."""
+    async def go():
+        app = make_app(tmp_path)
+        async with app.run_test(size=(80, 24)) as pilot:
+            app.add_note("working normally")
+        # outside: the loop is gone; these calls used to raise RuntimeError
+        app._post(app.add_note, "late note")
+        app._post(app.handle_event, "text", "late chunk")
+        app._post(app._offer_restart, "9.9.9")
+    run(go())          # returns without raising — that is the whole point
+
+
+def test_esc_twice_stops_the_current_task(tmp_path):
+    async def go():
+        import threading
+        import time
+        app = make_app(tmp_path)
+        async with app.run_test(size=(80, 24)) as pilot:
+            gate = threading.Event()
+
+            def fake_turn():
+                gate.wait(10)
+
+            app._thread = threading.Thread(target=fake_turn, daemon=True)
+            app._thread.start()
+            await pilot.press("escape")
+            await pilot.pause(0.15)
+            armed_not_stopped = not app.session._stop.is_set()
+            await pilot.press("escape")
+            await pilot.pause(0.15)
+            stopped = app.session._stop.is_set()
+            gate.set()
+            app._thread.join(2)
+            # a stray Esc with nothing running does nothing
+            await pilot.press("escape")
+            return armed_not_stopped, stopped
+    armed_not_stopped, stopped = run(go())
+    assert armed_not_stopped and stopped
+
+
+def test_a_second_escape_after_the_window_only_does_nothing(tmp_path):
+    """Esc arms for 1.5s; a late second press must not stop a task that started later."""
+    async def go():
+        import threading
+        import time
+        app = make_app(tmp_path)
+        async with app.run_test(size=(80, 24)) as pilot:
+            gate = threading.Event()
+            app._thread = threading.Thread(target=lambda: gate.wait(10), daemon=True)
+            app._thread.start()
+            app._esc_armed_at = time.time() - 5          # armed long ago: stale
+            await pilot.press("escape")
+            await pilot.pause(0.15)
+            stopped = app.session._stop.is_set()
+            re_armed = app._esc_armed_at > 0
+            gate.set()
+            app._thread.join(2)
+            return stopped, re_armed
+    stopped, re_armed = run(go())
+    assert not stopped and re_armed                      # stale arming expired: Esc asks again
+
+
+def test_prompt_modal_saves_and_resets(tmp_path):
+    """/prompt: edit the text, save it for this directory; reset rebuilds the default."""
+    async def go():
+        app = make_app(tmp_path)
+        async with app.run_test(size=(110, 30)) as pilot:
+            notes = []
+            app.add_note = lambda text, *a, **kw: (notes.append(text), None) and None
+            app.cmd_prompt("")
+            await pilot.pause(0.2)
+            screen = app.screen
+            assert isinstance(screen, PromptScreen)
+            assert screen.query_one("#prompt-edit").text == "sys"
+            screen.query_one("#prompt-edit").text = "DIR-PROMPT"
+            screen.action_save("directory")
+            await pilot.pause(0.3)
+            assert app.session.system_prompt == "DIR-PROMPT"
+            assert prompt_edit.dir_path(str(tmp_path)).read_text().strip() == "DIR-PROMPT"
+
+            app.cmd_prompt("")
+            await pilot.pause(0.2)
+            app.screen.action_reset()
+            await pilot.pause(0.3)
+            assert app.session.system_prompt == "sys" and app.session.prompt_override is None
+            assert not prompt_edit.dir_path(str(tmp_path)).exists()
+    run(go())

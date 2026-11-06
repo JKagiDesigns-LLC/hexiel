@@ -105,11 +105,27 @@ hexiel -m sonnet          # pick a model profile for this run
 
 - **Screenshots:** type an image path in your message (`why does @shot.png look
   broken?`, `~/Pictures/error.jpg`) and it's attached for vision models.
+- **Recall** (`↑` / `↓`): step back through the last 25 things you sent this session —
+  attachments and all, since they're named in the text; `↓` past the newest returns
+  to what you were typing.
+- **Reading history:** scroll up while hexiel works and it never yanks you back down;
+  a floating **↓ scroll to bottom** tag returns you to the newest messages (scrolling
+  back down by hand does the same).
+- **Budget:** the sidebar's SPEND line tracks each paid bill against your plan — the
+  dollar allowance is read from the provider (Ollama Cloud: `/api/balance`) on the
+  same periodic refresh as the spend figure, so changing your plan (Pro → Max) is
+  picked up without editing `config.toml`. Pin your own cap with
+  `detect_limits = false` in that account's `[spend.NAME]` table.
 - **Activity line:** while hexiel works, the bottom-left shows what it's doing —
   thinking, writing, running your tests — with elapsed time and tokens.
-  `Ctrl+C` stops a turn.
+  `Ctrl+C` stops a turn — double-tapping `Esc` also stops the current task
+  (handy when `Ctrl+C` reads as "close").
 - **Approvals:** edits and commands ask first (`y` / `a`lways / `n`); `/auto`
   goes hands-free.
+- **System prompt, yours:** `/prompt` shows the prompt the model is working from
+  and lets you edit it, in the terminal and the browser. Save it for this session,
+  this directory (`<project>/.hexiel/system-prompt.md`, shared with the repo) or
+  globally (`~/.config/hexiel/system-prompt.md`); `Reset` rebuilds the default.
 - **Updates:** hexiel checks for new releases in the background. `/update` (or
   the web UI's update button) installs it and restarts, resuming your conversation.
   It refuses to update a checkout with uncommitted changes.
@@ -143,6 +159,8 @@ No code needed — just ask:
 | *"What do these papers say about irrigation? Cite pages."* | Indexes your PDFs / Word / Markdown once, then answers from the best passages with **[file p.N] citations** — keyword + (optional, local) semantic search, never whole documents in the prompt |
 | *"Research the state of IndexNow adoption"* | **Deep research**: plans sub-questions, then searches and reads many pages **in parallel** in Python and hands the model one cited evidence pack |
 | *"Connect my Firebase project"* | `/mcp add firebase` — also `supabase`, `notion`, `github`, `playwright` (browser automation), `filesystem` |
+| *"Fix the cell that loads the dataset in my notebook"* | Reads and edits **Jupyter notebooks** cell by cell (`notebook` tool) — list cells, replace/insert/delete, clear outputs |
+| *"What's on my screen?"* | Grabs a **screenshot**, reads the text in it (**OCR**), or reads/writes the **clipboard** — the desktop toolset, loaded automatically whenever hexiel runs on a desktop |
 
 Data and scheduling tools load **only when needed** (automatically when a project
 contains data files, or on request), so coding sessions don't pay for them in
@@ -336,7 +354,9 @@ an Intel iGPU at ~12 tokens/s. Hybrid "thinking" models should run with
 `edit` · `glob` · `grep` · `list` · `map` (cached project tree) · `file_info` ·
 `powershell` · `test` (your detected runner) · `container` (docker/podman +
 compose) · `view_image` / `image_edit` · `web_search` / `web_fetch` (no API key
-needed) · `memory` · `todo` · `gitlab_mr` · `skill` · `knowledge_search` / `knowledge_find_docs` / `knowledge_add` — plus any MCP server's tools and any OpenWebUI plugin in `plugins/`.
+needed) · `memory` · `todo` · `gitlab_mr` · `skill` · `knowledge_search` / `knowledge_find_docs` / `knowledge_add`
+· `notebook` (Jupyter .ipynb cell edits) · desktop toolset: `screenshot` · `clipboard` · `ocr` (auto-loaded when a display is present;
+screenshots attach to the conversation and OCR uses tesseract) — plus any MCP server's tools and any OpenWebUI plugin in `plugins/`.
 
 ### Context discipline
 - **Auto-compaction, Claude-Code style:** at 82% of the context window, older

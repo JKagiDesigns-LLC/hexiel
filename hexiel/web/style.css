@@ -284,6 +284,13 @@ body {
 .badge.session { background: rgba(217,180,106,.15); color: var(--warn); }
 .badge.saved { color: var(--text-dim); }
 #settings-msg { margin-top: 10px; min-height: 1.2em; }
+/* system prompt editor */
+#prompt-box { width: min(900px, 94vw); }
+#prompt-text { width: 100%; box-sizing: border-box; margin-top: 8px; background: var(--bg);
+               color: var(--text); border: 1px solid var(--border); border-radius: 6px;
+               padding: 8px 10px; font: 12.5px ui-monospace, monospace; min-height: 45vh; resize: vertical; }
+#prompt-text:focus { border-color: var(--accent); outline: none; }
+#prompt-msg { margin-top: 10px; min-height: 1.2em; }
 .panel .row { display: flex; gap: 8px; margin-top: 14px; }
 .panel .row button { flex: 1; padding: 8px; border-radius: 8px; border: 1px solid var(--border);
                      background: var(--bg); color: var(--text); cursor: pointer; }

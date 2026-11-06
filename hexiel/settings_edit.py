@@ -93,6 +93,11 @@ FIELDS = [
      "help": "hexiel's own errors (paths, keys and e-mails scrubbed) go to remote.hexiel.tech so they can be tracked: "
              "account = only when signed in to Hexiel Remote (see them at hexiel.tech/support), all = also without an "
              "account (public queue), off = never. /bug always sends"},
+    {"key": "settings.redact_secrets", "label": "Hide secrets from the AI", "kind": "choice",
+     "options": ["full", "off"],
+     "help": "credentials (API keys, tokens, passwords) in tool output and typed text are replaced with <redacted> "
+             "before any model sees them, so they are not stored in the model's context or sent to cloud providers; "
+             "off = send everything as-is"},
     {"key": "settings.auto_commit", "label": "Git auto-commit", "kind": "bool",
      "options": [False, True], "help": "commit the files hexiel changed after each finished turn"},
     {"key": "settings.notify", "label": "Notifications", "kind": "bool",

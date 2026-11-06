@@ -455,6 +455,52 @@ class Session:
             self.system_prompt = prev            # the weather note rode that one turn only
             self._weather_prev_system = None
 
+    def clear_old_tool_results(self, keep: int = 3) -> int:
+        """Replace the tool results of all but the last `keep` tool rounds with one short line
+        (the /context command). Returns how many were cleared."""
+        rounds = [i for i, m in enumerate(self.messages)
+                  if m["role"] == "assistant" and m.get("tool_calls")]
+        if len(rounds) <= keep:
+            return 0
+        names = {c.get("id"): c.get("name", "tool")
+                 for m in self.messages for c in m.get("tool_calls") or [] if isinstance(m, dict)}
+        cut = rounds[-keep]
+        cleared = 0
+        for i, m in enumerate(self.messages):
+            if i < cut and m["role"] == "tool" and isinstance(m.get("content"), str) \
+                    and not m["content"].startswith("[cleared"):
+                m["content"] = f"[cleared: {names.get(m.get('tool_call_id'), m.get('name') or 'tool')}]"
+                m["images"] = []
+                cleared += 1
+        if cleared:
+            self.save()
+        return cleared
+
+    def context_breakdown(self) -> dict:
+        """What occupies the context window right now: rough token estimates per layer."""
+        from .llm import est_tokens
+        def est(text) -> int:
+            return est_tokens(text if isinstance(text, str) else json.dumps(text))
+        out = {"system": est(self.system_prompt), "tools": 0, "messages": {}}
+        try:
+            out["tools"] = sum(est({"name": t.name, "description": t.description,
+                                    "parameters": t.parameters})
+                               for t in self._tool_defs())
+        except Exception:            # noqa: BLE001 - metering is a bonus, never a blocker
+            out["tools"] = 0
+        for m in self.messages:
+            role = m.get("role", "?")
+            n = 0
+            if isinstance(m.get("content"), str):
+                n += est(m["content"])
+            elif m.get("tool_calls"):
+                n += est(m.get("tool_calls"))
+            for img in m.get("images", []):
+                n += img.get("approx_tokens", 0)
+            n += len(m.get("attachments", [])) * 800
+            out["messages"][role] = out["messages"].get(role, 0) + n
+        return out
+
     def _turn_body(self, user_text: str) -> None:
         from .tools import attach_images
         delegate_mode = None                       # /delegate forces it, /solo opts out of the automatic check
@@ -497,6 +543,9 @@ class Session:
                                            self.__dict__.setdefault("_instr_sent", set()))
         if topics:
             entry["content"] += f"\n\n[project instructions relevant to this request]\n{topics}"
+        if user_text.strip() and not self.internal:    # /delegate or /solo with no request skip it;
+            from . import prompt as prompt_mod         # helper sessions (delegated steps, briefings)
+            entry["content"] = prompt_mod.env_note(self.cwd) + "\n\n" + entry["content"]  # keep clean heads
         self.checkpoints.append([])        # file snapshots taken during this turn
         from . import checkpoints as ckpt_mod
         try:                               # durable copy on a private git ref: /undo survives a restart
@@ -909,7 +958,10 @@ class Session:
                                      extra_body=self.model_config.extra_body,
                                      timeout=self.settings.request_timeout,
                                      echo_reasoning=self.model_config.echo_reasoning,
-                                     max_tokens_param=self.model_config.max_tokens_param)
+                                     max_tokens_param=self.model_config.max_tokens_param,
+                                     keep_alive=self.model_config.keep_alive,
+                                     num_ctx=self.model_config.num_ctx,
+                                     conversation_id=self.id)
             for event, *payload in self._interruptible(stream, provider):
                 if self._stop.is_set():
                     break
@@ -929,6 +981,10 @@ class Session:
                 elif event == "done":
                     usage = payload[0]
                     if usage:
+                        # OpenAI-style providers report the cached share in prompt_tokens_details
+                        detail = usage.get("prompt_tokens_details") or {}
+                        if detail.get("cached_tokens"):
+                            usage["cached_tokens"] = detail["cached_tokens"]
                         self.last_usage = usage
                         self._usage_msgs = sent
                         self.record_usage(self.model_config.model, usage)

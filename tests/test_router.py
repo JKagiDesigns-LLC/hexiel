@@ -231,7 +231,7 @@ def test_the_full_turn_runs_the_overflow_model_and_restores_the_main(env, monkey
     s._turn_body("what line ends main.py?")
     assert served[0]["model"] and s.messages[-1]["content"] == "here is my answer"
     assert s.model_config is GMK                               # the overflow ran this request only
-    assert s.messages[0]["content"].startswith("what line ends main.py?")
+    assert s.messages[0]["content"].endswith("what line ends main.py?")        # env note rides in front
 
 
 def test_small_requests_wait_when_the_main_model_is_free(env, monkeypatch):

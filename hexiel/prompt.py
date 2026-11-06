@@ -202,15 +202,26 @@ def _project_docs(cwd: str) -> str:
     return "\n\n".join(parts)
 
 
+def env_note(cwd: str) -> str:
+    """Facts that change too often to live in the (cached) system prompt: date, git state.
+    Runs fresh on each real user turn — a few dozen new tokens, while the long stable
+    prefix still reads from provider/local cache at ~10% of the input price."""
+    now = datetime.datetime.now().astimezone()
+    git = " · ".join(_git_state(cwd).splitlines())
+    return ("[environment — fresh facts for this turn only]\n"
+            f"Today's date: {now:%Y-%m-%d}\n{git}")
+
+
 def build_system_prompt(cwd: str, skills_section: str, tooling_section: str,
                         task_state: str = "") -> str:
-    now = datetime.datetime.now().astimezone()
+    # deliberately NO today's date and NO live git state here: those change (daily / per commit)
+    # and would invalidate the whole cached prompt prefix every time (Anthropic 0.1x cached input,
+    # OpenAI byte-identical requirement, Ollama's local prefix cache). They ride env_note() on each
+    # user turn instead — a few dozen fresh tokens, nothing re-prefilled.
     env = (
         f"Working directory: {cwd}\n"
         f"Shell: {os.environ.get('SHELL', '/bin/bash')}\n"
-        f"Platform: {platform.system()} ({platform.release()})\n"
-        f"Today's date: {now:%Y-%m-%d}\n\n"
-        f"git state:\n{_git_state(cwd)}"
+        f"Platform: {platform.system()} ({platform.release()})"
     )
     memory_block = MEMORY_SECTION.format(
         memory_dir=memory_mod.memory_dir(),

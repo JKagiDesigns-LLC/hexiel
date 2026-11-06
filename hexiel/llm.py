@@ -411,12 +411,23 @@ class AnthropicProvider(AbortableHTTP):
         yield ("assistant", final)
 
 
+def _local_host(base_url: str) -> bool:
+    """An endpoint likely to accept Ollama fields (keep_alive, options): a listening
+    Ollama server on this machine or the LAN, port 11434 or a localhost alias."""
+    host = (base_url or "").lower()
+    return (":11434" in host or "://localhost" in host or "://127.0.0.1" in host
+            or "://[::1]" in host or "://[::ffff" in host)
+
+
 class OpenAICompatProvider(AbortableHTTP):
     """Any /chat/completions endpoint: Ollama, vLLM, OpenRouter, OpenAI itself."""
 
     def __init__(self, api_key: str, base_url: str) -> None:
         self.api_key = api_key
         self.base_url = base_url.rstrip("/")
+
+    def _local(self) -> bool:
+        return _local_host(self.base_url)
 
     @classmethod
     def _convert_messages(cls, messages: list[dict], echo_reasoning: bool = False) -> list[dict]:
@@ -474,14 +485,11 @@ class OpenAICompatProvider(AbortableHTTP):
                 converted.append({"role": msg["role"], "content": msg.get("content", "")})
         return converted
 
-    def stream(self, messages: list[dict], system: str, tools: list[dict], *,
-               model: str, max_output_tokens: int, extra_body: dict,
-               timeout: float, echo_reasoning: bool = False,
-               max_tokens_param: str = "") -> Iterator[tuple]:
-        if not max_tokens_param:   # OpenAI's newer models reject max_tokens
-            host = self.base_url.lower()
-            openai_style = "api.openai.com" in host or ".openai.azure.com" in host or ".azure.com/openai" in host
-            max_tokens_param = "max_completion_tokens" if openai_style else "max_tokens"
+    def _payload(self, messages, system, tools, *, model, max_output_tokens,
+                 max_tokens_param: str, extra_body: dict, echo_reasoning: bool = False,
+                 keep_alive: str = "", num_ctx: int = 0, conversation_id: str = "") -> dict:
+        """The request body. Ollama-only fields (keep_alive/options) ride only on local
+        endpoints — cloud providers reject them — and OpenAI gets a stable cache key."""
         base = {
             "model": model,
             "messages": [{"role": "system", "content": system}]
@@ -490,6 +498,19 @@ class OpenAICompatProvider(AbortableHTTP):
             max_tokens_param: max_output_tokens,
             **extra_body,
         }
+        if self._local():
+            # resident model + pinned context: an unloaded model costs 30-120s to reload and a
+            # changing context throws Ollama's local prefix cache away. extra_body always wins.
+            ollama_opts = dict(extra_body.get("options") or {}) if isinstance(extra_body, dict) else {}
+            if keep_alive:
+                base["keep_alive"] = keep_alive
+            if num_ctx and num_ctx > 0:
+                ollama_opts.setdefault("num_ctx", int(num_ctx))
+            if ollama_opts:
+                base["options"] = ollama_opts
+        elif "api.openai.com" in self.base_url:
+            if conversation_id:              # stable cache-routing key (OpenAI prompt caching)
+                base["prompt_cache_key"] = conversation_id
         if tools:
             base["tools"] = [
                 {"type": "function",
@@ -497,6 +518,23 @@ class OpenAICompatProvider(AbortableHTTP):
                               "parameters": t["parameters"]}}
                 for t in tools
             ]
+        return base
+
+    def stream(self, messages: list[dict], system: str, tools: list[dict], *,
+               model: str, max_output_tokens: int, extra_body: dict,
+               timeout: float, echo_reasoning: bool = False,
+               max_tokens_param: str = "", keep_alive: str = "", num_ctx: int = 0,
+               conversation_id: str = "") -> Iterator[tuple]:
+        if not max_tokens_param:   # OpenAI's newer models reject max_tokens
+            host = self.base_url.lower()
+            openai_style = "api.openai.com" in host or ".openai.azure.com" in host or ".azure.com/openai" in host
+            max_tokens_param = "max_completion_tokens" if openai_style else "max_tokens"
+        base = self._payload(messages, system, tools, model=model,
+                             max_output_tokens=max_output_tokens,
+                             max_tokens_param=max_tokens_param, extra_body=extra_body,
+                             echo_reasoning=echo_reasoning,
+                             keep_alive=keep_alive, num_ctx=num_ctx,
+                             conversation_id=conversation_id)
         headers = {"content-type": "application/json"}
         if self.api_key:
             headers["authorization"] = f"Bearer {self.api_key}"
@@ -561,6 +599,35 @@ def _iter_sse(lines: Iterator[str]) -> Iterator[str]:
             data = line[5:].strip()
             if data and data != "[DONE]":
                 yield data
+
+
+def warm_up(model_config, settings=None) -> None:
+    """Load a local model before the first real message: a tiny request with the session's
+    keep_alive keeps it resident. Silent by design — failures never block start-up, and it
+    only ever fires at local Ollama-style endpoints (localhost / :11434)."""
+    import httpx
+    try:
+        base = model_config.base_url.rstrip("/")
+        if not base or not _local_host(base):
+            return
+        provider_key = model_config.api_key_env or ""
+        api_key = os.environ.get(provider_key, "") if provider_key else ""
+        headers = {"authorization": f"Bearer {api_key}"} if api_key else {}
+        body = {"model": model_config.model,
+                "messages": [{"role": "user", "content": "hi"}], "max_tokens": 1,
+                "stream": False}
+        ollama_opts = dict(model_config.extra_body.get("options") or {}) \
+            if isinstance(model_config.extra_body, dict) else {}
+        if model_config.num_ctx:
+            ollama_opts.setdefault("num_ctx", int(model_config.num_ctx))
+            body["options"] = ollama_opts
+        if model_config.keep_alive:
+            body["keep_alive"] = model_config.keep_alive
+        timeout = httpx.Timeout(10.0, connect=10.0)
+        with httpx.Client(timeout=timeout) as client:
+            client.post(f"{base}/chat/completions", json=body, headers=headers)
+    except Exception:                    # noqa: BLE001 - best-effort; the real call handles errors
+        pass
 
 
 def make_provider(model_config, settings) -> tuple[object, str]:

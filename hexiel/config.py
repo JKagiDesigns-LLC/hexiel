@@ -171,6 +171,8 @@ class ModelConfig:
     max_tokens_param: str = ""       # "" = auto (max_completion_tokens for OpenAI/Azure, else max_tokens)
     fallbacks: tuple[str, ...] = ()  # profiles tried in order when this model is unreachable or over its limit
     compact_threshold: float = 0.0   # this model's own auto-compact point (share of its window); 0 = use [settings] compact_threshold
+    keep_alive: str = "1h"           # local Ollama only: keep the model resident this long after the last use ("-1" forever); a reload after idle costs 30–120s on modest hardware
+    num_ctx: int = 0                 # local Ollama only: pin the context size (Ollama's default is small and a changed context throws its prefix cache away); 0 = leave the server default
     billing: str = ""                # the bill it is paid from, for spend tracking: "" = worked out (spend.py), "none" = free
 
     def compact_share(self, default: float) -> float:

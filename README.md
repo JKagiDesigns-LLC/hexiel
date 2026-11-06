@@ -143,6 +143,8 @@ hexiel -m sonnet          # pick a model profile for this run
 | **Custom commands** | Markdown prompts in `.hexiel/commands/` or `.claude/commands/` become `/name` (with `$ARGUMENTS`) |
 | **Subagents** (`task` tool) | Searches and research run in a helper's own context; only the answer comes back — optionally on a cheaper/local `subagent_profile` |
 | **Instant checks** | Every write/edit is syntax-checked locally (Python, JSON, TOML, shell, JS) in the same step |
+| **Context metering** (`/context`) | See what actually occupies the model's window — system prompt, tool definitions, per-role history, images — and prune old tool results without losing the thread |
+| **Cache-stable by design** | The system prompt never embeds anything volatile (date, git state ride the current user turn instead), so the prefix keeps reading from the provider or Ollama cache at a fraction of the input price; local Ollama models also stay resident (`keep_alive`) with a pinned context and a start-up pre-warm, so no 30–120s reload after you idle |
 | **Also** | `/usage` (tokens in/cached/out), desktop notifications when you're needed, opt-in git `auto_commit`, Claude prompt caching, a guard that stops runaway model output |
 
 ### For analysts, researchers and small businesses

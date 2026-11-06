@@ -165,7 +165,7 @@ def test_slash_cloud_answers_the_whole_request_with_the_cloud_model(tmp_path, mo
     assert [r["model"] for r in requests] == ["cloud"] * 4
     assert any("for this request" in n and "you asked for the cloud model" in n for n in notes(events))
     assert s.model_config.name == "local" and s._provider_override is None
-    assert s.messages[0]["content"] == "why does the build fail?"            # the prefix is not shown to the model
+    assert s.messages[0]["content"].endswith("why does the build fail?")    # the /cloud prefix is not shown to the model
 
 
 def test_nothing_happens_without_a_stronger_model_or_when_switched_off(tmp_path, monkeypatch):

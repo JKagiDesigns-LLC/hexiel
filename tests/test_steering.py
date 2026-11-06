@@ -81,7 +81,7 @@ def test_several_messages_are_all_delivered_in_order(tmp_path, monkeypatch):
     s.queue_message("second")
     s.run_turn("go")
     users = [m["content"] for m in seen[0] if m["role"] == "user"]
-    assert users[0] == "go" and users[1].endswith("first") and users[2].endswith("second")
+    assert users[0].endswith("go") and users[1].endswith("first") and users[2].endswith("second")   # each turn opens with the env note
     assert any(e[0] == "note" and "2 new messages" in e[1] for e in events)
 
 

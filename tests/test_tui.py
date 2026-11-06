@@ -56,7 +56,7 @@ def test_slash_menu_filters_and_completes(tmp_path):
             await pilot.pause()
             return items, app.query_one("#prompt").value
     items, value = run(go())
-    assert items[:2] == ["config", "compact"] or set(items[:2]) == {"config", "compact"}
+    assert items[:2] == ["config", "compact"] or set(items[:2]) <= {"config", "compact", "context"}
     assert value.startswith("/co")
 
 

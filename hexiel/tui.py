@@ -1833,7 +1833,7 @@ class HexielTUI(App):
         handler = {
             "help": self.cmd_help, "clear": self.cmd_clear, "compact": self.cmd_compact,
             "config": self.cmd_config, "update": self.cmd_update, "mcp": self.cmd_mcp,
-            "prompt": self.cmd_prompt,
+            "prompt": self.cmd_prompt, "context": self.cmd_context,
             "plan": self.cmd_plan, "permissions": self.cmd_permissions,
             "undo": self.cmd_undo, "usage": self.cmd_usage, "spend": self.cmd_spend, "toolmodels": self.cmd_toolmodels, "jobs": self.cmd_jobs, "knowledge": self.cmd_knowledge, "inbox": self.cmd_inbox,
             "model": self.cmd_model, "models": self.cmd_models, "auto": self.cmd_auto,
@@ -2164,6 +2164,34 @@ class HexielTUI(App):
             self._refresh_status()
 
         self.push_screen(PromptScreen(info["source"], info["text"]), callback=done)
+
+    def cmd_context(self, arg: str) -> None:
+        """/context — what occupies the window; `clear` prunes old tool results."""
+        mc = self.session.model_config
+        share = mc.compact_share(self.session.settings.compact_threshold)
+        if arg.split(" ")[0].startswith("clear"):
+            try:
+                keep = max(1, int(arg.split(" ")[1])) if len(arg.split(" ")) > 1 else 3
+            except ValueError:
+                keep = 3
+            cleared = self.session.clear_old_tool_results(keep)
+            if not cleared:
+                self.add_note("nothing to clear — the recent tool results stay; older ones would go")
+                return
+            self.add_note(f"🧹 cleared {cleared} old tool result(s) (recent {keep} rounds stay) "
+                          f"— history is shorter; `/context` to re-check")
+        b = self.session.context_breakdown()
+        window = max(mc.context_window, 1)
+        used = self.session.tokens_now()
+        rows = [("system prompt", b["system"]), ("tool definitions", b["tools"])]
+        rows += [(f"history: {role}", n) for role, n in sorted(b["messages"].items(),
+                                                               key=lambda kv: -kv[1])]
+        lines = [f"context: ~{used:,} of {window:,} tokens ({used * 100 // window}% of the window; "
+                 f"auto-compact at {share:.0%})"]
+        for label, n in rows:
+            if n:
+                lines.append(f"  {label.ljust(28)} ~{n:,}")
+        self.add_note("\n".join(lines))
 
     def action_pick_model(self) -> None:
         """Ctrl+P or /model: live, searchable list of every reachable model."""

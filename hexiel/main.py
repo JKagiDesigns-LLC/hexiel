@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 import sys
+import threading
 from pathlib import Path
 
 from . import __version__
@@ -310,6 +311,10 @@ def main() -> None:
         reporter.in_background(reporter.flush_outbox)      # reports queued while offline
     from . import remote
     remote.resume_if_orphaned()                           # a killed /remote-control chat (before 0.4.7) left it paused
+    from . import llm as llm_mod
+    if session.model_config.keep_alive:                   # local models: pre-warm so the first real
+        threading.Thread(                                 # message doesn't pay the 30–120s reload
+            target=llm_mod.warm_up, args=(session.model_config,), daemon=True).start()
     if args.yes:
         session.auto_approve = True
         session.guard_commits = False          # -y is "everything"; use auto_approve = "except-commits" for the careful mode

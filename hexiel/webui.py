@@ -570,6 +570,10 @@ def make_app(session: Session, driver=None) -> web.Application:
         if cmd == "fork":
             return "/fork branches this conversation into a new session file — run it in the terminal UI " \
                    "(this browser view keeps following the original branch)"
+        if cmd == "share":
+            from . import share
+            path = share.export_html(session, Path(arg) if arg else None)
+            return f"transcript shared → {path} (self-contained single-file HTML; secrets scrubbed)"
         if cmd == "heal":
             if arg == "review":
                 if heal["changes"]:

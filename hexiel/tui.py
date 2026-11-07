@@ -2012,7 +2012,7 @@ class HexielTUI(App):
             return text
         handler = {
             "help": self.cmd_help, "clear": self.cmd_clear, "compact": self.cmd_compact,
-            "fork": self.cmd_fork,
+            "fork": self.cmd_fork, "share": self.cmd_share,
             "config": self.cmd_config, "update": self.cmd_update, "mcp": self.cmd_mcp,
             "prompt": self.cmd_prompt, "context": self.cmd_context,
             "plan": self.cmd_plan, "permissions": self.cmd_permissions,
@@ -2092,6 +2092,26 @@ class HexielTUI(App):
                           "the original chat file is untouched and this tab now lives in the branch")
         self._refresh_status()
         return
+
+    def cmd_share(self, arg: str) -> None:
+        """#28 /share — a self-contained single-file HTML transcript, secrets scrubbed,
+        placed next to the session's history file; open or attach it anywhere."""
+        if not self.session.messages:
+            self.add_note("nothing to share yet — this conversation is empty")
+            return
+        from . import share
+        try:
+            path = share.export_html(self.session, Path(arg) if arg else None)
+        except Exception as exc:  # noqa: BLE001 - a bad path/arg must not break the chat
+            self.add_note(f"could not write the transcript: {exc!r}")
+            return
+        from .config import home_data_dir
+        where = str(path)
+        home = str(Path.home())
+        if where.startswith(home + "/"):
+            where = "~" + where[len(home) + 1:]
+        self.add_note(f"📄 transcript shared → {where}  (self-contained HTML — "
+                      "open it in a browser or attach it anywhere)")
 
     def cmd_compact(self, arg: str) -> None:
         from .llm import make_provider

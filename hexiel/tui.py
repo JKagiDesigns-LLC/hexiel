@@ -4,6 +4,7 @@ import asyncio
 import json
 import os
 import re
+import subprocess
 import threading
 import time
 from pathlib import Path
@@ -2014,6 +2015,7 @@ class HexielTUI(App):
         handler = {
             "help": self.cmd_help, "clear": self.cmd_clear, "compact": self.cmd_compact,
             "fork": self.cmd_fork, "share": self.cmd_share, "watch": self.cmd_watch,
+            "wt": self.cmd_wt,
             "config": self.cmd_config, "update": self.cmd_update, "mcp": self.cmd_mcp,
             "prompt": self.cmd_prompt, "context": self.cmd_context,
             "plan": self.cmd_plan, "permissions": self.cmd_permissions,
@@ -2148,6 +2150,77 @@ class HexielTUI(App):
         label = "AI? question" if kind == "?" else "AI: instruction"
         self.add_note(f"[watch · {label}] {path.name}:{line_no} — {text}")
         self._start_turn(watcher.prompt_for(path, line_no, kind, text))
+
+    def cmd_wt(self, arg: str) -> None:
+        """#36 /wt — git worktree isolation: list, create, open (this tab moves into it),
+        remove, prune. Sub+headless runs can use `worktree` / --worktree on their own."""
+        from . import worktree as wt_mod
+        sub, _, rest = arg.strip().partition(" ")
+        sub, rest = sub.lower(), rest.strip()
+        if not wt_mod.is_repo(self.session.cwd):
+            self.add_note(f"/wt needs a git repository — this chat runs in {self.session.cwd}")
+            return
+        if sub in ("", "list"):
+            lines = ["worktrees:"]
+            for w in wt_mod.list_worktrees(self.session.cwd):
+                mark = "①" if w.is_main else "·"
+                lines.append(f" {mark} {w.path}  [{w.branch or '(detached)'}]")
+            self.add_note("\n".join(lines) + "\ncreate with /wt create <name> ; open with /wt open <name>")
+            return
+        if self._thread and self._thread.is_alive() and sub in ("create", "open", "remove", "prune"):
+            self.add_note("finish or Ctrl+C the current turn first, then /wt " + sub)
+            return
+        if sub == "create":
+            name, _, branch = rest.partition(" ")
+            try:
+                w = wt_mod.create(self.session.cwd, name, branch=branch.strip(),
+                                  hooks=self.session.hooks, session_id=self.session.id,
+                                  on_note=self.add_note)
+            except (ValueError, subprocess.CalledProcessError) as exc:
+                self.add_note(str(getattr(exc, "stderr", "") or exc).strip()[:240])
+                return
+            self.add_note(f"🌿 worktree {w.path} ready on branch {w.branch or '(detached)'} — "
+                          f"open it with /wt open {w.path.name}; merge after review: "
+                          f"`git merge {w.branch}`")
+            return
+        if sub == "open":
+            if not rest:
+                self.add_note("usage: /wt open <name> — /wt lists the names")
+                return
+            try:
+                new_cwd = wt_mod.open_session_cwd_for(self.session.cwd, rest)
+            except ValueError as exc:
+                self.add_note(str(exc))
+                return
+            from .main import build_session
+            try:
+                opened = build_session(new_cwd, None, reuse=self.session)
+            except Exception as exc:  # noqa: BLE001 - a bad profile must not ping the (un)opening UI
+                self.add_note(f"could not start a session in the worktree: {exc!r}")
+                return
+            self.session.save()
+            self.session = opened
+            self.session.save()
+            self.chat.remove_children()
+            self.replay_history()
+            self.chat.anchor()
+            self.add_note(f"🌿 now in worktree {new_cwd} — changes here never touch the main checkout "
+                          "(merge when reviewed: `git merge <branch>`)")
+            self._refresh_status()
+            return
+        if sub == "remove":
+            if not rest:
+                self.add_note("usage: /wt remove <name>")
+                return
+            try:
+                self.add_note(wt_mod.remove(self.session.cwd, rest))
+            except (ValueError, subprocess.CalledProcessError) as exc:
+                self.add_note(str(getattr(exc, "stderr", "") or exc).strip()[:240])
+            return
+        if sub == "prune":
+            self.add_note(wt_mod.prune(self.session.cwd))
+            return
+        self.add_note("usage: /wt [list] | create <name> [branch] | open <name> | remove <name> | prune")
 
     def cmd_compact(self, arg: str) -> None:
         from .llm import make_provider

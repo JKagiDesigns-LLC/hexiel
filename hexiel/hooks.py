@@ -20,7 +20,7 @@ from pathlib import Path
 
 from .permissions import RULE_NAME
 
-EVENTS = ("PreToolUse", "PostToolUse", "UserPromptSubmit", "Stop", "SessionStart")
+EVENTS = ("PreToolUse", "PostToolUse", "UserPromptSubmit", "Stop", "SessionStart", "WorktreePostSetup")
 
 
 @dataclass
@@ -83,12 +83,14 @@ def _claude_input(tool: str, args: dict) -> dict:
 
 def run(hooks: list[Hook], event: str, cwd: str, session_id: str, *, tool: str = "",
         tool_input: dict | None = None, tool_response: str | None = None,
-        prompt: str | None = None) -> list[Outcome]:
+        prompt: str | None = None, worktree: str | None = None) -> list[Outcome]:
     selected = [h for h in hooks if h.event == event and (event not in ("PreToolUse", "PostToolUse")
                                                           or _matches(h.matcher, tool))]
     if not selected:
         return []
     payload = {"session_id": session_id, "cwd": cwd, "hook_event_name": event}
+    if worktree is not None:
+        payload["worktree"] = worktree                 # WorktreePostSetup: the fresh worktree
     if tool:
         payload["tool_name"] = RULE_NAME.get(tool, tool)
         payload["tool_input"] = _claude_input(tool, tool_input or {})

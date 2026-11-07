@@ -3,6 +3,7 @@
 import argparse
 import json
 import os
+import subprocess
 import sys
 import threading
 from pathlib import Path
@@ -35,6 +36,9 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("-c", "--continue", dest="continue_", action="store_true",
                     help="resume the most recent session")
     ap.add_argument("--repl", action="store_true", help="plain readline loop (no TUI)")
+    ap.add_argument("--worktree", action="store_true",
+                    help="run in a fresh git worktree of the directory (parallel runs never collide; "
+                         "untracked .env-style files are copied in; merge or remove the worktree after)")
     ap.add_argument("--serve", action="store_true",
                     help="run the browser web UI instead of the TUI")
     ap.add_argument("--remote", action="store_true",
@@ -95,8 +99,11 @@ def build_session(cwd: str, model_name: str | None, resumed: dict | None = None,
         "flood this conversation with file contents.",
         {"type": "object", "properties": {
             "description": {"type": "string", "description": "3-6 word label"},
-            "prompt": {"type": "string", "description": "the full task, with everything it needs"}},
-         "required": ["prompt"]},
+            "prompt": {"type": "string", "description": "the full task, with everything it needs"},
+            "worktree": {"type": "boolean",
+                         "description": "run in its own git worktree (safe alongside other runs; "
+                                        "the answer reports the path and merge hint)"}},
+        "required": ["prompt"]},
         readonly=True, run=lambda args, ctx: session.run_subagent(args)))
     if settings.consult_mode != "off" and (settings.planner_profile or settings.fallback_profile):
         from . import consult
@@ -315,6 +322,20 @@ def main() -> None:
         raise SystemExit(remote_cli(sys.argv[2:]))
     args = parse_args()
     cwd = str(Path(args.path).resolve())
+    if getattr(args, "worktree", False):
+        try:
+            from . import worktree as wt_mod
+            if not wt_mod.is_repo(cwd):
+                raise SystemExit(f"hexiel: --worktree needs a git repository: {cwd}")
+            w = wt_mod.create(cwd, "")
+            cwd = str(w.path)
+            print(f"▸ isolated in worktree {w.path} (branch {w.branch or '(detached)'}) — "
+                  f"merge with `git merge {w.branch}` after review", file=sys.stderr)
+        except SystemExit:
+            raise
+        except (subprocess.CalledProcessError, OSError) as exc:   # git (or the fs) said why
+            detail = getattr(exc, "stderr", "") or str(exc)
+            raise SystemExit(f"hexiel: could not create a worktree: {str(detail).strip()[:200]}")
     if args.serve and args.remote:
         from .remote import is_service_invocation, remote_cli
         if is_service_invocation(cwd, args.port):      # a service installed before 0.4.7: run automations only

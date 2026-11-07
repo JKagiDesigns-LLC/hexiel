@@ -577,6 +577,18 @@ def make_app(session: Session, driver=None) -> web.Application:
         if cmd == "watch":
             return "/watch reacts to AI:/AI? comments as you save files — run it in the terminal UI " \
                    "(next to your editor; this browser view can't watch your disk)"
+        if cmd == "wt":
+            from . import worktree as wt_mod
+            try:
+                wts = wt_mod.list_worktrees(session.cwd)
+            except Exception:  # noqa: BLE001 - not a repo or git missing
+                wts = []
+            if not wts:
+                return "/wt manages git worktrees — this directory is not a git repository"
+            lines = [f"{w.path}  [{w.branch or 'detached'}]"
+                     + (" (main)" if w.is_main else "") for w in wts]
+            return "worktrees:\n" + "\n".join(lines) + \
+                   "\ncreate: /wt create <name> · open: /wt open <name> (terminal UI) · remove: /wt remove <name>"
         if cmd == "heal":
             if arg == "review":
                 if heal["changes"]:

@@ -1291,6 +1291,36 @@ class Session:
         helper.hooks = self.hooks
         helper.rules = self.rules
         label = str(args.get("description", "")).strip()[:60] or "subagent"
+        wt_note = ""
+        want_wt = args.get("worktree")                 # true = its own ephemeral worktree; "name" = a named one
+        if want_wt:
+            from . import worktree as wt_mod
+            try:
+                if isinstance(want_wt, str) and wt_mod.find(self.cwd, want_wt) is not None:
+                    w = wt_mod.find(self.cwd, want_wt)
+                    wt_cwd, fresh = str(w.path), False
+                else:
+                    name = want_wt if isinstance(want_wt, str) and want_wt not in ("1", "true", "yes") else ""
+                    w = wt_mod.create(self.cwd, name,
+                                      hooks=self.hooks, session_id=self.id,
+                                      on_note=lambda line: self.on_event("note", f"↳ wt {label}: {line}"))
+                    wt_cwd, fresh = str(w.path), True
+            except Exception as exc:  # noqa: BLE001 - isolation failing must not fail the task
+                self.on_event("note", f"↳ subagent runs in place (worktree unavailable: {exc})")
+            else:
+                helper.cwd = wt_cwd                    # the subagent reads/writes in the worktree only
+                from .tools import ToolContext
+                src_ctx = self.tool_ctx
+                ctx = ToolContext(cwd=wt_cwd, chain=src_ctx.chain,
+                                  search_backend=src_ctx.search_backend,
+                                  searxng_url=src_ctx.searxng_url, skills=src_ctx.skills,
+                                  test_commands=src_ctx.test_commands)
+                helper.bind_tool_ctx(ctx)
+                wt_note = f"\n(its own git worktree: {w.path} on branch {w.branch or '(detached)'}" \
+                          + ("" if fresh else ", pre-existing)")
+                if fresh:
+                    wt_note += f"\nReview/merge it: git merge {w.branch}   |   rm it: /wt remove {w.path.name}"
+                wt_note += (f"\nThe worktree path is absolute — resolve paths against {wt_cwd}, not {self.cwd}.")
         helper.on_event = lambda event, *p, **k: (
             self.on_event("subagent", label, p[0].get("name", "")) if event == "tool_call" else None)
         helper.on_approve = lambda *a: "no"
@@ -1312,7 +1342,7 @@ class Session:
         if not answer:
             return ToolResult(text=f"the subagent finished without an answer after {steps} step(s)",
                               is_error=True)
-        return ToolResult(text=f"[subagent: {steps} tool call(s), result only]\n{answer[:8000]}")
+        return ToolResult(text=f"[subagent: {steps} tool call(s), result only]{wt_note}\n{answer[:8000]}")
 
     # ---------------------------------------------------------------- checkpoints / undo
 

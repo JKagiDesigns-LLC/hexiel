@@ -503,6 +503,12 @@ class Session:
 
     def _turn_body(self, user_text: str) -> None:
         from .tools import attach_images
+        from . import custom_tools                 # tools hexiel wrote for itself: sync with disk
+        try:
+            if custom_tools.refresh(self):
+                self.on_event("note", "🔄 made tools refreshed from .hexiel/tools")
+        except Exception:                          # noqa: BLE001 - a half-made tool must not stop a turn
+            pass
         delegate_mode = None                       # /delegate forces it, /solo opts out of the automatic check
         cloud_turn = False                         # /cloud: the strong model answers this request itself
         if user_text == "/cloud" or user_text.startswith("/cloud "):

@@ -66,10 +66,14 @@ def build_session(cwd: str, model_name: str | None, resumed: dict | None = None)
     if tool_defs:
         known = {t.name for t in tools}
         tools = tools + [t for t in tool_defs if t.name not in known]
+    from . import custom_tools                    # tools hexiel made for itself (.hexiel/tools/*.py)
+    known = {t.name for t in tools}
+    tools = tools + [t for t in custom_tools.discover(cwd) if t.name not in known]
+    custom_tools._fingerprints[cwd] = custom_tools.fingerprint(cwd)   # boot load counts as synced
     tool_ctx = ToolContext(cwd=cwd, chain=chain,
                            search_backend=settings.search_backend,
                            searxng_url=settings.searxng_url, skills=skills,
-                           test_commands=tuple(settings.test_commands))
+                           test_commands=tuple(settings.test_commands), tools=tools)
 
     system = prompt_mod.build_system_prompt(
         cwd, skills_mod.prompt_section(skills), toolchain_section(chain, cwd),

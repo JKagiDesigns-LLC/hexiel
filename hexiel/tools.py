@@ -57,6 +57,7 @@ class ToolContext:
     dir_cache: dict = field(default_factory=dict)      # path/depth -> (fingerprint, output)
     file_state: dict = field(default_factory=dict)     # path -> (mtime_ns, size) seen by a read/write, for the stale guard
     test_commands: tuple = ()                      # extra regexes that mark a command as a test run (testrun.py)
+    tools: list | None = None                      # the live tool list (shared with the session): make_tool hot-registers into it
 
     # ---------------------------------------------------------------- stale-file guard
 
@@ -1308,6 +1309,87 @@ def _gitlab_mr(args: dict, ctx: ToolContext) -> ToolResult:
     return text_result("error: action must be status|propose|propose_from_fork", True)
 
 
+# ---------------------------------------------------------------- made tools
+
+def _make_tool(args: dict, ctx: ToolContext) -> ToolResult:
+    """Hexiel writes a tool for itself: file → import check → hot-register → usable next request.
+    The contract the agent sees is in the ToolDef description below."""
+    import json as json_mod
+    from . import custom_tools
+
+    name = str(args.get("name", "")).strip()
+    description = str(args.get("description", "")).strip()
+    code = str(args.get("code", "")).replace("\t", "    ")
+    params = args.get("parameters") if isinstance(args.get("parameters"), dict) else _params_hints(code)
+    if not custom_tools.NAME_OK.match(name):
+        return text_result(f"error: tool name must be [a-z][a-z0-9_]* (31 chars max), got {name!r}", True)
+    if not description:
+        return text_result("error: tell me what the tool does (description is required)", True)
+    if not code.strip():
+        return text_result("error: code is required — the run(args, ctx) function source", True)
+    if not re.search(r"^def run\s*\(\s*args\b[^,)]*(,\s*ctx\b[^,)]*)?\s*\)", code, re.M):
+        return text_result("error: code must define `def run(args, ctx)` (args dict in, "
+                           "ToolResult or text out)", True)
+    if any(t.name == name for t in (ctx.tools or ())):
+        return text_result(f"error: {name} is already a registered tool — reuse or edit "
+                           f".hexiel/tools instead", True)
+    try:                                        # the schema must be a valid JSON object schema
+        params_json = json_mod.dumps(params)
+    except (TypeError, ValueError) as exc:
+        return text_result(f"error: parameters must be a JSON-safe dict: {exc}", True)
+    if params.get("type") == "object" and not isinstance(params.get("properties"), dict):
+        return text_result("error: parameters needs `properties` as a dict of "
+                           "{arg: {\"type\": ...}}", True)
+    try:
+        compile(code, name, "exec")
+    except SyntaxError as exc:
+        return text_result(f"error: code does not compile: {exc}", True)
+
+    module_src = (
+        f'"""{description}\n\n(hexiel-made tool via make_tool — edit freely; delete the file to unload it.)\n'
+        f'ctx gives: .cwd .chain .note_file() .stop_event .skills — see hexiel.tools.ToolContext"""\n\n'
+        f'import json, os, re, subprocess, sys, time\n'
+        f'from pathlib import Path\n'
+        f'from hexiel.tools import ToolContext, ToolResult, text_result, head_tail, Toolchain\n\n'
+        f'{code.rstrip()}\n\n'
+        f'TOOLS = [{{\n'
+        f'    "name": "{name}",\n'
+        f'    "description": {json_mod.dumps(description)},\n'
+        f'    "parameters": {params_json},\n'
+        f'    "run": run,\n'
+        f'}}]\n')
+
+    path = Path(ctx.cwd) / custom_tools.MOUNT / f"{name}.py"
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(module_src)
+    except OSError as exc:
+        return text_result(f"error: could not write {path}: {exc}", True)
+
+    imported = custom_tools.load_file(path)     # the real test: does the file load and define TOOLS?
+    if not imported:
+        path.unlink(missing_ok=True)            # start clean so the next make_tool call is a fresh try
+        return text_result(f"error: wrote {path} but it did not import/define a valid TOOLS entry — "
+                           f"check the log and try again with fixed code", True)
+    tool = imported[0]
+    tool.description = f"{tool.description}  (made tool, {path})"
+    ctx.tools = ctx.tools if ctx.tools is not None else [tool]
+    if tool not in ctx.tools:
+        ctx.tools.append(tool)
+    hint = ", ".join((tool.parameters.get("properties") or {}))
+    note = f"registered `{name}` → {path}; parameters: {hint or 'none'}; " \
+        f"requests ask approval like any write tool"
+    return text_result(f"{note}. It is callable right now (next request); "
+                       f"tell the user you made it.")
+
+
+def _params_hints(code: str) -> dict:
+    """One arg per `args["xxx"]` the code touches — agents that skip the parameters
+    dict still get a working schema."""
+    return {"type": "object",
+            "properties": {k: {"type": "string"} for k in re.findall(r'args\[["\']([a-z_][a-z0-9_]*)["\']\]', code)}}
+
+
 # ---------------------------------------------------------------- registry
 
 def build_tools(chain: Toolchain) -> list[ToolDef]:
@@ -1332,6 +1414,20 @@ def build_tools(chain: Toolchain) -> list[ToolDef]:
                 obj(code={"type": "string", "description": "complete Python script"},
                     timeout={"type": "number"}),
                 run=_run_python),
+        ToolDef("make_tool", "Extend your own toolset: write a new Python tool into "
+                ".hexiel/tools/<name>.py and call it from your very next request. Use this when a "
+                "needed capability repeats or outgrew one-off scripts — a bespoke parser, a "
+                "project-specific checker, a multi-step procedure you'd otherwise retype as "
+                "another bash/python chain. code = complete Python source defining "
+                "`def run(args: dict, ctx) -> ToolResult | str` (helpers allowed above it; "
+                "imports like `from hexiel.tools import text_result` work; ctx gives cwd, chain, "
+                "note_file, stop_event). parameters = the JSON schema of args. The file is import-"
+                "checked and hot-registered — no restart. Keep it small, readonly when it only "
+                "reads; made tools ask approval like any write tool (or edit /hexiel config rules "
+                "as the user allows).",
+                obj(name={"type": "string"}, description={"type": "string"},
+                    code={"type": "string"}, parameters={"type": "object"}),
+                run=_make_tool),
         ToolDef("powershell", "Run a PowerShell command (pwsh) in the project directory — "
                 "Windows-native paths, registry, services, WMI, etc. Use instead of "
                 "bash for Windows-specific operations.",

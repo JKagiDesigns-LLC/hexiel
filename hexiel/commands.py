@@ -77,6 +77,7 @@ BUILTIN = [
     ("clear", "", "start a fresh conversation"),
     ("fork", "[turn]", "branch this conversation into a new session file (`fork N` keeps turns 1..N)"),
     ("share", "[file]", "single-file HTML transcript of this conversation; secrets scrubbed"),
+    ("watch", "[dir|off]", "stay alive: react to AI:/AI? comments as you save any file"),
     ("context", "clear", "what occupies the model's context window; `clear` prunes old tool results"),
     ("compact", "", "summarize history now to free up context"),
     ("auto", "[off|commits|all]", "auto-approve: cycle off / everything except git+svn commits / everything"),

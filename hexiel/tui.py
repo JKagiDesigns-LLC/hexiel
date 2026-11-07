@@ -1722,6 +1722,7 @@ class HexielTUI(App):
         self._tool_widgets: dict[str, ToolLine] = {}
         self._heal = None           # active self-heal: original session, workspace, incidents
         self._heal_pending = None   # a reviewed-later fix waiting for /heal review
+        self._watch = None          # active /watch: keeps reacting to AI:/AI? comments on save
         self._sidebar_forced: bool | None = None   # Ctrl+B overrides the responsive default
         self._esc_armed_at = 0.0    # Esc pressed while a task runs: a second Esc stops it
         self._chat = None           # cached widgets: query_one walks the whole DOM on every use
@@ -2012,7 +2013,7 @@ class HexielTUI(App):
             return text
         handler = {
             "help": self.cmd_help, "clear": self.cmd_clear, "compact": self.cmd_compact,
-            "fork": self.cmd_fork, "share": self.cmd_share,
+            "fork": self.cmd_fork, "share": self.cmd_share, "watch": self.cmd_watch,
             "config": self.cmd_config, "update": self.cmd_update, "mcp": self.cmd_mcp,
             "prompt": self.cmd_prompt, "context": self.cmd_context,
             "plan": self.cmd_plan, "permissions": self.cmd_permissions,
@@ -2112,6 +2113,41 @@ class HexielTUI(App):
             where = "~" + where[len(home) + 1:]
         self.add_note(f"📄 transcript shared → {where}  (self-contained HTML — "
                       "open it in a browser or attach it anywhere)")
+
+    def cmd_watch(self, arg: str) -> None:
+        """#29 /watch — react to AI:/AI? comments as you save files in any editor.
+        /watch starts, /watch off (or /watch again) stops; the path it scans defaults
+        to this project."""
+        from . import watch as watch_mod
+        arg = arg.strip()
+        if self._watch is not None and (not arg or arg.lower() in ("off", "stop")):
+            self._watch.stop()
+            self._watch = None
+            self.add_note("👁 watch off — AI:/AI? comments are just comments again")
+            return
+        if self._watch is not None:
+            self.add_note("already watching — /watch off first to change what it scans")
+            return
+        root = arg or self.session.cwd
+        if not Path(root).is_dir():
+            self.add_note(f"no such directory: {root}")
+            return
+        self._watch = watch_mod.Watcher(root, lambda p, n, k, t:
+                                        self._post(self._watch_submit, self._watch, p, n, k, t))
+        self._watch.start_background()
+        self.add_note(f"👁 watching {root} — write 'AI: do this' or 'AI? question' in any "
+                      f"file and save; hexiel acts on the save within {watch_mod.TICK:.0f}s. "
+                      "Stop with /watch off.")
+
+    def _watch_submit(self, watcher, path, line_no, kind, text) -> None:
+        """Runs on the UI thread. A comment fires only if this is still the active
+        watcher — a stop/start between the tick and the callback never submits a
+        stale comment into a session that moved on (or was forked)."""
+        if watcher is not self._watch:
+            return
+        label = "AI? question" if kind == "?" else "AI: instruction"
+        self.add_note(f"[watch · {label}] {path.name}:{line_no} — {text}")
+        self._start_turn(watcher.prompt_for(path, line_no, kind, text))
 
     def cmd_compact(self, arg: str) -> None:
         from .llm import make_provider

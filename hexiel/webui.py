@@ -574,6 +574,9 @@ def make_app(session: Session, driver=None) -> web.Application:
             from . import share
             path = share.export_html(session, Path(arg) if arg else None)
             return f"transcript shared → {path} (self-contained single-file HTML; secrets scrubbed)"
+        if cmd == "watch":
+            return "/watch reacts to AI:/AI? comments as you save files — run it in the terminal UI " \
+                   "(next to your editor; this browser view can't watch your disk)"
         if cmd == "heal":
             if arg == "review":
                 if heal["changes"]:

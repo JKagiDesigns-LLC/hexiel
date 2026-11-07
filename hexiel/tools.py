@@ -588,6 +588,20 @@ def _resolve_path(rel: str, ctx: ToolContext) -> Path:
     return Path(rel) if Path(rel).is_absolute() else Path(ctx.cwd) / rel
 
 
+def _diagnostics(args: dict, ctx: ToolContext) -> ToolResult:
+    from . import diagnostics as diags_mod
+    raw = str(args.get("path") or ctx.cwd).strip()
+    target = Path(os.path.expanduser(raw)) if os.path.isabs(os.path.expanduser(raw)) \
+        else _resolve_path(os.path.expanduser(raw), ctx)
+    if not target.exists():
+        return text_result(f"error: no such file or directory: {raw}", True)
+    diags = diags_mod.check(target, ctx.cwd, float(args.get("timeout") or diags_mod.POST_EDIT_TIMEOUT))
+    body = diags_mod.format_diag(diags, ctx.cwd)
+    if diags:
+        return text_result(f"{len(diags)} diagnostic(s): {len([d for d in diags if d.severity == 'error'])} error(s)\n{body}")
+    return text_result(body + f"\n({diags_mod.available(ctx.cwd)})")
+
+
 def _write(args: dict, ctx: ToolContext) -> ToolResult:
     path = _resolve_path(args["path"], ctx)
     content = args.get("content", "")
@@ -602,7 +616,7 @@ def _write(args: dict, ctx: ToolContext) -> ToolResult:
         return text_result(f"error: {exc}", True)
     ctx.note_file(str(path))
     return text_result(f"{'updated' if existed else 'created'} {path} ({content.count(chr(10)) + 1} lines)"
-                       + syntax_check(path))
+                       + syntax_check(path) + post_edit_note(path, ctx))
 
 
 def syntax_check(path: Path) -> str:
@@ -635,6 +649,21 @@ def syntax_check(path: Path) -> str:
     return ""
 
 
+def post_edit_note(path: Path, ctx: ToolContext) -> str:
+    """Language-diagnostics note after a write/edit ('' when disabled/uncheckable/clean).
+    Reads the live [settings], so a mid-session /config change applies at once."""
+    from .config import load_config
+    try:
+        enabled = load_config().settings.diagnostics != "off"
+    except Exception:  # noqa: BLE001 - a bad config must not fail the edit
+        return ""
+    from . import diagnostics as diags_mod
+    try:
+        return diags_mod.post_edit(path, ctx.cwd, enabled)
+    except Exception:  # noqa: BLE001
+        return ""
+
+
 def _edit(args: dict, ctx: ToolContext) -> ToolResult:
     path = _resolve_path(args["path"], ctx)
     if not path.exists():
@@ -659,7 +688,7 @@ def _edit(args: dict, ctx: ToolContext) -> ToolResult:
     except OSError as exc:
         return text_result(f"error: {exc}", True)
     ctx.note_file(str(path))
-    return text_result(f"edited {path}" + syntax_check(path))
+    return text_result(f"edited {path}" + syntax_check(path) + post_edit_note(path, ctx))
 
 
 # ---------------------------------------------------------------- glob / grep / list / file_info
@@ -1485,6 +1514,13 @@ def build_tools(chain: Toolchain) -> list[ToolDef]:
                 "go test, cargo test, make test). Pass `runner` only to pick among several.",
                 obj(runner={"type": "string"}, timeout={"type": "number"}),
                 run=_test),
+        ToolDef("diagnostics", "Type/lint diagnostics for ONE file (best) — pyright for Python, "
+                "tsc for TypeScript/JavaScript (needs a tsconfig.json), go vet, cargo check for Rust. "
+                "A read-only accuracy check: run it after your own edits before saying done, when a "
+                "report looks stale, or before committing. Empty result = clean. Nothing here just "
+                "runs python compile checks; no network.",
+                obj(path={"type": "string"}, timeout={"type": "number"}),
+                readonly=True, run=_diagnostics),
         ToolDef("container", "Drive the detected container runtime (docker or podman) natively. "
                 "actions: list, run (image, name, ports[], volumes[], cmd), exec (container, cmd, stdin?), "
                 "cmd is run directly, NOT through a shell: no pipes, heredocs or redirects — use "

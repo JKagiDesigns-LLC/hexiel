@@ -106,6 +106,8 @@ FIELDS = [
      "options": ["duckduckgo", "searxng"], "help": "search engine for the web_search tool"},
     {"key": "settings.searxng_url", "label": "SearXNG URL", "kind": "text", "options": None,
      "help": "e.g. http://localhost:8888 (when web search = searxng)"},
+    {"key": "settings.diagnostics", "label": "Diagnostics", "kind": "choice",
+     "options": ["auto", "off"], "help": "pyright/tsc/vet/cargo checks surface right after an edit (off = syntax checks only)"},
 ]
 FIELD_BY_KEY = {f["key"]: f for f in FIELDS}
 

@@ -203,6 +203,7 @@ class Settings:
     auto_commit: bool = False         # git-commit the files hexiel changed after each finished turn
     subagent_profile: str = ""        # model profile for `task` subagents ("" = the current model)
     toolsets: object = "auto"         # optional tool groups: "auto" | "all" | ["data", …]
+    diagnostics: str = "auto"         # "auto" surfaces pyright/tsc/vet/cargo diagnostics after edits; "off" = syntax checks only
     planner_profile: str = ""         # /delegate: model that writes the plan ("" = fallback_profile, else the current model)
     executor_profile: str = ""        # /delegate: model that does each task ("" = the current model)
     workers: object = "auto"          # /delegate: steps run at once when independent — "auto" = every core but one, or a number
@@ -337,6 +338,7 @@ def _settings_from(settings_raw: dict) -> "Settings":
         auto_commit=bool(settings_raw.get("auto_commit", False)),
         subagent_profile=str(settings_raw.get("subagent_profile", "")),
         toolsets=settings_raw.get("toolsets", "auto"),
+        diagnostics="off" if str(settings_raw.get("diagnostics", "auto")).lower() == "off" else "auto",
         planner_profile=str(settings_raw.get("planner_profile", "")),
         executor_profile=str(settings_raw.get("executor_profile", "")),
         workers=(lambda v: max(1, int(v)) if str(v).isdigit() else "auto")(settings_raw.get("workers", "auto")),

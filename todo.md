@@ -28,16 +28,16 @@ lands, and is documented on hexiel.tech the same day so the site never goes stal
 - [x] Watch mode: /watch — hexiel stays alive and reacts to AI:/AI? comments saved in any editor. (#29)
 
 ## Release 0.8.7 — isolation + accuracy
-- [ ] Worktree isolation: /wt (list/create/open), sub+headless runs can run in their own worktree;
-      parallel agent runs safe on one repo. Env files copied via post_setup hook (Devin-style).
-- [ ] LSP diagnostics tool: pyright/pylsp-based diagnos for python, tsc for TS/JS, go vet, cargo-
-      check; surfaced as a read-only `diagnostics` tool + run after edits when available (cheap, local).
-- [ ] Formatter integration: black/ruff/prettier/gofmt detected; edits auto-format the touched
-      region/format-on-write with formatter="off" escape hatch; instant-checks upgraded.
-- [ ] Sandboxing (opt-in safe profile): macOS sandbox-exec profile, Linux bubblewrap/landlock with
-      sudo-config note plus container fallback (docker/podman); approval gates bypass only inside.
-- [ ] CI runner mode: `hexiel --ci` reads issue/commit context from env (GitLab first), runs
-      headless with read-only default, comments results back via API token if provided.
+- [x] Worktree isolation: /wt (list/create/open), sub+headless runs can run in their own worktree;
+      parallel agent runs safe on one repo. Env files copied via post_setup hook (Devin-style). (#36)
+- [x] LSP diagnostics tool: pyright/pylsp-based diagnos for python, tsc for TS/JS, go vet, cargo-
+      check; surfaced as a read-only `diagnostics` tool + run after edits when available (cheap, local). (#38)
+- [x] Formatter integration: black/ruff/prettier/gofmt detected; edits auto-format the touched
+      region/format-on-write with formatter="off" escape hatch; instant-checks upgraded. (#39)
+- [x] Sandboxing (opt-in safe profile): macOS sandbox-exec profile, Linux bubblewrap/landlock with
+      sudo-config note plus container fallback (docker/podman); approval gates bypass only inside. (#40)
+- [x] CI runner mode: `hexiel --ci` reads issue/commit context from env (GitLab first), runs
+      headless with read-only default, comments results back via API token if provided. (#41)
 
 ## Release 0.9.0 — zero-to-running for non-technical users
 - [ ] One-liner installers: curl -fsSL https://hexiel.tech/install.sh | sh  (macOS/Linux; uv-less)

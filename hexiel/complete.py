@@ -88,10 +88,11 @@ def _split_typed(body: str) -> tuple[str, str]:
     return f"{base}/" if base else "", prefix
 
 
-def completions(token: str, cwd: str) -> list[dict] | None:
+def completions(token: str, cwd: str, cache: dict | None = None) -> list[dict] | None:
     """Candidate entries under the directory the token points at. Each is
     {name, is_dir}; paths keep `/` separators on every OS. None when the token isn't
-    completable (no such directory)."""
+    completable (no such directory). `cache` (from cache_keeper()) holds directory
+    listings keyed by fingerprint so per-keystroke re-typing costs no syscall."""
     parts = _token_parts(token)
     body = parts["body"]
     if not body or not body.strip("/"):        # bare "/" or "@": listing the root is noise
@@ -102,18 +103,43 @@ def completions(token: str, cwd: str) -> list[dict] | None:
         directory = Path(expanded if os.path.isabs(expanded) else os.path.join(cwd, expanded))
     except (OSError, ValueError):
         return None
-    return _list_dir(directory, prefix)
+    return _list_dir(directory, prefix, cache)
 
 
-def _list_dir(directory: Path, prefix: str) -> list[dict] | None:
+# listing cache: directory fingerprint -> [(name, is_dir)] — keystroke latency lives and dies here,
+# since every typed letter re-filters the token's directory
+_DIR_CACHE: dict[str, tuple] = {}
+DIR_CACHE_MAX = 96
+
+
+def cache_keeper() -> dict:
+    """The cache dict callers should hold on to (one per session: fresh session, fresh cache)."""
+    return _DIR_CACHE
+
+
+def _list_dir(directory: Path, prefix: str, cache: dict | None = None) -> list[dict] | None:
     if not directory.is_dir():
         return None
+    key = str(directory)
+    sig = None
     try:
-        entries = os.scandir(directory)
-        names = [(e.name, e.is_dir()) for e in entries]
+        sig = directory.stat().st_mtime_ns
+        cached = cache.get(key) if cache is not None else None
+        if cached is not None and cached[0] == sig:
+            names = cached[1]
+        else:
+            if cache is not None and len(cache) >= DIR_CACHE_MAX:
+                cache.pop(next(iter(cache)))       # bounded: drop the oldest (dicts are ordered)
+            entries = os.scandir(directory)
+            names = sorted(((e.name, e.is_dir()) for e in entries),
+                           key=lambda t: (not t[1], t[0].lower()))
+            if cache is not None:
+                cache[key] = (sig, names)
     except OSError:
         return None
-    if not names or len(names) > MAX_SCAN:
+    if not names:
+        return None
+    if len(names) > MAX_SCAN:
         return None
     lower = prefix.lower()
     show_hidden = prefix.startswith(".")

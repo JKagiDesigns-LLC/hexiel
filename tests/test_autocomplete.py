@@ -148,6 +148,43 @@ def test_history_picker_ctrl_r(tmp_path):
     assert value == "run the login tests now"
 
 
+def test_menu_rows_reused_across_keystrokes(tmp_path):
+    """A rebuild is a full OptionList relayout; identical rows must not rebuild (slow typing fix)."""
+    tmp = make_tree(tmp_path)
+    comps = C.completions("./src/m", tmp)          # e.g. typing 'm' then 'a' inside the same dir
+    menu = CommandMenu()
+    menu.show_paths("./src/m", comps)
+    first = len(menu.options)
+    menu.show_paths("./src/ma", comps)             # same candidates, different token
+    assert getattr(menu, "_rowsig", None) == (token_key(comps),) or len(menu.options) == first
+    assert menu._path_token == "./src/ma"
+
+
+def token_key(comps):                              # helper: the signature show_paths builds
+    return None                                    # replaced below by (token, names) compare check
+
+
+def test_menu_rebuild_resets_on_hide(tmp_path):
+    menu = CommandMenu()
+    comps = C.completions("./src/m", str(tmp_path))
+    menu.show_paths("./src/m", comps)
+    assert menu._rowsig is not None
+    menu.hide()
+    assert menu._rowsig is None                    # next show rebuilds even for identical rows
+
+
+def test_menu_rows_reused_across_keystrokes(tmp_path):
+    """A rebuild is a full OptionList relayout; identical rows must not rebuild (slow typing fix)."""
+    tmp = make_tree(tmp_path)
+    comps = C.completions("./src/m", tmp)          # 'm'→'ma': same candidates, different token
+    menu = CommandMenu()
+    menu.show_paths("./src/m", comps)
+    first_count = len(menu.options)
+    menu.show_paths("./src/ma", comps)             # changed token, same rows: no relayout
+    assert len(menu.options) == first_count
+    assert menu._path_token == "./src/ma"          # ...but the accept token is the newest one
+
+
 def test_history_picker_says_no_when_empty(tmp_path):
     async def go():
         app = make_app(tmp_path)

@@ -1073,8 +1073,15 @@ class CommandMenu(OptionList):
         self._path_token: str | None = None       # the path token the path rows expand
         self._path_comps: list[dict] = []         # the full entries (is_dir etc.) for accept
 
-    def show_paths(self, token: str, comps: list[dict]) -> None:
-        """Candidate paths for the token just before the cursor (complete.py built them)."""
+    def show_paths(self, token: str, comps: list[dict] | None) -> None:
+        """Candidate paths for the token just before the cursor (complete.py built them).
+        A rebuild costs a full OptionList relayout — skip it when the rows didn't change."""
+        comps = comps or []
+        key = (token, tuple(c["name"] for c in comps))
+        if getattr(self, "_rowsig", None) == key:
+            self._path_token, self._path_comps = token, comps
+            return
+        self._rowsig = key
         self._path_token = token
         self._path_comps = comps
         self.clear_options()
@@ -1129,6 +1136,10 @@ class CommandMenu(OptionList):
         if not rows:
             self.hide()
             return
+        key = tuple(rows)                          # (kind, value, label) triples drive the rebuild
+        if getattr(self, "_rowsig", None) == key:
+            return                                 # same rows as the last keystroke: no relayout
+        self._rowsig = key
         self.clear_options()
         self.add_options([Option(label) for _, _, label in rows])
         self._items = [(k, v) for k, v, _ in rows]
@@ -1140,6 +1151,7 @@ class CommandMenu(OptionList):
             self.display = False
         self._items = []
         self._path_token = None
+        self._rowsig = None                        # next show rebuilds even for identical rows
 
     def selected(self) -> tuple[str, str] | None:
         if not self.display or self.highlighted is None or not self._items:
@@ -1860,7 +1872,11 @@ class HexielTUI(App):
         if token is None:
             self.menu.hide()
             return
-        comps = complete.completions(token, self.session.cwd)
+        cache = getattr(self, "_dir_cache", None)
+        if cache is None:                          # one listing cache per app lifetime
+            self._dir_cache = complete.cache_keeper()
+            cache = self._dir_cache
+        comps = complete.completions(token, self.session.cwd, cache)
         if not comps:
             self.menu.hide()
             return

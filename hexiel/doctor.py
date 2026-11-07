@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 
 from . import __version__
+from . import sandbox as sandbox_
 from .config import CONFIG_FILE, load_config, home_data_dir
 from .gitlab import load_token
 
@@ -54,6 +55,28 @@ def run_checks(cwd: str) -> dict:
             results[f"dep:{mod}"] = _check(
                 f"python: {mod}", False, f"needed for {needs}",
                 fix=f"pip install ({mod}) in your hexiel venv")
+
+    # sandbox infra (only matters when [settings].sandbox is on, but knowing what exists is free)
+    sandbox_mode = str(getattr(cfg.settings, "sandbox", "off") or "off").lower()
+    infra = sandbox_.available()
+    if sandbox_mode == "safe":
+        if sys.platform == "darwin":
+            results["sandbox"] = _check(
+                "sandbox (safe = seatbelt)", infra["sandbox-exec"], "sandbox-exec not found",
+                fix="macOS ships sandbox-exec at /usr/bin — it is always present")
+        else:
+            results["sandbox"] = _check(
+                "sandbox (safe = bubblewrap)", infra["bubblewrap"], "bwrap not found",
+                fix=sandbox_.BWRAP_HINT)
+    elif sandbox_mode == "container":
+        results["sandbox"] = _check(
+            "sandbox (container)", bool(infra["docker"] or infra["podman"]),
+            "neither docker nor podman found",
+            fix="install docker or podman, and set sandbox_image in config")
+    else:
+        results["sandbox"] = _check(
+            "sandbox off", True,
+            ", ".join(k for k, v in infra.items() if v) or "no sandbox infra installed (fine — off)")
 
     # provider reachability
     default_name = cfg.default_model

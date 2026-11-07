@@ -128,6 +128,44 @@ async def formatter_shot(out: Path) -> None:
         out.write_text(app.export_screenshot())
 
 
+async def sandbox_shot(out: Path) -> None:
+    """#40: with sandbox=safe (bwrap), a write outside the box is refused; in the project it works."""
+    home = Path(os.environ.get("HEXIEL_HOME", "/tmp/opencode/sshome"))
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "config.toml").write_text('[settings]\nsandbox = "safe"\n')
+    project = Path("/tmp/opencode/ssdata/sbproj")
+    project.mkdir(parents=True, exist_ok=True)
+    from hexiel.config import ModelConfig, Settings
+    from hexiel.session import Session
+    from hexiel.tooling import Toolchain
+    from hexiel.tools import ToolContext, build_tools
+    tools = build_tools(Toolchain())                     # boot-wires sandbox MODE=safe
+    session = Session(ModelConfig(name="gmktec", provider="openai", model="qwen3.6:35b-a3b-coding",
+                                  base_url="http://127.0.0.1:11434/v1", context_window=200_000),
+                      Settings(), cwd=str(project), tools=tools, system_prompt="t")
+    session.bind_tool_ctx(ToolContext(cwd=str(project), chain=Toolchain()))
+    session.auto_approve = True
+    outside = session._execute_tool or None
+    results = []
+    for cid, cmd in (("s1", "echo trying to write over /usr/share > /usr/share/touch-me.txt"),
+                     ("s2", "echo deploy > deployed.txt && cat deployed.txt")):
+        session._execute_tool({"id": cid, "name": "bash", "arguments": {"command": cmd}})
+        results.append(next(m["content"] for m in reversed(session.messages)
+                            if m.get("role") == "tool" and m.get("tool_call_id") == cid))
+    from hexiel.tui import HexielTUI
+    app = HexielTUI(session, [], set())
+    async with app.run_test(size=(120, 34)) as pilot:
+        await pilot.pause(0.4)
+        for (cid, cmd), text in zip((("s1", "echo trying to write over /usr/share > /usr/share/touch-me.txt"),
+                                     ("s2", "echo deploy > deployed.txt && cat deployed.txt")), results):
+            call = {"id": cid, "name": "bash", "arguments": {"command": cmd}}
+            app.handle_event("tool_call", call)
+            app.handle_event("tool_result", call, text, False, 0.2)
+        app.handle_event("text", "sandbox = safe: the write outside the box was refused by the box itself.")
+        await pilot.pause(0.6)
+        out.write_text(app.export_screenshot())
+
+
 def export(name: str, coro_factory) -> None:
     out_dir = Path("/tmp/opencode/tickets")
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -144,6 +182,7 @@ def main(argv: list[str]) -> None:
         "worktree": worktree_shot,
         "diagnostics": diagnostics_shot,
         "formatter": formatter_shot,
+        "sandbox": sandbox_shot,
     }
     for name in argv or list(shots):
         if name in shots:

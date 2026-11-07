@@ -205,6 +205,8 @@ class Settings:
     toolsets: object = "auto"         # optional tool groups: "auto" | "all" | ["data", …]
     diagnostics: str = "auto"         # "auto" surfaces pyright/tsc/vet/cargo diagnostics after edits; "off" = syntax checks only
     formatter: str = "auto"           # "auto" formats a written/edited file with the installed ruff/prettier/gofmt/rustfmt; "off" = leave as written
+    sandbox: str = "off"              # "off" | "safe" (macOS seatbelt / Linux bubblewrap) | "container" (docker/podman, needs sandbox_image)
+    sandbox_image: str = ""           # sandbox = "container": the image shell commands run in (e.g. "python:3.12-slim")
     planner_profile: str = ""         # /delegate: model that writes the plan ("" = fallback_profile, else the current model)
     executor_profile: str = ""        # /delegate: model that does each task ("" = the current model)
     workers: object = "auto"          # /delegate: steps run at once when independent — "auto" = every core but one, or a number
@@ -341,6 +343,9 @@ def _settings_from(settings_raw: dict) -> "Settings":
         toolsets=settings_raw.get("toolsets", "auto"),
         diagnostics="off" if str(settings_raw.get("diagnostics", "auto")).lower() == "off" else "auto",
         formatter="off" if str(settings_raw.get("formatter", "auto")).lower() == "off" else "auto",
+        sandbox=(str(settings_raw.get("sandbox", "off")).lower()
+                 if str(settings_raw.get("sandbox", "off")).lower() in ("off", "safe", "container") else "off"),
+        sandbox_image=str(settings_raw.get("sandbox_image", "")),
         planner_profile=str(settings_raw.get("planner_profile", "")),
         executor_profile=str(settings_raw.get("executor_profile", "")),
         workers=(lambda v: max(1, int(v)) if str(v).isdigit() else "auto")(settings_raw.get("workers", "auto")),

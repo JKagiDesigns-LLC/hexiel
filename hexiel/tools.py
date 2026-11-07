@@ -400,6 +400,8 @@ def _run_shell(args: dict, ctx: ToolContext, argv: list[str], shell_label: str) 
     cmd = args.get("command", "").strip()
     if not cmd:
         return text_result("error: command is required", True)
+    from . import sandbox as sandbox_mod
+    argv, sandbox_note = sandbox_mod.wrap(ctx.cwd, argv)
     framework = testrun.detect(cmd, ctx.test_commands) or testrun.known_test(ctx.cwd, cmd)
     timeout = float(args.get("timeout") or (TEST_TIMEOUT if framework else 120))
     if bool(args.get("run_in_background")):
@@ -441,6 +443,8 @@ def _run_shell(args: dict, ctx: ToolContext, argv: list[str], shell_label: str) 
     if proc.stderr.strip():
         out.append(f"stderr:\n{head_tail(_clean(proc.stderr.strip()), 4000, 2000)}")
     summary = "\n".join(out) or "(no output)"
+    if sandbox_note:                                   # the box was asked for and not available
+        summary += f"\n⚠ sandbox: {sandbox_note}"
     if proc.returncode != 0:
         summary += f"\n(exit code {proc.returncode})"
     return text_result(summary, is_error=proc.returncode != 0)
@@ -1454,6 +1458,11 @@ def _params_hints(code: str) -> dict:
 # ---------------------------------------------------------------- registry
 
 def build_tools(chain: Toolchain) -> list[ToolDef]:
+    from .config import load_config
+    try:
+        sandbox.apply(load_config().settings)       # [settings].sandbox (opt-in) wired before any shell runs
+    except Exception:  # noqa: BLE001 - a bad config must not kill the build
+        pass
     obj = lambda **props: {"type": "object", "properties": props}  # noqa: E731
     return [
         ToolDef("bash", "Run a shell command (/bin/bash -lc) in the project directory. "

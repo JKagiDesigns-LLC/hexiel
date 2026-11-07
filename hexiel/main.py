@@ -39,6 +39,10 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--worktree", action="store_true",
                     help="run in a fresh git worktree of the directory (parallel runs never collide; "
                          "untracked .env-style files are copied in; merge or remove the worktree after)")
+    ap.add_argument("--ci", nargs="?", const="", metavar="NOTES",
+                    help="CI runner mode: review the pipeline's MR or commit (GitLab env), read-only, "
+                         "findings posted back to the MR/commit when a token is set; optional notes "
+                         "are appended to the prompt (e.g. --ci 'focus on the payment module')")
     ap.add_argument("--serve", action="store_true",
                     help="run the browser web UI instead of the TUI")
     ap.add_argument("--remote", action="store_true",
@@ -55,7 +59,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def build_session(cwd: str, model_name: str | None, resumed: dict | None = None,
-                  reuse: Session | None = None) -> Session:
+                  reuse: Session | None = None, readonly_only: bool = False) -> Session:
     config = load_config(model_name)
     model_config = config.models.get(resumed["model"], config.model()) if resumed else config.model()
     settings = config.settings
@@ -75,6 +79,8 @@ def build_session(cwd: str, model_name: str | None, resumed: dict | None = None,
     from . import custom_tools                    # tools hexiel made for itself (.hexiel/tools/*.py)
     known = {t.name for t in tools}
     tools = tools + [t for t in custom_tools.discover(cwd) if t.name not in known]
+    if readonly_only:                             # CI runner mode: investigate and report, never change files
+        tools = [t for t in tools if t.readonly]
     custom_tools._fingerprints[cwd] = custom_tools.fingerprint(cwd)   # boot load counts as synced
     tool_ctx = ToolContext(cwd=cwd, chain=chain,
                            search_backend=settings.search_backend,
@@ -132,6 +138,8 @@ def build_session(cwd: str, model_name: str | None, resumed: dict | None = None,
                                     c["arguments"][k] = redact.scrub(v)
         session.timers = [t for t in resumed.get("timers", []) if isinstance(t, dict) and "ends" in t]
         settings_edit.restore_auto_mode(session, resumed)
+    if readonly_only:                             # late appends (toolsets, consult) are filtered too
+        session.tools = [t for t in session.tools if t.readonly]
     return session
 
 
@@ -196,6 +204,13 @@ def headless_loop(session: Session, prompts: list[str]) -> None:
     sys.stdout.write("\n")
     if session.usage_by_model:       # one line a script (or the benchmark) can read: tokens per model
         sys.stderr.write("HEXIEL_USAGE " + json.dumps(session.usage_by_model) + "\n")
+    if os.environ.get("HEXIEL_CI_REPORT"):  # --ci: post the findings where the pipeline wants them
+        from . import ci_mode
+        ctx = ci_mode.ci_context()
+        answer = next((m.get("content", "") for m in reversed(session.messages)
+                       if m.get("role") == "assistant" and m.get("content")), "")
+        if answer:
+            sys.stderr.write(f"[ci] {ci_mode.report(ctx, answer)}\n")
 
 
 def _repl_completer(session):
@@ -361,8 +376,13 @@ def main() -> None:
         except (EOFError, KeyboardInterrupt, OSError):
             pass
     resumed = Session.resume_latest(cwd) if args.continue_ else None
+    ci_ = None
+    if args.ci is not None:                       # --ci: headless review run (None = flag absent)
+        from . import ci_mode
+        ci_ = ci_mode.ci_context()
+        os.environ["HEXIEL_CI_REPORT"] = "1"      # headless_loop reports the findings back after the turn
     try:
-        session = build_session(cwd, args.model, resumed)
+        session = build_session(cwd, args.model, resumed, readonly_only=bool(ci_ is not None and not args.yes))
     except ValueError as exc:                 # e.g. `hexiel -m typo`: say so instead of a traceback
         raise SystemExit(f"hexiel: {exc}")
     memory_mod.ensure_dirs(cwd)
@@ -381,10 +401,13 @@ def main() -> None:
 
     if args.print_mode is not None:
         prompts = [args.print_mode]
+    elif ci_ is not None:                         # --ci implies a headless run: build the prompt
+        from . import ci_mode
+        prompts = [ci_mode.prompt_for(ci_, cwd, args.ci or "")]
     else:
         prompts = None
 
-    if args.print_mode is not None:
+    if args.print_mode is not None or ci_ is not None:
         headless_loop(session, prompts)
     elif args.serve:
         try:

@@ -166,6 +166,97 @@ async def sandbox_shot(out: Path) -> None:
         out.write_text(app.export_screenshot())
 
 
+async def ci_shot(out: Path) -> None:
+    """#41: hexiel --ci in a simulated GitLab pipeline — real wiring, only the model text stubbed."""
+    driver = Path("/tmp/opencode/ci_driver.py")
+    driver.write_text('''
+import os, sys, types
+from pathlib import Path
+os.environ["GITLAB_CI"] = "true"
+os.environ["CI_API_V4_URL"] = "https://gitlab.example/api/v4"
+os.environ["CI_PROJECT_ID"] = "77"
+os.environ["CI_MERGE_REQUEST_IID"] = "12"
+os.environ["CI_MERGE_REQUEST_DIFF_BASE_SHA"] = os.environ["BASE"]
+os.environ["CI_MERGE_REQUEST_TARGET_BRANCH_NAME"] = "main"
+os.environ["HEXIEL_NO_REPORTS"] = "1"
+os.environ.pop("HEXIEL_GITLAB_TOKEN", None)
+
+sys.path.insert(0, str(Path("%SRC%")))
+sys.path.insert(0, str(Path("%SRC%") / "tests"))
+
+replies = iter([
+    {"role": "assistant", "content":
+     "Findings for this MR, ordered by severity:\\n\\n"
+     "1. **error — payments.py:12** charges are summed before the currency check, "
+     "so a mixed-currency cart undercharges. Guard first, sum second.\\n"
+     "2. **warning — payments.py:30** the retry loop has no cap: a stuck provider call "
+     "pins the turn. Add a max_retries (default 3).\\n\\n"
+     "No blocking issues beyond those two — nothing else regresses."}])
+from hexiel.session import Session
+
+
+def fake_stream_once(self, provider, tool_defs) -> dict:
+    text = next(iter([{"role": "assistant", "content": FINDINGS}]))["content"]
+    self.on_event("text", text)
+    return {"role": "assistant", "content": text}
+
+
+FINDINGS = (
+    "Findings for this MR, ordered by severity:\\n\\n"
+    "1. **error — payments.py:12** charges are summed before the currency check, "
+    "so a mixed-currency cart undercharges. Guard first, sum second.\\n"
+    "2. **warning — payments.py:30** the retry loop has no cap: a stuck provider call "
+    "pins the turn. Add a max_retries (default 3).\\n\\n"
+    "No blocking issues beyond those two — nothing else regresses.")
+
+Session._stream_once = fake_stream_once
+import hexiel.llm as llm
+llm.make_provider = lambda *a, **k: None
+
+sys.argv = ["hexiel", os.environ["PROJ"], "--ci", "focus on the payment module and be brief"]
+from hexiel.main import main
+main()
+''')
+    src = Path.cwd()
+    driver.write_text(driver.read_text().replace("%SRC%", str(src)))
+    driver.chmod(0o755)
+
+    project = Path("/tmp/opencode/ssdata/ciprj")
+    project.mkdir(parents=True, exist_ok=True)
+    (project / "payments.py").write_text(
+        "def charge(cart):\n    total = sum(l.amount for l in cart)\n    return total\n")
+    subprocess.run(["git", "init", "-q", "-b", "main", "."], cwd=project, check=True)
+    subprocess.run(["git", "add", "-f", "payments.py"], cwd=project, check=True)
+    subprocess.run(["git", "-c", "user.email=d@t", "-c", "user.name=d", "commit", "-qm", "base"], cwd=project, check=True)
+    subprocess.run(["git", "checkout", "-qb", "feature/payments"], cwd=project, check=True)
+    (project / "payments.py").write_text(
+        "def charge(cart):\n    total = sum(l.amount for l in cart)\n"
+        "    if cart.currency != 'eur': total = convert(total)\n    return total\n")
+    subprocess.run(["git", "-c", "user.email=d@t", "-c", "user.name=d", "commit", "-qam", "currency check after the sum"], cwd=project, check=True)
+    base = subprocess.run(["git", "rev-parse", "main"], cwd=project, capture_output=True, text=True).stdout.strip()
+
+    (Path(os.environ["HEXIEL_HOME"]) / "config.toml").write_text(
+        '[settings]\n[models.m]\nprovider = "openai"\nmodel = "m"\nbase_url = ""\n')
+    env = {**os.environ, "BASE": base, "PROJ": str(project),
+           "HEXIEL_DATA": os.environ.get("HEXIEL_DATA", "/tmp/opencode/ssdata"),
+           "HEXIEL_HOME": os.environ.get("HEXIEL_HOME", "/tmp/opencode/sshome")}
+    run = subprocess.run([sys.executable, str(driver)], cwd=project, env=env,
+                         capture_output=True, text=True, timeout=240)
+    text = (run.stdout + run.stderr).strip()
+
+    import html as _html
+    lines = [_html.escape(l) for l in text.splitlines()]
+    rows = "\n".join(f'<text x="28" y="{34 + i * 26}" font-family="monospace" font-size="15" '
+                     f'fill="#d6dae2">{l}</text>' for i, l in enumerate(lines))
+    h = max(480, 60 + len(lines) * 26)
+    doc = (f'<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="{h}">'
+           '<rect width="100%" height="100%" fill="#12141a"/>'
+           '<rect width="100%" height="44" fill="#1b1d23"/>'
+           '<text x="24" y="30" font-family="monospace" font-size="16" fill="#8b93a7">'
+           '$ hexiel --ci   (GitLab MR pipeline: real run, read-only tools)</text>' + rows + "</svg>")
+    out.write_text(doc)
+
+
 def export(name: str, coro_factory) -> None:
     out_dir = Path("/tmp/opencode/tickets")
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -183,6 +274,7 @@ def main(argv: list[str]) -> None:
         "diagnostics": diagnostics_shot,
         "formatter": formatter_shot,
         "sandbox": sandbox_shot,
+        "ci": ci_shot,
     }
     for name in argv or list(shots):
         if name in shots:

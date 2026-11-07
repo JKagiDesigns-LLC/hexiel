@@ -186,8 +186,8 @@ def test_headless_runs_inside_the_worktree(tmp_path, monkeypatch):
 
     built = []
 
-    def fake_build(cwd_arg, model_name, resumed=None, reuse=None):
-        built.append(cwd_arg)
+    def fake_build(cwd_arg, model_name, resumed=None, reuse=None, readonly_only=False):
+        built.append((cwd_arg, readonly_only))
         raise SystemExit("stop here")                      # don't run a real turn
 
     monkeypatch.setattr("hexiel.worktree.create", fake_create)
@@ -199,7 +199,7 @@ def test_headless_runs_inside_the_worktree(tmp_path, monkeypatch):
         main_mod()                                         # SystemExit from fake_build propagates
     except SystemExit:
         pass
-    assert built == [str(fake_path)]
+    assert built == [(str(fake_path), False)]
 
 
 def test_cmd_wt_lists_creates_and_opens(tmp_path):

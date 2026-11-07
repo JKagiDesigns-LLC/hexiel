@@ -21,7 +21,7 @@ from textual.widgets.text_area import Selection
 
 from . import memory as memory_mod
 from . import skills as skills_mod
-from .session import STEERING_NOTE
+from .session import STEERING_NOTE, strip_env_note
 
 ACCENT = "#c8b6ff"
 GOLD = "#d9b55a"          # halo gold for the activity line
@@ -1821,8 +1821,8 @@ class HexielTUI(App):
                 body = msg.get("content", "")
                 if body.startswith("<auto-compaction>"):
                     chat.mount(Static("— earlier history auto-compacted —", classes="note"))
-                else:
-                    self.add_user_msg(body.removeprefix(STEERING_NOTE)[:2000], stamp(msg.get("ts")))   # sent mid-turn: no prefix
+                elif strip_env_note(body).strip():
+                    self.add_user_msg(strip_env_note(body).removeprefix(STEERING_NOTE)[:2000], stamp(msg.get("ts")))   # env note + steering marker are bookkeeping, not the user's words
             elif role == "assistant":
                 # the model's text precedes the tool calls it then makes
                 text = msg.get("content", "")
@@ -2012,6 +2012,7 @@ class HexielTUI(App):
             return text
         handler = {
             "help": self.cmd_help, "clear": self.cmd_clear, "compact": self.cmd_compact,
+            "fork": self.cmd_fork,
             "config": self.cmd_config, "update": self.cmd_update, "mcp": self.cmd_mcp,
             "prompt": self.cmd_prompt, "context": self.cmd_context,
             "plan": self.cmd_plan, "permissions": self.cmd_permissions,
@@ -2049,6 +2050,48 @@ class HexielTUI(App):
         self.session.last_usage = {}
         self.chat.remove_children()
         self._refresh_status()
+
+    def cmd_fork(self, arg: str) -> None:
+        """#27 /fork — branch the conversation here, or at turn N, into a new session file.
+        The original chat keeps everything and stays saved under its own id."""
+        if self._thread and self._thread.is_alive():
+            self.add_note("finish or Ctrl+C the current turn first, then /fork")
+            return
+        from .session import fork_payload, real_turn_starts
+        upto = None
+        if arg:
+            try:
+                upto = max(1, int(arg.split()[0]))
+            except ValueError:
+                self.add_note("usage: /fork [turn] — branch this conversation from here, "
+                              "or keep only turns 1..N in the branch")
+                return
+        old = self.session
+        data, kept = fork_payload(old, upto)
+        all_turns = len(real_turn_starts(old.messages))
+        if not data.get("messages") or kept == 0:
+            self.add_note("nothing to branch yet — no completed turn to fork from")
+            return
+        from .main import build_session
+        try:
+            forked = build_session(old.cwd, None, data, reuse=old)
+        except Exception as exc:  # noqa: BLE001 - a bad profile must not ping the (un)forking UI
+            self.add_note(f"could not start the forked session: {exc!r}")
+            return
+        old.save()
+        forked.save()
+        self.session = forked
+        self.chat.remove_children()
+        self.replay_history()
+        self.chat.anchor()
+        if upto is not None and kept < all_turns:
+            self.add_note(f"🌿 branched — turns 1..{kept} of {all_turns} into {forked.id}.json "
+                          f"(the original chat file keeps all {all_turns}; this tab now lives in the branch)")
+        else:
+            self.add_note(f"🌿 branched — {len(forked.messages)} messages split off into {forked.id}.json; "
+                          "the original chat file is untouched and this tab now lives in the branch")
+        self._refresh_status()
+        return
 
     def cmd_compact(self, arg: str) -> None:
         from .llm import make_provider

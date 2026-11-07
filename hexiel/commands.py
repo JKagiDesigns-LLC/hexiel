@@ -75,6 +75,7 @@ BUILTIN = [
     ("model", "[name]", "pick from every model available right now (Ctrl+P), or switch by name"),
     ("models", "", "list models available on the Ollama server"),
     ("clear", "", "start a fresh conversation"),
+    ("fork", "[turn]", "branch this conversation into a new session file (`fork N` keeps turns 1..N)"),
     ("context", "clear", "what occupies the model's context window; `clear` prunes old tool results"),
     ("compact", "", "summarize history now to free up context"),
     ("auto", "[off|commits|all]", "auto-approve: cycle off / everything except git+svn commits / everything"),

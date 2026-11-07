@@ -71,6 +71,8 @@ ACCURACY RULES — the summary replaces your memory, so a wrong line in it becom
 STEERING_NOTE = ("[The user sent this message while you were working. It takes priority over what you were "
                  "doing: read it now, acknowledge it, and change course if it says to.]\n\n")
 
+ENV_MARK = "[environment — fresh facts for this turn only]"   # matches prompt.env_note's first line
+
 COMPACT_MAX_TOKENS = 3000        # hard cap on a summary: on a local model every 1,000 tokens written costs minutes
 
 ON_COMPACTION_NOTE = (
@@ -103,6 +105,74 @@ SUBAGENT_SYSTEM = (
 SUBAGENT_LIMIT = "\n\n(Keep your final answer under ~400 words; include paths and line numbers.)"
 
 FILE_TOOLS = {"write", "edit", "image_edit"}      # snapshotted before they run (/undo)
+
+
+def strip_env_note(content: str) -> str:
+    """The per-turn fresh-facts note is saved inside the user message it preceded; display
+    (and turn-detection) want just what the person actually said. A legacy standalone note
+    has no user words at all — it comes back empty."""
+    if content.startswith(ENV_MARK):
+        return content.partition("\n\n")[2]
+    return content
+
+
+def real_turn_starts(messages: list[dict]) -> list[int]:
+    """Indexes where a user turn starts: real user messages, skipping the auto-compaction
+    marker and mid-turn steering notes (neither opens a new turn)."""
+    starts = []
+    for i, m in enumerate(messages):
+        if m.get("role") != "user":
+            continue
+        body = strip_env_note(str(m.get("content", ""))).strip()
+        if not body or body.startswith(("<auto-compaction>", STEERING_NOTE)):
+            continue
+        starts.append(i)
+    return starts
+
+
+def turn_cut(messages: list[dict]) -> int:
+    """Where 'branch from here' slices: the end of the newest completed turn — the first
+    user-role message after it that isn't mid-turn steering (a compaction marker, a new
+    turn's start, a stray legacy env note) belongs to what comes after, not before."""
+    starts = real_turn_starts(messages)
+    if not starts:
+        return 0
+    last = starts[-1]
+    for i in range(last + 1, len(messages)):
+        m = messages[i]
+        if m.get("role") == "user" and not str(m.get("content", "")).startswith(STEERING_NOTE):
+            return i
+    return len(messages)
+
+
+def fork_payload(session, upto: int | None = None) -> tuple[dict, int]:
+    """The resume-style dict that boots a fork of `session` (/fork): everything through
+    completed turn `upto` (1-based over real user turns; None or past-the-end keeps every
+    completed turn — branch from here). Returns (data, turns_kept); the original session
+    and its history file stay untouched."""
+    msgs = session.messages
+    starts = real_turn_starts(msgs)
+    if not starts:
+        return {}, 0
+    if upto is None or upto >= len(starts):
+        kept, cut = len(starts), turn_cut(msgs)
+    else:
+        kept = max(1, upto)
+        cut = starts[kept] if kept < len(starts) else turn_cut(msgs)
+    from . import prompt_edit
+    data = {
+        "id": uuid.uuid4().hex[:12],
+        "created": time.time(),
+        "cwd": session.cwd,
+        "model": (getattr(session, "_escalated_from", None) or session.model_config).name,
+        "messages": [dict(m) for m in msgs[:cut]],
+    }
+    if getattr(session, "auto_override", None):    # a /auto override rides the fork too
+        data["auto_mode"] = session.auto_override
+    data.update(prompt_edit.save_extra(session))   # an edited /prompt branches with the fork
+    return data, kept
+
+
 PLAN_MODE_ALLOWED = {"todo", "memory", "skill", "timer"}   # bookkeeping still works in plan mode
 PLAN_MODE_NOTE = ("[plan mode] Investigate with read-only tools and produce a step-by-step plan. "
                   "Do not try to change files or run commands; the user will approve the plan "

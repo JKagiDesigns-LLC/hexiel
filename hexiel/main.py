@@ -50,7 +50,8 @@ def parse_args() -> argparse.Namespace:
     return ap.parse_args()
 
 
-def build_session(cwd: str, model_name: str | None, resumed: dict | None = None) -> Session:
+def build_session(cwd: str, model_name: str | None, resumed: dict | None = None,
+                  reuse: Session | None = None) -> Session:
     config = load_config(model_name)
     model_config = config.models.get(resumed["model"], config.model()) if resumed else config.model()
     settings = config.settings
@@ -61,7 +62,8 @@ def build_session(cwd: str, model_name: str | None, resumed: dict | None = None)
     plugins = openwebui_compat.discover_plugins(cwd)
     tool_defs = openwebui_compat.plugin_tool_defs(plugins, cwd)
     from . import mcp_client
-    mcp_servers = mcp_client.start_servers(mcp_client.load_configs(cwd, config.mcp))
+    mcp_servers = getattr(reuse, "mcp_servers", None) or mcp_client.start_servers(
+        mcp_client.load_configs(cwd, config.mcp))   # reuse=an in-process session (/fork): never double-start
     tool_defs = tool_defs + mcp_client.tool_defs(mcp_servers)
     if tool_defs:
         known = {t.name for t in tools}

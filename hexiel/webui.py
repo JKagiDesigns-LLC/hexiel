@@ -26,7 +26,7 @@ from . import timers as timers_mod
 from . import todo as todo_mod
 from .config import load_config, home_data_dir
 from .llm import make_provider
-from .session import STEERING_NOTE, Session
+from .session import STEERING_NOTE, Session, strip_env_note
 from .tooling import detect_toolchain
 from .tools import ToolResult
 
@@ -327,8 +327,8 @@ class WebState:
                 body = msg.get("content", "")
                 if body.startswith("<auto-compaction>"):
                     items.append({"t": "note", "text": "— earlier history auto-compacted —"})
-                else:
-                    item = {"t": "user", "text": body.removeprefix(STEERING_NOTE)}   # sent mid-turn
+                elif strip_env_note(body).strip():
+                    item = {"t": "user", "text": strip_env_note(body).removeprefix(STEERING_NOTE)}   # env note + steering marker are bookkeeping, not the user's words
                     shown = media_items(a.get("path", "") for a in msg.get("attachments", []))
                     if shown:
                         item["media"] = shown
@@ -567,6 +567,9 @@ def make_app(session: Session, driver=None) -> web.Application:
             session.messages = []
             session.last_usage = {}
             return "conversation cleared"
+        if cmd == "fork":
+            return "/fork branches this conversation into a new session file — run it in the terminal UI " \
+                   "(this browser view keeps following the original branch)"
         if cmd == "heal":
             if arg == "review":
                 if heal["changes"]:

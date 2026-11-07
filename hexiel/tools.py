@@ -614,9 +614,10 @@ def _write(args: dict, ctx: ToolContext) -> ToolResult:
         path.write_text(content)
     except OSError as exc:
         return text_result(f"error: {exc}", True)
+    fmt = format_note(args, path, ctx)                 # format first: the guard records what is on disk now
     ctx.note_file(str(path))
     return text_result(f"{'updated' if existed else 'created'} {path} ({content.count(chr(10)) + 1} lines)"
-                       + syntax_check(path) + post_edit_note(path, ctx))
+                       + fmt + syntax_check(path) + post_edit_note(path, ctx))
 
 
 def syntax_check(path: Path) -> str:
@@ -649,6 +650,24 @@ def syntax_check(path: Path) -> str:
     return ""
 
 
+def format_note(args: dict, path: Path, ctx: ToolContext) -> str:
+    """Format-on-write note ('' when off/unavailable/unchanged). The tool call's
+    `format: false` opts this one write/edit out."""
+    if args.get("format") is False:
+        return ""
+    from .config import load_config
+    try:
+        if load_config().settings.formatter == "off":
+            return ""
+    except Exception:  # noqa: BLE001 - a bad config must not fail the edit
+        return ""
+    from . import formatters
+    try:
+        return formatters.format_file(path)
+    except Exception:  # noqa: BLE001
+        return ""
+
+
 def post_edit_note(path: Path, ctx: ToolContext) -> str:
     """Language-diagnostics note after a write/edit ('' when disabled/uncheckable/clean).
     Reads the live [settings], so a mid-session /config change applies at once."""
@@ -676,19 +695,32 @@ def _edit(args: dict, ctx: ToolContext) -> ToolResult:
         text = path.read_text()
     except OSError as exc:
         return text_result(f"error: {exc}", True)
+    # AST-aware anchor: when the exact string missed, a whitespace-equivalent span still counts —
+    # indentation drift and tabs-vs-spaces never force a re-read loop (but ambiguity does)
+    how = "exact"
     if old not in text:
-        return text_result("error: old_string not found in file (exact match required)", True)
-    count = text.count(old)
-    if count > 1 and not bool(args.get("replace_all")):
-        return text_result(
-            f"error: old_string occurs {count} times; make it unique or pass replace_all=true", True)
-    text = text.replace(old, new) if bool(args.get("replace_all")) else text.replace(old, new, 1)
+        from . import formatters
+        span = formatters.fuzzy_span(text, old)
+        if span is None:
+            return text_result("error: old_string not found in file (exact match required, "
+                               "whitespace-equivalent tried)", True)
+        start, end = span
+        text = text[:start] + new + text[end:]
+        how = "whitespace-equivalent match"
+    else:
+        count = text.count(old)
+        if count > 1 and not bool(args.get("replace_all")):
+            return text_result(
+                f"error: old_string occurs {count} times; make it unique or pass replace_all=true", True)
+        text = text.replace(old, new) if bool(args.get("replace_all")) else text.replace(old, new, 1)
     try:
         path.write_text(text)
     except OSError as exc:
         return text_result(f"error: {exc}", True)
+    fmt = format_note(args, path, ctx)                 # format first: the guard records what is on disk now
     ctx.note_file(str(path))
-    return text_result(f"edited {path}" + syntax_check(path) + post_edit_note(path, ctx))
+    return text_result(f"edited {path}" + (f" ({how})" if how != "exact" else "")
+                       + fmt + syntax_check(path) + post_edit_note(path, ctx))
 
 
 # ---------------------------------------------------------------- glob / grep / list / file_info
@@ -1472,13 +1504,18 @@ def build_tools(chain: Toolchain) -> list[ToolDef]:
         ToolDef("read", "Read a text file with line numbers; supports offset/limit for long files.",
                 obj(path={"type": "string"}, offset={"type": "integer"}, limit={"type": "integer"}),
                 readonly=True, run=_read),
-        ToolDef("write", "Create or overwrite a file with content.",
-                obj(path={"type": "string"}, content={"type": "string"}),
+        ToolDef("write", "Create or overwrite a file with content. The file is formatted with the "
+                "project's formatter (ruff/prettier/gofmt/rustfmt) when set to auto — pass "
+                "format=false to leave it exactly as written.",
+                obj(path={"type": "string"}, content={"type": "string"}, format={"type": "boolean"}),
                 run=_write),
         ToolDef("edit", "Replace an exact string in a file. Read the file first; "
-                "old_string must match exactly, and be unique unless replace_all=true.",
+                "old_string must match exactly, and be unique unless replace_all=true. A "
+                "whitespace-equivalent anchor still matches (indentation drift is fine); the file "
+                "is formatted after the edit when set to auto — pass format=false to skip.",
                 obj(path={"type": "string"}, old_string={"type": "string"},
-                    new_string={"type": "string"}, replace_all={"type": "boolean"}),
+                    new_string={"type": "string"}, replace_all={"type": "boolean"},
+                    format={"type": "boolean"}),
                 run=_edit),
         ToolDef("glob", "Find files by glob pattern (e.g. **/*.py) under a path.",
                 obj(pattern={"type": "string"}, path={"type": "string"}),

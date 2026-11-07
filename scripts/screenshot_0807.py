@@ -96,6 +96,38 @@ async def worktree_shot(out: Path) -> None:
         out.write_text(app.export_screenshot())
 
 
+async def formatter_shot(out: Path) -> None:
+    """#39: a write lands formatted (live ruff) without asking."""
+    project = Path("/tmp/opencode/ssdata/fmtproj")
+    project.mkdir(parents=True, exist_ok=True)
+    from hexiel.config import ModelConfig, Settings
+    from hexiel.session import Session
+    from hexiel.tooling import Toolchain
+    from hexiel.tools import ToolContext, build_tools
+    tools = build_tools(Toolchain())
+    session = Session(ModelConfig(name="gmktec", provider="openai", model="qwen3.6:35b-a3b-coding",
+                                  base_url="http://127.0.0.1:11434/v1", context_window=200_000),
+                      Settings(), cwd=str(project), tools=tools, system_prompt="t")
+    session.bind_tool_ctx(ToolContext(cwd=str(project), chain=Toolchain()))
+    session.auto_approve = True
+    session._execute_tool({"id": "w2", "name": "write",
+                           "arguments": {"path": str(project / "models.py"),
+                                         "content": "class Session:\n    def __init__(self,cwd,  name ) :\n        self.cwd,self.name=cwd,  name\n"}})
+    result_text = next((m["content"] for m in reversed(session.messages)
+                        if m.get("role") == "tool" and m.get("tool_call_id") == "w2"), "")
+    from hexiel.tui import HexielTUI
+    app = HexielTUI(session, [], set())
+    async with app.run_test(size=(120, 34)) as pilot:
+        await pilot.pause(0.4)
+        call = {"id": "w2", "name": "write",
+                "arguments": {"path": "models.py", "content": "…"}}
+        app.handle_event("tool_call", call)
+        app.handle_event("tool_result", call, result_text, False, 0.2)
+        app.handle_event("text", "Session class written — it hit the disk already formatted (ruff).")
+        await pilot.pause(0.6)
+        out.write_text(app.export_screenshot())
+
+
 def export(name: str, coro_factory) -> None:
     out_dir = Path("/tmp/opencode/tickets")
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -111,6 +143,7 @@ def main(argv: list[str]) -> None:
     shots = {
         "worktree": worktree_shot,
         "diagnostics": diagnostics_shot,
+        "formatter": formatter_shot,
     }
     for name in argv or list(shots):
         if name in shots:

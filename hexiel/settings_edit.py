@@ -108,6 +108,8 @@ FIELDS = [
      "help": "e.g. http://localhost:8888 (when web search = searxng)"},
     {"key": "settings.diagnostics", "label": "Diagnostics", "kind": "choice",
      "options": ["auto", "off"], "help": "pyright/tsc/vet/cargo checks surface right after an edit (off = syntax checks only)"},
+    {"key": "settings.formatter", "label": "Format on write", "kind": "choice",
+     "options": ["auto", "off"], "help": "ruff/prettier/gofmt/rustfmt formats a file as it is written or edited"},
 ]
 FIELD_BY_KEY = {f["key"]: f for f in FIELDS}
 

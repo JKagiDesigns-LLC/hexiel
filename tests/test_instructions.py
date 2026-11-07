@@ -43,6 +43,51 @@ def test_discover_finds_other_agents_files_and_skips_generated(proj):
     assert labels == ["claude", "cursorrules"]
 
 
+def test_discover_covers_every_harness(proj):
+    """#26: .codex + codex rules, copilot, .agent.md, .cursor rules — layered together."""
+    (proj / "AGENTS.md").write_text("# agents rules\n" + BIG)
+    codex = proj / ".codex"
+    codex.mkdir()
+    (codex / "AGENTS.md").write_text("codex nested rules\n")
+    codex_rules = proj / ".codex" / "rules"
+    codex_rules.mkdir()
+    (codex_rules / "git-safety.mdc").write_text("never force push\n")
+    (proj / "COPILOT.md").write_text("copilot base rules\n")
+    (proj / ".agent.md").write_text("agent harness rules\n")
+    cursor = proj / ".cursor" / "rules"
+    cursor.mkdir(parents=True)
+    (cursor / "style.mdc").write_text("style rules\n")
+    labels = sorted(s.label for s in ins.discover(str(proj)))
+    assert labels == ["agent", "agents", "codex", "codex-git-safety", "copilot", "cursor-style"]
+    by_label = {s.label: s for s in ins.discover(str(proj))}
+    assert by_label["agents"].scope == "project"
+    assert by_label["codex"].tool == "codex" and by_label["codex-git-safety"].tool == "codex-git-safety"
+
+
+def test_discover_last_wins_on_same_labels_per_scope(proj):
+    """One harness, two copies: the nested canonical one beats the stray root one."""
+    (proj / "CLAUDE.md").write_text("root version\n")
+    nested = proj / ".claude"
+    nested.mkdir()
+    (nested / "CLAUDE.md").write_text("nested version (wins)\n")
+    srcs = ins.discover(str(proj))
+    assert len(srcs) == 1
+    assert srcs[0].label == "claude" and srcs[0].path == nested / "CLAUDE.md"
+    assert srcs[0].text == "nested version (wins)\n"
+    # global scope is scored separately: a global claude memory keeps its own import
+    (proj / ".claude" / "CLAUDE.md").unlink()
+    (proj / "CLAUDE.md").unlink()
+    home_claude = Path(ins.home_config_dir())
+    home_claude.mkdir(parents=True, exist_ok=True)
+    try:
+        (home_claude / "HEXIEL.md").write_text("global rules\n")
+        srcs2 = ins.discover(str(proj))
+        assert [s.scope for s in srcs2] == ["global"]
+        assert srcs2[0].label == "hexiel"
+    finally:
+        (home_claude / "HEXIEL.md").unlink()
+
+
 def test_import_ignore_mode_leaves_originals_and_writes_verified_topics(proj):
     (proj / "CLAUDE.md").write_text(BIG)
     srcs = ins.discover(str(proj))

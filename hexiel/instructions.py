@@ -34,7 +34,7 @@ STOPWORDS = set("the and for that with this from have into your what when where 
                 "use using make need want please just should would could there their about also then".split())
 
 ROOT_FILES = ("claude.md", "agents.md", "hexiel.md", "gemini.md", ".cursorrules", ".windsurfrules",
-              ".clinerules")
+              ".clinerules", "copilot.md", ".agent.md")
 
 
 @dataclass
@@ -92,7 +92,10 @@ def is_generated(text: str) -> bool:
 # ── discovery ──────────────────────────────────────────────────────────────────
 
 def discover(cwd: str) -> list[Source]:
-    """Instruction files other agents (or an old hexiel) left here that are not yet generated stubs/indexes."""
+    """Instruction files every coding agent uses (claude, codex, cursor, gemini, copilot, …) or an
+    old hexiel left here, that are not yet generated stubs/indexes. Layered: every harness's rules
+    are imported together; when one harness keeps two copies of its own file (root + nested), the
+    later one wins — the nested .claude/CLAUDE.md beats a stray root CLAUDE.md, per scope."""
     found: list[tuple[Path, str, str]] = []
     root = Path(cwd)
     try:
@@ -101,18 +104,24 @@ def discover(cwd: str) -> list[Source]:
                 found.append((p, "project", p.name.lower().lstrip(".").removesuffix(".md")))
     except OSError:
         pass
-    for rel, label in ((".claude/CLAUDE.md", "claude"), (".github/copilot-instructions.md", "copilot")):
+    for rel, label in ((".claude/CLAUDE.md", "claude"), (".codex/AGENTS.md", "codex"),
+                       (".github/copilot-instructions.md", "copilot")):
         if (root / rel).is_file():
             found.append((root / rel, "project", label))
-    rules = root / ".cursor" / "rules"
-    if rules.is_dir():
-        found += [(p, "project", "cursor-" + _slug(p.stem)) for p in sorted(rules.glob("*.md*")) if p.is_file()]
+    for harness in (".cursor", ".codex"):
+        rules = root / harness / "rules"
+        if rules.is_dir():
+            short = harness.lstrip(".")
+            found += [(root / harness / "rules" / p.name, "project",
+                       f"{short}-" + _slug(p.stem))
+                      for p in sorted(rules.glob("*.md*")) if p.is_file()]
     home = Path.home()
     for p, label in ((home / ".claude" / "CLAUDE.md", "claude"), (home / ".codex" / "AGENTS.md", "codex"),
                      (home_config_dir() / "HEXIEL.md", "hexiel")):
         if p.is_file():
             found.append((p, "global", label))
     out: list[Source] = []
+    seen_by_scope: dict[str, dict] = {}      # scope -> label -> Source (later file beats the earlier)
     for path, scope, label in found:
         try:
             text = path.read_text()
@@ -120,7 +129,13 @@ def discover(cwd: str) -> list[Source]:
             continue
         if not text.strip() or is_generated(text):
             continue
-        out.append(Source(path, scope, label, text, _hash(text)))
+        # "last wins": a later same-label file in the same scope replaces the earlier one
+        took = seen_by_scope.get(scope, {}).pop(label, None)
+        if took is not None:
+            out.remove(took)
+        src = Source(path, scope, label, text, _hash(text))
+        out.append(src)
+        seen_by_scope.setdefault(scope, {})[label] = src
     return out
 
 

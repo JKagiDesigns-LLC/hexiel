@@ -18,14 +18,14 @@ lands, and is documented on hexiel.tech the same day so the site never goes stal
       with selective clear of old tool results / old turns.
 
 ## Release 0.8.6 — everyday UX (terminal + config discovery)
-- [ ] Terminal autocomplete: paths (@, ~, quoted, first-qualifier), /commands, /model names,
-      Ctrl+R fuzzy reverse-history.
-- [ ] Cross-harness instruction discovery: .cursor/rules/*, .codex/(AGENTS/rules), GEMINI.md,
-      .clinerules, COPILOT.md/.agent.md etc. read alongside CLAUDE.md/AGENTS.md (last wins, layered).
-- [ ] Session fork: /fork — branch the conversation from any point into a new session file.
-- [ ] Session share: /share — self-contained single-file HTML transcript (no server, no secrets)
-      placed next to the session; open or attach anywhere.
-- [ ] Watch mode: /watch — hexiel stays alive and reacts to AI:/AI? comments saved in any editor.
+- [x] Terminal autocomplete: paths (@, ~, quoted, first-qualifier), /commands, /model names,
+      Ctrl+R fuzzy reverse-history. (#25)
+- [x] Cross-harness instruction discovery: .cursor/rules/*, .codex/(AGENTS/rules), GEMINI.md,
+      .clinerules, COPILOT.md/.agent.md etc. read alongside CLAUDE.md/AGENTS.md (last wins, layered). (#26)
+- [x] Session fork: /fork — branch the conversation from any point into a new session file. (#27)
+- [x] Session share: /share — self-contained single-file HTML transcript (no server, no secrets)
+      placed next to the session; open or attach anywhere. (#28)
+- [x] Watch mode: /watch — hexiel stays alive and reacts to AI:/AI? comments saved in any editor. (#29)
 
 ## Release 0.8.7 — isolation + accuracy
 - [ ] Worktree isolation: /wt (list/create/open), sub+headless runs can run in their own worktree;

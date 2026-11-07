@@ -185,10 +185,43 @@ def headless_loop(session: Session, prompts: list[str]) -> None:
         sys.stderr.write("HEXIEL_USAGE " + json.dumps(session.usage_by_model) + "\n")
 
 
+def _repl_completer(session):
+    """readline completer for --repl: slash commands, skills and file paths (Tab)."""
+    from .complete import completions
+    cwd = session.cwd
+
+    def guide(text: str) -> list[str]:
+        from . import commands as commands_mod
+        if text.startswith("/"):
+            names = [n for n, _, _ in commands_mod.BUILTIN if n.startswith(text[1:].lower())]
+            names += list(commands_mod.discover(cwd))
+            return sorted(set(names))
+        if not text:
+            return []
+        paths = []
+        for key in (text, f"./{text}") if not text.startswith(("./", "/", "~")) else (text,):
+            for comp in (completions(key, cwd) or []):
+                paths.append(comp["name"])
+        return sorted(set(paths))
+
+    def build(text: str, state: int) -> str | None:
+        rows = guide(text)
+        return (f"/{rows[state]}" if text.startswith("/") else rows[state]) \
+            if state < len(rows) else None
+    return build
+
+
 def repl_loop(session: Session) -> None:
     session.on_event = repl_event
     session.on_approve = terminal_approval
     print("hexiel REPL — empty line to exit, /clear resets context, /compact forces compaction")
+    try:                                       # best-effort Tab completion (slash cmds + paths)
+        import readline
+        readline.set_completer(_repl_completer(session))
+        readline.set_completer_delims(" \t\n'\"")
+        readline.parse_and_bind("tab: complete")
+    except ImportError:
+        pass
     while True:
         try:
             text = input("❯ ").strip()

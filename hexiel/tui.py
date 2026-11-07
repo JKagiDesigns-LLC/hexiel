@@ -17,6 +17,7 @@ from textual.message import Message
 from textual.theme import Theme
 from textual.widgets import Button, Input, Label, Markdown, OptionList, Static, TextArea
 from textual.widgets.option_list import Option
+from textual.widgets.text_area import Selection
 
 from . import memory as memory_mod
 from . import skills as skills_mod
@@ -441,6 +442,75 @@ class ConfigScreen(ModalScreen):
             self.query_one("#config-table").focus()
             return
         self.dismiss(None)
+
+
+class HistoryPicker(ModalScreen):
+    """Ctrl+R: fuzzy-jump back into anything you sent this session and edit/resend it."""
+
+    BINDINGS = [("escape", "close", "Close"), ("down", "focus_list", "List"),
+                ("up", "focus_search", "Search")]
+
+    def __init__(self, history: list[str]) -> None:
+        super().__init__()
+        self._hs_items = list(reversed(history))     # newest first
+        self._hs_rows: list[str] = []                # parallel to the options
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="picker-box"):
+            yield Label("[b]Recent messages[/b]  [dim]type to filter · ↑/↓ · Enter to reuse · Esc to close[/dim]")
+            yield Input(placeholder="filter this session's messages…", id="picker-search")
+            yield OptionList(id="picker-list")
+
+    def on_mount(self) -> None:
+        self.query_one("#picker-search").focus()
+        self._hs_render()
+
+    @staticmethod
+    def _fuzzy(query: str, text: str) -> bool:
+        it = iter(text.lower())
+        return all(ch in it for ch in query.lower().replace(" ", ""))
+
+    def on_input_changed(self, event: Input.Changed) -> None:
+        self._hs_render()
+
+    def _hs_render(self) -> None:
+        query = self.query_one("#picker-search", Input).value.strip()
+        lst = self.query_one("#picker-list", OptionList)
+        lst.clear_options()
+        self._hs_rows = []
+        for text in self._hs_items:
+            if query and not (self._fuzzy(query, text)
+                              or query.lower() in text.lower()):
+                continue
+            shown = text.replace("\n", " ").replace("[", "\\[")[:110]
+            self._hs_rows.append(text)
+            lst.add_options([Option(shown)])
+        if self._hs_rows:
+            lst.highlighted = 0
+
+    def action_focus_list(self) -> None:
+        self.query_one("#picker-list").focus()
+
+    def action_focus_search(self) -> None:
+        self.query_one("#picker-search").focus()
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        event.stop()
+        lst = self.query_one("#picker-list", OptionList)
+        idx = lst.highlighted if lst.highlighted is not None else 0
+        self._hs_choose(idx)
+
+    def on_option_list_option_selected(self, event) -> None:
+        self._hs_choose(event.option_index)
+
+    def _hs_choose(self, index: int) -> None:
+        if 0 <= index < len(self._hs_rows):
+            self.dismiss(self._hs_rows[index])
+        else:
+            self.dismiss("")
+
+    def action_close(self) -> None:
+        self.dismiss("")
 
 
 class ModelPicker(ModalScreen):
@@ -1000,6 +1070,26 @@ class CommandMenu(OptionList):
         self.display = False
         self.can_focus = False
         self._items: list[tuple[str, str]] = []   # (kind, value) parallel to options
+        self._path_token: str | None = None       # the path token the path rows expand
+        self._path_comps: list[dict] = []         # the full entries (is_dir etc.) for accept
+
+    def show_paths(self, token: str, comps: list[dict]) -> None:
+        """Candidate paths for the token just before the cursor (complete.py built them)."""
+        self._path_token = token
+        self._path_comps = comps
+        self.clear_options()
+        options, items = [], []
+        for c in comps:
+            label = c["name"].replace("[", "\\[")
+            if c["is_dir"]:
+                options.append(Option(f"  [b]{label}[/b] [dim]directory[/]"))
+            else:
+                options.append(Option(f"  [b]{label}[/b]"))
+            items.append(("path", c["name"]))
+        self._items = items
+        self.add_options(options)
+        self.highlighted = 0
+        self.display = True
 
     def show_for(self, text: str, skills, profiles: dict, current: str, custom: dict | None = None) -> None:
         rows: list[tuple[str, str, str]] = []      # (kind, value, label)
@@ -1049,6 +1139,7 @@ class CommandMenu(OptionList):
         if self._items or self.display:
             self.display = False
         self._items = []
+        self._path_token = None
 
     def selected(self) -> tuple[str, str] | None:
         if not self.display or self.highlighted is None or not self._items:
@@ -1131,7 +1222,8 @@ class PromptInput(TextArea):
 
     BINDINGS = [Binding("up", "menu_up", show=False), Binding("down", "menu_down", show=False),
                 Binding("tab", "menu_complete", show=False), Binding("escape", "menu_close", show=False),
-                Binding("ctrl+v", "paste_image", show=False), Binding("alt+v", "paste_image", show=False)]
+                Binding("ctrl+v", "paste_image", show=False), Binding("alt+v", "paste_image", show=False),
+                Binding("ctrl+r", "history_search", show=False)]
 
     PASTE_COLLAPSE_CHARS = 1500      # longer pastes collapse to a placeholder, expanded on send
     PASTE_COLLAPSE_LINES = 15
@@ -1300,8 +1392,49 @@ class PromptInput(TextArea):
         if self.menu.display:
             self.app.accept_menu(run=False)
 
+    def action_history_search(self) -> None:
+        """Ctrl+R: pick an earlier message of this session to edit and resend."""
+        app = self.app
+        history = getattr(app, "_history", [])
+        if not history:
+            app.notify("Nothing to recall: no messages sent in this session yet.",
+                       severity="warning")
+            return
+
+        def picked(value) -> None:
+            if value:
+                self.value = value                # the setter puts the caret at the end
+                app._hist_pos = None
+
+        app.push_screen(HistoryPicker(history), callback=picked)
+
+    def text_before_cursor(self) -> str:
+        """Everything typed up to the caret: the tail a path token is detected from."""
+        row, col = self.cursor_location
+        lines = self.text.splitlines()
+        if row >= len(lines) and not self.text.endswith("\n"):
+            return self.text
+        line = lines[row][:col] if row < len(lines) else ""
+        return "\n".join(lines[:row] + [line])
+
+    def accept_path(self, token: str, value: str) -> None:
+        """Replace the path token just before the caret with its completion (Tab accept); the
+        caret lands at the end of what was inserted."""
+        idx = self.document.get_index_from_location(self.cursor_location)
+        start = idx - len(token)
+        if start < 0 or self.text[start:idx] != token:
+            return                              # stale menu (the text changed under it): ignore
+        loc = self.document.get_location_from_index
+        self.replace(value, loc(start), loc(idx), maintain_selection_offset=False)
+        end = loc(start + len(value))
+        self.selection = Selection(end, end)
+
     async def action_submit(self) -> None:
-        if self.menu.display and self.app.accept_menu(run=True):
+        picked = self.menu.selected() if self.menu.display else None
+        if picked and picked[0] == "path":
+            # Enter always sends: a live path menu never swallows it (Tab completes; Esc closes)
+            self.menu.hide()
+        elif self.menu.display and self.app.accept_menu(run=True):
             return
         self.post_message(self.Submitted(self, self.expanded()))
         self._pastes.clear()
@@ -1707,12 +1840,33 @@ class HexielTUI(App):
 
     def on_prompt_input_value_changed(self, event: PromptInput.ValueChanged) -> None:
         text = event.value
-        if not text.startswith("/") or "\n" in text:
+        if text.startswith("/") and "\n" not in text:
+            profiles = self._cached_profiles() if text.startswith("/model ") else {}
+            self.menu.show_for(text, self.skills, profiles,
+                               self.session.model_config.name, self._cached_commands())
+            return
+        self._maybe_path_menu()
+
+    def _maybe_path_menu(self) -> None:
+        """Pop the path menu while the caret sits on a completable path token (@, ~, ./, quoted
+        paths, anything containing a /); hide it for prose. Suppressed while ↑/↓ browses
+        history — recalled entries often end in paths and the menu would steal the keys."""
+        from . import complete
+        if getattr(self, "_hist_pos", None) is not None:
             self.menu.hide()
             return
-        profiles = self._cached_profiles() if text.startswith("/model ") else {}
-        self.menu.show_for(text, self.skills, profiles,
-                           self.session.model_config.name, self._cached_commands())
+        prompt = self.prompt
+        token = complete.find_path_token(prompt.text_before_cursor())
+        if token is None:
+            self.menu.hide()
+            return
+        comps = complete.completions(token, self.session.cwd)
+        if not comps:
+            self.menu.hide()
+            return
+        if self.menu._path_token == token and self.menu.display:
+            return                                     # already showing exactly these rows
+        self.menu.show_paths(token, comps)
 
     MENU_CACHE_SECONDS = 3.0
 
@@ -1748,12 +1902,22 @@ class HexielTUI(App):
 
     def accept_menu(self, run: bool) -> bool:
         """Apply the highlighted menu entry. Returns True when it consumed the key."""
+        from . import complete
         menu = self.menu
         picked = menu.selected()
         if not picked:
             return False
         kind, value = picked
         prompt = self.prompt
+        if kind == "path":                     # complete in place; keep editing (never submit)
+            token, entry = menu._path_token, value
+            comps = getattr(menu, "_path_comps", None)
+            if token and entry and comps:
+                finisher = next((c for c in comps if c["name"] == entry), None)
+                if finisher:
+                    prompt.accept_path(token, complete.finish(token, finisher))
+            menu.hide()
+            return True
         takes_arg = kind in ("skill", "custom") or any(n == value and a for n, a, _ in COMMANDS)
         if kind == "model":
             line, run_now = f"/model {value}", run

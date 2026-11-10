@@ -2,6 +2,7 @@
 
 import json
 import queue
+import re
 import threading
 import time
 import uuid
@@ -103,6 +104,13 @@ SUBAGENT_SYSTEM = (
     "answer: findings, exact file paths and line numbers, and anything uncertain. Do not ask "
     "questions back; you cannot modify anything.")
 SUBAGENT_LIMIT = "\n\n(Keep your final answer under ~400 words; include paths and line numbers.)"
+SUBAGENT_WRITE = (
+    "You are a self-contained coding subagent working inside your own git worktree: every file you "
+    "write or edit lands there, so be ambitious but stay inside this task. Implement the change, "
+    "run the relevant tests or commands to verify it (bash, test runner), commit the result on the "
+    "current branch with a clear conventional message (one commit is enough; leave the tree clean), "
+    "then reply with a concise summary: what changed and why, test evidence (commands + results), "
+    "and anything uncertain or left undone. Do not ask questions back; nobody can answer them.")
 
 FILE_TOOLS = {"write", "edit", "image_edit"}      # snapshotted before they run (/undo)
 
@@ -752,7 +760,7 @@ class Session:
                 runaway = consult.hard_stop(self)         # Cline's mistake/loop budget as a hard stop
                 if runaway and not self._stop.is_set():
                     self.on_event("note", f"🛑 {runaway}")
-                    self.on_event("turn_end", {"error": runaway})
+                    self.on_event("turn_end", {"error": runaway, "kind": "loop_guard"})
                     return
         finally:
             self._restore_weather_note()
@@ -1272,12 +1280,18 @@ class Session:
     # ---------------------------------------------------------------- subagents
 
     def run_subagent(self, args: dict) -> "ToolResult":
-        """The `task` tool: a helper with its own context and read-only tools does
-        the digging; only its final answer comes back into this conversation."""
+        """The `task` tool: a helper with its own context does the work and only its final
+        answer comes back into this conversation. Research mode (the default) is read-only;
+        write mode gets the full toolkit inside a mandatory git worktree (created on the spot
+        when none is named) and approves its own steps — the tree is ephemeral and merged
+        deliberately, so parallel write fan-out stays safe on one repo."""
         from .config import load_config
         prompt = str(args.get("prompt", "")).strip()
         if not prompt:
             return ToolResult(text="error: prompt is required", is_error=True)
+        mode = str(args.get("mode") or "research").strip().lower()
+        if mode not in ("research", "write"):
+            mode = ("write" if mode in ("worktree", "w", "1", "true", "yes") else "research")
         model = self.model_config
         name = getattr(self.settings, "subagent_profile", "")
         if name:
@@ -1285,19 +1299,31 @@ class Session:
                 model = load_config().model(name)
             except (KeyError, SystemExit):
                 pass
-        tools = [t for t in self.tools if t.readonly and t.name != "task"]
-        helper = Session(model, self.settings, self.cwd, tools, SUBAGENT_SYSTEM)
+        tools = [t for t in self.tools if t.name != "task"] if mode == "write" \
+            else [t for t in self.tools if t.readonly and t.name != "task"]
+        helper = Session(model, self.settings, self.cwd, tools,
+                         SUBAGENT_WRITE if mode == "write" else SUBAGENT_SYSTEM)
         helper.bind_tool_ctx(self.tool_ctx)
         helper.hooks = self.hooks
         helper.rules = self.rules
         label = str(args.get("description", "")).strip()[:60] or "subagent"
         wt_note = ""
         want_wt = args.get("worktree")                 # true = its own ephemeral worktree; "name" = a named one
+        write_auto = mode == "write" and not want_wt   # a write agent without a box: make one up front
+        if write_auto:
+            want_wt = re.sub(r"[^a-zA-Z0-9-]+", "-", label)[:24].strip("-") or ""
         if want_wt:
             from . import worktree as wt_mod
             try:
-                if isinstance(want_wt, str) and wt_mod.find(self.cwd, want_wt) is not None:
-                    w = wt_mod.find(self.cwd, want_wt)
+                w = None
+                if isinstance(want_wt, str) and want_wt not in ("1", "true", "yes"):
+                    # an explicit request may abbreviate (find matches prefixes); an auto-derived
+                    # write box must adopt an EXACT name only — a prefix match would land its
+                    # commits on someone else's branch
+                    w = wt_mod.find(self.cwd, want_wt) if not write_auto \
+                        else next((c for c in wt_mod.list_worktrees(self.cwd)[1:]
+                                   if c.path.name == wt_mod.slug(want_wt)), None)
+                if w is not None:
                     wt_cwd, fresh = str(w.path), False
                 else:
                     name = want_wt if isinstance(want_wt, str) and want_wt not in ("1", "true", "yes") else ""
@@ -1306,7 +1332,17 @@ class Session:
                                       on_note=lambda line: self.on_event("note", f"↳ wt {label}: {line}"))
                     wt_cwd, fresh = str(w.path), True
             except Exception as exc:  # noqa: BLE001 - isolation failing must not fail the task
-                self.on_event("note", f"↳ subagent runs in place (worktree unavailable: {exc})")
+                if mode == "write":
+                    # a write agent without a box becomes a research agent: never let it
+                    # loose on the real tree because its worktree failed to materialise
+                    self.on_event("note", f"↳ {label}: worktree unavailable ({exc}) — "
+                                          "downgraded to a read-only subagent")
+                    tools = [t for t in self.tools if t.readonly and t.name != "task"]
+                    helper.tools = tools
+                    helper.system_prompt = SUBAGENT_SYSTEM
+                    mode = "research"
+                else:
+                    self.on_event("note", f"↳ subagent runs in place (worktree unavailable: {exc})")
             else:
                 helper.cwd = wt_cwd                    # the subagent reads/writes in the worktree only
                 from .tools import ToolContext
@@ -1317,13 +1353,18 @@ class Session:
                                   test_commands=src_ctx.test_commands)
                 helper.bind_tool_ctx(ctx)
                 wt_note = f"\n(its own git worktree: {w.path} on branch {w.branch or '(detached)'}" \
-                          + ("" if fresh else ", pre-existing)")
-                if fresh:
+                          + ("" if fresh else ", pre-existing")
+                if mode == "write":
+                    wt_note += " — the helper wrote here and committed; merge or inspect: "
+                    wt_note += f"git merge {w.branch}   |   inspect: {w.path}   |   rm it: /wt remove {w.path.name}"
+                elif fresh:
                     wt_note += f"\nReview/merge it: git merge {w.branch}   |   rm it: /wt remove {w.path.name}"
                 wt_note += (f"\nThe worktree path is absolute — resolve paths against {wt_cwd}, not {self.cwd}.")
         helper.on_event = lambda event, *p, **k: (
             self.on_event("subagent", label, p[0].get("name", "")) if event == "tool_call" else None)
-        helper.on_approve = lambda *a: "no"
+        # write mode = approval-free autonomy inside its worktree box (release 0.8.7's sandbox idea):
+        # the write tools touch that ephemeral tree only, and the work tree is merged deliberately.
+        helper.on_approve = (lambda *a: "yes") if mode == "write" else (lambda *a: "no")
         helper.save = lambda: None                  # helpers don't create saved sessions
         from .planner import _link_stop
         link = _link_stop(self, helper)             # Stop on this chat stops the subagent too

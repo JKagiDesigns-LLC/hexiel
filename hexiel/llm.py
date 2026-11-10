@@ -164,6 +164,13 @@ def raise_for_status(status: int, headers, text: str, who: str) -> None:
     if status in RETRYABLE_STATUS:
         raise RateLimitError(f"{who} {status}: {text[:300]}", retry_after_from(headers, text),
                              long_term=status == 429 and bool(_LONG_TERM.search(text)))
+    if 400 <= status < 500 and _LONG_TERM.search(text):
+        # a billing/quota rejection rides a 400 (an exhausted Anthropic credit balance answers
+        # "invalid_request_error: Your credit balance is too low..."), but it is a limit, not a bad
+        # request: raising it as a long-term limit folds it into the chain walk (cool-down + fallback)
+        # instead of failing the turn. A 429 carries a reset time; a credit-spent
+        # 400 does not, so _limit_wait returns None and the fallback chain takes over.
+        raise RateLimitError(f"{who} {status}: {text[:300]}", None, long_term=True)
     raise ProviderError(f"{who} {status}: {text[:500]}")
 
 

@@ -317,8 +317,18 @@ def _tasks_tool(args: dict, ctx: ToolContext) -> ToolResult:
             body = "".join(task.out).strip()
         if task.run is not None and not task.done:
             return text_result(testrun.progress_note(task.run) + (f"\nlatest output:\n{task.run.tail(6)}" if body else ""))
-        out = head_tail(body) if body else "(no output yet)"
-        if task.done:
+        if not body and not task.done:
+            # A quiet start means nothing but "(no output yet)" otherwise, and the model re-polls the
+            # identical call until the loop guard ends the whole turn (seen 2026-11-09: a quiet gradle
+            # build on ssh). Say how long it has actually been running and what to do instead.
+            return text_result(
+                f"({task.id} is still running — {int(time.time() - task.started)}s elapsed, no output yet. "
+                "Quiet minutes are normal for long builds (gradle, npm, docker) over ssh. Do other work "
+                "or wait: it finishes on its own and a completion notice will follow; polling this same "
+                "'output' call again without waiting wastes turns and ends the turn via the loop guard)"
+            )
+        out = head_tail(body) if body else f"(finished, exit code {task.code}, no output)"
+        if task.done and body:
             out += f"\n(finished, exit code {task.code})"
         return text_result(out)
     if op == "kill":

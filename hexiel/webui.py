@@ -7,12 +7,14 @@ The server shares the same Session object the TUI uses, so `hexiel serve` and
 `hexiel` stay in sync on messages, todo state and incidents."""
 
 import asyncio
+import random
 import sys
 import json
 import threading
 import time
 from pathlib import Path
 
+import aiohttp
 from aiohttp import WSMsgType, web
 
 from . import media as media_mod
@@ -366,9 +368,12 @@ def queued_note(text: str) -> dict:
                                  "(Stop ends the current work)"}
 
 
-def _json_response(data: dict, status: int = 200) -> web.Response:
+def _json_response(data: dict, status: int = 200, cors: bool = False) -> web.Response:
+    headers = {"Access-Control-Allow-Origin": "*",
+               "Access-Control-Allow-Methods": "GET, OPTIONS",
+               "Access-Control-Allow-Headers": "Content-Type"} if cors else {}
     return web.Response(text=json.dumps(data), content_type="application/json",
-                        status=status)
+                        status=status, headers=headers)
 
 
 def make_app(session: Session, driver=None) -> web.Application:
@@ -745,6 +750,9 @@ def make_app(session: Session, driver=None) -> web.Application:
                                                "Cache-Control": "private, max-age=3600"})
 
     sessions_cache = {"at": 0.0, "rows": []}
+    pypi_cache = {"at": 0.0, "downloads": 0}
+
+
 
     def recent_sessions() -> list[dict]:
         """This project's latest saved sessions. Reading them is the costly part of /api/state (the page polls it),
@@ -774,237 +782,275 @@ def make_app(session: Session, driver=None) -> web.Application:
         sessions_cache.update(at=time.time(), rows=rows)
         return rows
 
+    async def api_stats(request):
+        """Total PyPI downloads for the 'hexiel' package, cached 1-6h and CORS-enabled for the static site."""
+        now = time.time()
+        if now - pypi_cache["at"] < (3600 + random.randint(0, 5) * 3600):
+            return _json_response({"downloads": pypi_cache["downloads"]}, cors=True)
+
+        total = 0
+        try:
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10)) as http:
+                # primary: pepy.tech v2
+                async with http.get("https://api.pepy.tech/api/v2/projects/hexiel") as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        downloads = data.get("downloads")
+                        if isinstance(downloads, int):
+                            total = downloads
+                        elif isinstance(downloads, dict):
+                            total = sum(int(v) for v in downloads.values() if str(v).isdigit())
+        except Exception:  # noqa: BLE001 - fall through to alternate source
+            pass
+
+        if not total:
+            try:
+                async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10)) as http:
+                    # fallback: pypistats.org overall
+                    async with http.get("https://pypistats.org/api/packages/hexiel/overall") as resp:
+                        if resp.status == 200:
+                            data = await resp.json()
+                            total = sum(int(row.get("downloads", 0)) for row in data.get("data", [])
+                                        if isinstance(row, dict))
+            except Exception:  # noqa: BLE001 - keep stale or zero value on failure
+                pass
+
+        if total > 0 or pypi_cache["downloads"] == 0:
+            pypi_cache.update(at=now, downloads=max(total, 0))
+        return _json_response({"downloads": pypi_cache["downloads"]}, cors=True)
+
+
     async def api_state(request):
-        cfg = load_config()
-        chain = detect_toolchain(session.cwd)
-        sessions = recent_sessions()
-        _, _, todos = todo_mod.read_todos(session.cwd)
-        skills = [{"name": s.name, "description": s.description[:160]}
-                  for s in skills_mod.discover(session.cwd)]
-        return _json_response({
-            "status": status_state(session),
-            "models": sorted(cfg.models),
-            "current_profile": session.model_config.name,
-            "settings": {"auto_approve": session.auto_approve,
-                         "compact_threshold": session.settings.compact_threshold},
-            "todo": [{"text": i.text, "state": i.state} for i in todos],
-            "memory_index": memory_mod.index_text(session.cwd)[:4000],
-            "sessions": sessions,
-            "skills": skills,
-            "toolchain": {"container": chain.container.binary if chain.container else None,
-                          "test_runners": [r.label for r in chain.test_runners]},
-        })
+      cfg = load_config()
+      chain = detect_toolchain(session.cwd)
+      sessions = recent_sessions()
+      _, _, todos = todo_mod.read_todos(session.cwd)
+      skills = [{"name": s.name, "description": s.description[:160]}
+                for s in skills_mod.discover(session.cwd)]
+      return _json_response({
+          "status": status_state(session),
+          "models": sorted(cfg.models),
+          "current_profile": session.model_config.name,
+          "settings": {"auto_approve": session.auto_approve,
+                       "compact_threshold": session.settings.compact_threshold},
+          "todo": [{"text": i.text, "state": i.state} for i in todos],
+          "memory_index": memory_mod.index_text(session.cwd)[:4000],
+          "sessions": sessions,
+          "skills": skills,
+          "toolchain": {"container": chain.container.binary if chain.container else None,
+                        "test_runners": [r.label for r in chain.test_runners]},
+      })
 
     catalog: dict[str, object] = {}       # id -> Found, from the latest live discovery
 
     async def api_models_live(request):
-        """Every model reachable right now (queried fresh, in parallel)."""
-        from . import model_catalog
-        groups, errors = {}, {}
+      """Every model reachable right now (queried fresh, in parallel)."""
+      from . import model_catalog
+      groups, errors = {}, {}
 
-        def collect(ep, found, err):
-            if err:
-                errors[ep.label] = err
-            else:
-                groups[ep.label] = found
-        loop = asyncio.get_running_loop()
-        await loop.run_in_executor(None, lambda: model_catalog.discover(load_config(), collect))
-        catalog.clear()
-        out = []
-        current = session.model_config.name
-        for label in sorted(groups, key=lambda l: (not any(f.profile == current for f in groups[l]),
-                                                   "Ollama" not in l, l)):
-            items = []
-            for i, f in enumerate(sorted(groups[label], key=lambda f: (not f.profile, f.model))):
-                key = f"{label}|{f.model}"
-                catalog[key] = f
-                items.append({"id": key, "model": f.model, "profile": f.profile, "detail": f.detail,
-                              "current": bool(f.profile) and f.profile == current})
-            out.append({"label": label, "models": items})
-        return _json_response({"groups": out, "errors": errors})
+      def collect(ep, found, err):
+          if err:
+              errors[ep.label] = err
+          else:
+              groups[ep.label] = found
+      loop = asyncio.get_running_loop()
+      await loop.run_in_executor(None, lambda: model_catalog.discover(load_config(), collect))
+      catalog.clear()
+      out = []
+      current = session.model_config.name
+      for label in sorted(groups, key=lambda l: (not any(f.profile == current for f in groups[l]),
+                                                 "Ollama" not in l, l)):
+          items = []
+          for i, f in enumerate(sorted(groups[label], key=lambda f: (not f.profile, f.model))):
+              key = f"{label}|{f.model}"
+              catalog[key] = f
+              items.append({"id": key, "model": f.model, "profile": f.profile, "detail": f.detail,
+                            "current": bool(f.profile) and f.profile == current})
+          out.append({"label": label, "models": items})
+      return _json_response({"groups": out, "errors": errors})
 
     async def api_models_select(request):
-        from . import model_catalog
-        from .config import ModelConfig
-        data = await request.json()
-        found = catalog.get(data.get("id", ""))
-        scope = data.get("scope", "session")
-        if found is None:
-            return _json_response({"error": "model list is out of date — reopen the picker"}, 400)
-        name, fields = model_catalog.profile_for(found)
-        try:
-            if fields and scope == "session":
-                session.model_config = ModelConfig(name=name, **fields)
-                msg = f"Model → {found.model} (this session only)"
-            else:
-                if fields:
-                    try:
-                        settings_edit.add_profile(name, fields)
-                    except ValueError:
-                        pass
-                msg = settings_edit.apply(session, "profile", name, scope)
-        except (KeyError, ValueError, AssertionError, SystemExit) as exc:
-            return _json_response({"error": str(exc)}, 400)
-        state.broadcast({"t": "status", "status": status_state(session)})
-        return _json_response({"ok": True, "message": msg})
+      from . import model_catalog
+      from .config import ModelConfig
+      data = await request.json()
+      found = catalog.get(data.get("id", ""))
+      scope = data.get("scope", "session")
+      if found is None:
+          return _json_response({"error": "model list is out of date — reopen the picker"}, 400)
+      name, fields = model_catalog.profile_for(found)
+      try:
+          if fields and scope == "session":
+              session.model_config = ModelConfig(name=name, **fields)
+              msg = f"Model → {found.model} (this session only)"
+          else:
+              if fields:
+                  try:
+                      settings_edit.add_profile(name, fields)
+                  except ValueError:
+                      pass
+              msg = settings_edit.apply(session, "profile", name, scope)
+      except (KeyError, ValueError, AssertionError, SystemExit) as exc:
+          return _json_response({"error": str(exc)}, 400)
+      state.broadcast({"t": "status", "status": status_state(session)})
+      return _json_response({"ok": True, "message": msg})
 
     async def api_model(request):
-        data = await request.json()
-        try:
-            settings_edit.apply(session, "profile", data.get("name", ""), data.get("scope", "session"))
-        except (KeyError, ValueError) as exc:
-            return _json_response({"error": str(exc)}, 400)
-        state.broadcast({"t": "status", "status": status_state(session)})
-        return _json_response({"ok": True})
+      data = await request.json()
+      try:
+          settings_edit.apply(session, "profile", data.get("name", ""), data.get("scope", "session"))
+      except (KeyError, ValueError) as exc:
+          return _json_response({"error": str(exc)}, 400)
+      state.broadcast({"t": "status", "status": status_state(session)})
+      return _json_response({"ok": True})
 
     async def api_settings(request):
-        # legacy session-only toggles; /api/config is the full editor
-        data = await request.json()
-        for key, field in (("auto_approve", "settings.auto_approve"),
-                           ("compact_threshold", "settings.compact_threshold")):
-            if key in data:
-                settings_edit.apply(session, field, data[key], "session")
-        state.broadcast({"t": "status", "status": status_state(session)})
-        return _json_response({"ok": True})
+      # legacy session-only toggles; /api/config is the full editor
+      data = await request.json()
+      for key, field in (("auto_approve", "settings.auto_approve"),
+                         ("compact_threshold", "settings.compact_threshold")):
+          if key in data:
+              settings_edit.apply(session, field, data[key], "session")
+      state.broadcast({"t": "status", "status": status_state(session)})
+      return _json_response({"ok": True})
 
     async def api_update_get(request):
-        from . import updater
-        loop = asyncio.get_running_loop()
-        force = request.query.get("force") == "1"
-        return _json_response(await loop.run_in_executor(None, lambda: updater.check(force=force)))
+      from . import updater
+      loop = asyncio.get_running_loop()
+      force = request.query.get("force") == "1"
+      return _json_response(await loop.run_in_executor(None, lambda: updater.check(force=force)))
 
     async def api_update_post(request):
-        from . import updater
-        if state.busy:
-            return _json_response({"ok": False, "log": "finish or stop the current turn first"}, 409)
-        loop = asyncio.get_running_loop()
-        ok, log = await loop.run_in_executor(None, updater.apply_update)
-        if ok:
-            session.save()
-            # restart after this response is flushed; the page reconnects by itself
-            loop.call_later(1.0, updater.restart)
-        return _json_response({"ok": ok, "log": log, "restarting": ok})
+      from . import updater
+      if state.busy:
+          return _json_response({"ok": False, "log": "finish or stop the current turn first"}, 409)
+      loop = asyncio.get_running_loop()
+      ok, log = await loop.run_in_executor(None, updater.apply_update)
+      if ok:
+          session.save()
+          # restart after this response is flushed; the page reconnects by itself
+          loop.call_later(1.0, updater.restart)
+      return _json_response({"ok": ok, "log": log, "restarting": ok})
 
     async def api_config_get(request):
-        loop = asyncio.get_running_loop()   # options may query the model server
-        rows = await loop.run_in_executor(None, lambda: settings_edit.rows(session, with_options=True))
-        return _json_response({"rows": rows})
+      loop = asyncio.get_running_loop()   # options may query the model server
+      rows = await loop.run_in_executor(None, lambda: settings_edit.rows(session, with_options=True))
+      return _json_response({"rows": rows})
 
     async def api_config_set(request):
-        data = await request.json()
-        try:
-            msg = settings_edit.apply(session, data.get("key", ""), data.get("value"),
-                                      data.get("scope", "session"))
-        except (KeyError, ValueError, AssertionError, SystemExit) as exc:
-            return _json_response({"error": str(exc)}, 400)
-        state.broadcast({"t": "status", "status": status_state(session)})
-        loop = asyncio.get_running_loop()
-        rows = await loop.run_in_executor(None, lambda: settings_edit.rows(session, with_options=True))
-        return _json_response({"ok": True, "message": msg, "rows": rows})
+      data = await request.json()
+      try:
+          msg = settings_edit.apply(session, data.get("key", ""), data.get("value"),
+                                    data.get("scope", "session"))
+      except (KeyError, ValueError, AssertionError, SystemExit) as exc:
+          return _json_response({"error": str(exc)}, 400)
+      state.broadcast({"t": "status", "status": status_state(session)})
+      loop = asyncio.get_running_loop()
+      rows = await loop.run_in_executor(None, lambda: settings_edit.rows(session, with_options=True))
+      return _json_response({"ok": True, "message": msg, "rows": rows})
 
     async def api_prompt_get(request):
-        try:
-            return _json_response(prompt_edit.get(session))
-        except Exception as exc:  # noqa: BLE001 - report, don't crash the server
-            return _json_response({"error": str(exc)}, 500)
+      try:
+          return _json_response(prompt_edit.get(session))
+      except Exception as exc:  # noqa: BLE001 - report, don't crash the server
+          return _json_response({"error": str(exc)}, 500)
 
     async def api_prompt_set(request):
-        data = await request.json()
-        try:
-            if data.get("action") == "reset":
-                msg = prompt_edit.reset(session)
-            else:
-                msg = prompt_edit.save(session, str(data.get("text", "")), data.get("scope", "session"))
-        except (ValueError, OSError) as exc:
-            return _json_response({"error": str(exc)}, 400)
-        state.broadcast({"t": "status", "status": status_state(session)})
-        return _json_response({"ok": True, "message": msg})
+      data = await request.json()
+      try:
+          if data.get("action") == "reset":
+              msg = prompt_edit.reset(session)
+          else:
+              msg = prompt_edit.save(session, str(data.get("text", "")), data.get("scope", "session"))
+      except (ValueError, OSError) as exc:
+          return _json_response({"error": str(exc)}, 400)
+      state.broadcast({"t": "status", "status": status_state(session)})
+      return _json_response({"ok": True, "message": msg})
 
     async def api_approve(request):
-        data = await request.json()
-        holder = state.approvals.get(int(data.get("id", 0)))
-        if not holder:
-            return _json_response({"error": "no pending approval"}, 404)
-        holder["verdict"] = data.get("verdict", "no")
-        holder["event"].set()
-        return _json_response({"ok": True})
+      data = await request.json()
+      holder = state.approvals.get(int(data.get("id", 0)))
+      if not holder:
+          return _json_response({"error": "no pending approval"}, 404)
+      holder["verdict"] = data.get("verdict", "no")
+      holder["event"].set()
+      return _json_response({"ok": True})
 
     async def api_clear(request):
-        session.messages = []
-        session.last_usage = {}
-        state.broadcast({"t": "history", "items": [], "status": status_state(session)})
-        return _json_response({"ok": True})
+      session.messages = []
+      session.last_usage = {}
+      state.broadcast({"t": "history", "items": [], "status": status_state(session)})
+      return _json_response({"ok": True})
 
     async def api_compact(request):
-        def run():
-            session.compact(make_provider(session.model_config, session.settings),
-                            manual=True)
-        threading.Thread(target=run, daemon=True).start()
-        return _json_response({"ok": True})
+      def run():
+          session.compact(make_provider(session.model_config, session.settings),
+                          manual=True)
+      threading.Thread(target=run, daemon=True).start()
+      return _json_response({"ok": True})
 
     # -- OpenAI-compatible endpoint (read-only tools; OpenWebUI points here)
 
     async def v1_chat(request):
-        data = await request.json()
-        incoming = [m for m in data.get("messages", []) if m.get("role") != "system"]
-        ephemeral = Session(session.model_config, session.settings, session.cwd,
-                            session.tools, session.system_prompt)
-        ephemeral.bind_tool_ctx(session.tool_ctx)
-        ephemeral.messages = [dict(m) for m in incoming]
-        tool_defs = [{"name": t.name, "description": t.description,
-                      "parameters": t.parameters} for t in session.tools]
+      data = await request.json()
+      incoming = [m for m in data.get("messages", []) if m.get("role") != "system"]
+      ephemeral = Session(session.model_config, session.settings, session.cwd,
+                          session.tools, session.system_prompt)
+      ephemeral.bind_tool_ctx(session.tool_ctx)
+      ephemeral.messages = [dict(m) for m in incoming]
+      tool_defs = [{"name": t.name, "description": t.description,
+                    "parameters": t.parameters} for t in session.tools]
 
-        def answer_text(max_steps: int = 6) -> str:
-            provider = make_provider(ephemeral.model_config, ephemeral.settings)
-            for _ in range(max_steps):
-                out = ephemeral._stream_assistant(provider, tool_defs)
-                ephemeral.messages.append(out)
-                calls = out.get("tool_calls") or []
-                if not calls:
-                    return out.get("content", "")
-                if ephemeral._provider_error:
-                    break
-                for call in calls:
-                    tool = next((t for t in session.tools if t.name == call["name"]), None)
-                    if tool is None or not (tool.readonly or getattr(tool, "always_ok", False)):
-                        ephemeral.messages.append({
-                            "role": "tool", "tool_call_id": call["id"], "is_error": True,
-                            "content": f"tool '{call.get('name')}' unavailable over the API "
-                                       "(read-only tools only); answer from what you have"})
-                        continue
-                    result: ToolResult = tool.run(call["arguments"], session.tool_ctx)
-                    entry = {"role": "tool", "tool_call_id": call["id"],
-                             "content": _shorten(result.text, 6000)}
-                    if result.is_error:
-                        entry["is_error"] = True
-                    ephemeral.messages.append(entry)
-            return ephemeral.messages[-1].get("content", "")
+      def answer_text(max_steps: int = 6) -> str:
+          provider = make_provider(ephemeral.model_config, ephemeral.settings)
+          for _ in range(max_steps):
+              out = ephemeral._stream_assistant(provider, tool_defs)
+              ephemeral.messages.append(out)
+              calls = out.get("tool_calls") or []
+              if not calls:
+                  return out.get("content", "")
+              if ephemeral._provider_error:
+                  break
+              for call in calls:
+                  tool = next((t for t in session.tools if t.name == call["name"]), None)
+                  if tool is None or not (tool.readonly or getattr(tool, "always_ok", False)):
+                      ephemeral.messages.append({
+                          "role": "tool", "tool_call_id": call["id"], "is_error": True,
+                          "content": f"tool '{call.get('name')}' unavailable over the API "
+                                     "(read-only tools only); answer from what you have"})
+                      continue
+                  result: ToolResult = tool.run(call["arguments"], session.tool_ctx)
+                  entry = {"role": "tool", "tool_call_id": call["id"],
+                           "content": _shorten(result.text, 6000)}
+                  if result.is_error:
+                      entry["is_error"] = True
+                  ephemeral.messages.append(entry)
+          return ephemeral.messages[-1].get("content", "")
 
-        loop = asyncio.get_running_loop()
-        if data.get("stream"):
-            response = web.StreamResponse(
-                headers={"content-type": "text/event-stream",
-                         "cache-control": "no-cache"})
-            await response.prepare(request)
-            text = await loop.run_in_executor(None, answer_text)
-            for chunk in _chunks(text):
-                payload = json.dumps({"id": "hexiel", "object": "chat.completion.chunk",
-                                      "model": session.model_config.model,
-                                      "choices": [{"index": 0, "delta": {"content": chunk}}]})
-                await response.write(f"data: {payload}\n\n".encode())
-            await response.write(b"data: [DONE]\n\n")
-            await response.write_eof()
-            return response
-        content = await loop.run_in_executor(None, answer_text)
-        return _json_response({
-            "id": "hexiel-" + str(int(time.time())), "object": "chat.completion",
-            "model": session.model_config.model,
-            "choices": [{"index": 0, "message": {"role": "assistant", "content": content},
-                         "finish_reason": "stop"}]})
+      loop = asyncio.get_running_loop()
+      if data.get("stream"):
+          response = web.StreamResponse(
+              headers={"content-type": "text/event-stream",
+                       "cache-control": "no-cache"})
+          await response.prepare(request)
+          text = await loop.run_in_executor(None, answer_text)
+          for chunk in _chunks(text):
+              payload = json.dumps({"id": "hexiel", "object": "chat.completion.chunk",
+                                    "model": session.model_config.model,
+                                    "choices": [{"index": 0, "delta": {"content": chunk}}]})
+              await response.write(f"data: {payload}\n\n".encode())
+          await response.write(b"data: [DONE]\n\n")
+          await response.write_eof()
+          return response
+      content = await loop.run_in_executor(None, answer_text)
+      return _json_response({
+          "id": "hexiel-" + str(int(time.time())), "object": "chat.completion",
+          "model": session.model_config.model,
+          "choices": [{"index": 0, "message": {"role": "assistant", "content": content},
+                       "finish_reason": "stop"}]})
 
     def _chunks(text: str, size: int = 64):
-        for i in range(0, len(text), size):
-            yield text[i:i + size]
+      for i in range(0, len(text), size):
+          yield text[i:i + size]
 
     app.router.add_get("/", index)
     app.router.add_get("/static/{name}", static)
@@ -1024,6 +1070,8 @@ def make_app(session: Session, driver=None) -> web.Application:
     app.router.add_post("/api/config", api_config_set)
     app.router.add_get("/api/prompt", api_prompt_get)
     app.router.add_post("/api/prompt", api_prompt_set)
+    app.router.add_get("/api/stats", api_stats)
+
     app.router.add_post("/api/approve", api_approve)
     app.router.add_post("/api/remote/login", api_remote_login)
     app.router.add_post("/api/clear", api_clear)
@@ -1035,15 +1083,15 @@ def make_app(session: Session, driver=None) -> web.Application:
 def serve(session: Session, host: str = "127.0.0.1", port: int = 8777) -> None:
     banner(host, port, session)
     try:
-        asyncio.run(_serve_and_wait(host, port, session))
+      asyncio.run(_serve_and_wait(host, port, session))
     except KeyboardInterrupt:
-        pass
+      pass
 
 
 def banner(host: str, port: int, session: Session) -> None:
     if host not in ("127.0.0.1", "localhost"):
-        print(f"WARNING: binding {host} — anyone on the network can drive the agent, "
-              "including running shell commands. Local-only is the safe default.")
+      print(f"WARNING: binding {host} — anyone on the network can drive the agent, "
+            "including running shell commands. Local-only is the safe default.")
     print()
     print("  ⚡ hexiel web UI")
     print(f"     http://{host}:{port}/")
@@ -1060,6 +1108,6 @@ async def _serve_and_wait(host: str, port: int, session: Session) -> None:
     site = web.TCPSite(runner, host, port)
     await site.start()
     try:
-        await asyncio.Event().wait()  # serve until interrupted
+      await asyncio.Event().wait()  # serve until interrupted
     finally:
-        await runner.cleanup()
+      await runner.cleanup()

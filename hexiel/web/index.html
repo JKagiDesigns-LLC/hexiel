@@ -1,154 +1,265 @@
 <!doctype html>
 <html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>hexiel</title>
-<link rel="stylesheet" href="static/style.css">
-  <link rel="icon" type="image/svg+xml" href="static/logo.svg">
-</head>
-<body>
-  <div id="side-back" title=""></div>
-  <aside id="sidebar">
-    <div id="brand"><img src="static/logo.svg" alt="" class="logo"> hexiel <small>web</small></div>
-    <h3>Sessions</h3>
-    <div class="side-section" id="sessions-list"></div>
-    <h3>Skills</h3>
-    <div class="side-section" id="skills-list"></div>
-    <h3>Toolchain</h3>
-    <div class="side-section" id="toolchain-list"></div>
-    <h3>Memory</h3>
-    <div class="side-section"><div id="mem-summary" class="dim" style="white-space:pre-wrap;max-height:180px;overflow-y:auto"></div></div>
-  </aside>
-
-  <div id="main">
-    <div id="topbar">
-      <button id="menu-btn" title="Sessions, skills, memory">☰</button>
-      <button id="model-btn" title="Switch model (lists what's available right now)">⌘ <span id="model-name">model</span> ▾</button>
-      <button id="compact-btn" title="Summarize history now (replaces tokens)">Compact</button>
-      <button id="clear-btn" title="Start a fresh conversation">Clear</button>
-      <button id="settings-btn" title="View and change settings">⚙ <span>Settings</span></button>
-      <button id="update-btn" style="display:none" title="Install the newest hexiel and restart"></button>
-      <div class="spacer"></div>
-      <div id="test-badge" hidden></div>
-      <div id="timer-badge" hidden></div>
-      <div id="todo-badge" class="dim"></div>
-      <div id="ctx-label"></div>
-    </div>
-
-    <div id="chat"></div>
-
-    <div id="composer">
-      <div id="slash-menu" hidden></div>
-      <div id="attached" hidden></div>
-      <div class="inner">
-        <textarea id="input" placeholder="Ask hexiel to build, fix, research… (Enter to send, Shift+Enter for newline)"></textarea>
-        <button id="stop" hidden title="Stop the current work">Stop</button>
-        <button id="send">Send</button>
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, viewport-fit=cover"
+    />
+    <title>hexiel</title>
+    <link rel="stylesheet" href="static/style.css" />
+    <link rel="icon" type="image/svg+xml" href="static/logo.svg" />
+  </head>
+  <body>
+    <div id="side-back" title=""></div>
+    <aside id="sidebar">
+      <div id="brand">
+        <img src="static/logo.svg" alt="" class="logo" /> hexiel
+        <small>web</small>
       </div>
-      <div id="hint">hexiel asks before running any shell command or file write. Tools: bash · read/write/edit · grep · glob · test · container · web · image · memory · todo · timer · gitlab · skill</div>
-    </div>
-  </div>
-
-  <div id="modal-back">
-    <div id="approve-box">
-      <h4>Approve tool call</h4>
-      <div class="dim" id="approve-tool" style="font-weight:600"></div>
-      <pre id="approve-args"></pre>
-      <div class="row">
-        <button class="yes" id="approve-yes">Approve (y)</button>
-        <button class="always" id="approve-always">Always for this session</button>
-        <button class="no" id="approve-no">Deny (n)</button>
+      <h3>Sessions</h3>
+      <div class="side-section" id="sessions-list"></div>
+      <h3>Skills</h3>
+      <div class="side-section" id="skills-list"></div>
+      <h3>Toolchain</h3>
+      <div class="side-section" id="toolchain-list"></div>
+      <h3>Memory</h3>
+      <div class="side-section">
+        <div
+          id="mem-summary"
+          class="dim"
+          style="white-space: pre-wrap; max-height: 180px; overflow-y: auto"
+        ></div>
       </div>
-    </div>
-  </div>
+    </aside>
 
-  <div class="modal-back" id="settings-back">
-    <div class="panel" id="settings-box">
-      <div class="panel-head"><h4>hexiel settings</h4><button id="settings-close" title="Close (Esc)">✕</button></div>
-      <div class="dim" style="margin-bottom:8px">Change a value, then choose whether it applies to this session only or is saved to config.toml.</div>
-      <table id="settings-table">
-        <thead><tr><th>Setting</th><th>Value</th><th>Saved in config</th><th></th></tr></thead>
-        <tbody></tbody>
-      </table>
-      <div class="dim" id="settings-msg"></div>
-    </div>
-  </div>
+    <div id="main">
+      <div id="topbar">
+        <button id="menu-btn" title="Sessions, skills, memory">☰</button>
+        <button
+          id="model-btn"
+          title="Switch model (lists what's available right now)"
+        >
+          ⌘ <span id="model-name">model</span> ▾
+        </button>
+        <button
+          id="compact-btn"
+          title="Summarize history now (replaces tokens)"
+        >
+          Compact
+        </button>
+        <button id="clear-btn" title="Start a fresh conversation">Clear</button>
+        <button id="settings-btn" title="View and change settings">
+          ⚙ <span>Settings</span>
+        </button>
+        <button
+          id="update-btn"
+          style="display: none"
+          title="Install the newest hexiel and restart"
+        ></button>
+        <div class="spacer"></div>
+        <div id="test-badge" hidden></div>
+        <div id="timer-badge" hidden></div>
+        <div id="todo-badge" class="dim"></div>
+        <div
+          id="download-badge"
+          class="dim"
+          hidden
+          title="Total PyPI downloads"
+        >
+          ⬇ <span id="download-count">—</span>
+        </div>
+        <div id="ctx-label"></div>
+      </div>
 
-  <div class="modal-back" id="remote-back">
-    <div class="panel" id="remote-box">
-      <div class="panel-head"><h4>Sign in to Hexiel Remote</h4><button id="remote-close" title="Close (Esc)">✕</button></div>
-      <div class="dim" style="margin-bottom:8px">Use your remote.hexiel.tech login. No account yet?
-        <a href="https://remote.hexiel.tech" target="_blank" rel="noopener">Sign up</a>, then come back.</div>
-      <input id="remote-email" type="email" placeholder="email" autocomplete="username">
-      <input id="remote-password" type="password" placeholder="password" autocomplete="current-password">
-      <div class="row"><button class="yes" id="remote-go">Sign in and connect this chat</button></div>
-      <div class="dim" id="remote-msg"></div>
-    </div>
-  </div>
+      <div id="chat"></div>
 
-  <div class="modal-back" id="viewer-back">
-    <div class="panel" id="viewer-box">
-      <div class="panel-head"><h4 id="viewer-title"></h4>
-        <span><a id="viewer-open" target="_blank" rel="noopener">Open in a new tab</a> <button id="viewer-close" title="Close (Esc)">✕</button></span></div>
-      <div id="viewer-body"></div>
-    </div>
-  </div>
-
-  <div class="modal-back" id="picker-back">
-    <div class="panel" id="picker-box">
-      <div class="panel-head"><h4>Switch model</h4><button id="picker-close" title="Close (Esc)">✕</button></div>
-      <input id="picker-search" placeholder="search models, e.g. sonnet, qwen, gemini…" autocomplete="off">
-      <div id="picker-list"></div>
-      <div class="dim" id="picker-status"></div>
-    </div>
-  </div>
-
-  <div class="modal-back" id="heal-back">
-    <div class="panel" id="heal-box">
-      <div class="panel-head"><h4>Review the self-heal fix</h4><span class="dim" id="heal-summary"></span></div>
-      <div class="dim" style="margin-bottom:8px">Tick the files to include. <b>Send</b> opens a merge request to the
-        official hexiel repo so every user gets the fix (you keep it too); <b>Keep</b> applies it to your hexiel only.</div>
-      <div id="heal-panes"><div id="heal-files"></div><pre id="heal-diff"></pre></div>
-      <div class="row">
-        <button class="yes" id="heal-send">Send to hexiel (and keep)</button>
-        <button id="heal-keep">Keep just for me</button>
-        <button id="heal-discard">Discard</button>
-        <button id="heal-later">Decide later</button>
+      <div id="composer">
+        <div id="slash-menu" hidden></div>
+        <div id="attached" hidden></div>
+        <div class="inner">
+          <textarea
+            id="input"
+            placeholder="Ask hexiel to build, fix, research… (Enter to send, Shift+Enter for newline)"
+          ></textarea>
+          <button id="stop" hidden title="Stop the current work">Stop</button>
+          <button id="send">Send</button>
+        </div>
+        <div id="hint">
+          hexiel asks before running any shell command or file write. Tools:
+          bash · read/write/edit · grep · glob · test · container · web · image
+          · memory · todo · timer · gitlab · skill
+        </div>
       </div>
     </div>
-  </div>
 
-  <div class="modal-back" id="prompt-back">
-    <div class="panel" id="prompt-box">
-      <div class="panel-head"><h4>System prompt</h4><button id="prompt-close" title="Close (Esc)">✕</button></div>
-      <div class="dim" id="prompt-source"></div>
-      <textarea id="prompt-text" spellcheck="false" autocomplete="off"></textarea>
-      <div class="row">
-        <button class="yes" id="prompt-session">This session</button>
-        <button id="prompt-dir">This directory</button>
-        <button id="prompt-global">Globally</button>
-        <button id="prompt-reset">Reset to default</button>
-        <button id="prompt-cancel">Close</button>
-      </div>
-      <div class="dim" id="prompt-msg"></div>
-    </div>
-  </div>
-
-  <div class="modal-back" id="scope-back">
-    <div class="panel" id="scope-box">
-      <h4 id="scope-title"></h4>
-      <div class="dim">Keep this for just this session, or save it to config.toml?</div>
-      <div class="row">
-        <button id="scope-session">This session</button>
-        <button class="yes" id="scope-permanent">Save permanently</button>
-        <button id="scope-cancel">Cancel</button>
+    <div id="modal-back">
+      <div id="approve-box">
+        <h4>Approve tool call</h4>
+        <div class="dim" id="approve-tool" style="font-weight: 600"></div>
+        <pre id="approve-args"></pre>
+        <div class="row">
+          <button class="yes" id="approve-yes">Approve (y)</button>
+          <button class="always" id="approve-always">
+            Always for this session
+          </button>
+          <button class="no" id="approve-no">Deny (n)</button>
+        </div>
       </div>
     </div>
-  </div>
 
-  <div class="dim" id="todo-panel" style="display:none"></div>
-  <script src="static/md.js"></script>
-  <script src="static/app.js"></script>
-</body>
+    <div class="modal-back" id="settings-back">
+      <div class="panel" id="settings-box">
+        <div class="panel-head">
+          <h4>hexiel settings</h4>
+          <button id="settings-close" title="Close (Esc)">✕</button>
+        </div>
+        <div class="dim" style="margin-bottom: 8px">
+          Change a value, then choose whether it applies to this session only or
+          is saved to config.toml.
+        </div>
+        <table id="settings-table">
+          <thead>
+            <tr>
+              <th>Setting</th>
+              <th>Value</th>
+              <th>Saved in config</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+        <div class="dim" id="settings-msg"></div>
+      </div>
+    </div>
+
+    <div class="modal-back" id="remote-back">
+      <div class="panel" id="remote-box">
+        <div class="panel-head">
+          <h4>Sign in to Hexiel Remote</h4>
+          <button id="remote-close" title="Close (Esc)">✕</button>
+        </div>
+        <div class="dim" style="margin-bottom: 8px">
+          Use your remote.hexiel.tech login. No account yet?
+          <a href="https://remote.hexiel.tech" target="_blank" rel="noopener"
+            >Sign up</a
+          >, then come back.
+        </div>
+        <input
+          id="remote-email"
+          type="email"
+          placeholder="email"
+          autocomplete="username"
+        />
+        <input
+          id="remote-password"
+          type="password"
+          placeholder="password"
+          autocomplete="current-password"
+        />
+        <div class="row">
+          <button class="yes" id="remote-go">
+            Sign in and connect this chat
+          </button>
+        </div>
+        <div class="dim" id="remote-msg"></div>
+      </div>
+    </div>
+
+    <div class="modal-back" id="viewer-back">
+      <div class="panel" id="viewer-box">
+        <div class="panel-head">
+          <h4 id="viewer-title"></h4>
+          <span
+            ><a id="viewer-open" target="_blank" rel="noopener"
+              >Open in a new tab</a
+            >
+            <button id="viewer-close" title="Close (Esc)">✕</button></span
+          >
+        </div>
+        <div id="viewer-body"></div>
+      </div>
+    </div>
+
+    <div class="modal-back" id="picker-back">
+      <div class="panel" id="picker-box">
+        <div class="panel-head">
+          <h4>Switch model</h4>
+          <button id="picker-close" title="Close (Esc)">✕</button>
+        </div>
+        <input
+          id="picker-search"
+          placeholder="search models, e.g. sonnet, qwen, gemini…"
+          autocomplete="off"
+        />
+        <div id="picker-list"></div>
+        <div class="dim" id="picker-status"></div>
+      </div>
+    </div>
+
+    <div class="modal-back" id="heal-back">
+      <div class="panel" id="heal-box">
+        <div class="panel-head">
+          <h4>Review the self-heal fix</h4>
+          <span class="dim" id="heal-summary"></span>
+        </div>
+        <div class="dim" style="margin-bottom: 8px">
+          Tick the files to include. <b>Send</b> opens a merge request to the
+          official hexiel repo so every user gets the fix (you keep it too);
+          <b>Keep</b> applies it to your hexiel only.
+        </div>
+        <div id="heal-panes">
+          <div id="heal-files"></div>
+          <pre id="heal-diff"></pre>
+        </div>
+        <div class="row">
+          <button class="yes" id="heal-send">Send to hexiel (and keep)</button>
+          <button id="heal-keep">Keep just for me</button>
+          <button id="heal-discard">Discard</button>
+          <button id="heal-later">Decide later</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="modal-back" id="prompt-back">
+      <div class="panel" id="prompt-box">
+        <div class="panel-head">
+          <h4>System prompt</h4>
+          <button id="prompt-close" title="Close (Esc)">✕</button>
+        </div>
+        <div class="dim" id="prompt-source"></div>
+        <textarea
+          id="prompt-text"
+          spellcheck="false"
+          autocomplete="off"
+        ></textarea>
+        <div class="row">
+          <button class="yes" id="prompt-session">This session</button>
+          <button id="prompt-dir">This directory</button>
+          <button id="prompt-global">Globally</button>
+          <button id="prompt-reset">Reset to default</button>
+          <button id="prompt-cancel">Close</button>
+        </div>
+        <div class="dim" id="prompt-msg"></div>
+      </div>
+    </div>
+
+    <div class="modal-back" id="scope-back">
+      <div class="panel" id="scope-box">
+        <h4 id="scope-title"></h4>
+        <div class="dim">
+          Keep this for just this session, or save it to config.toml?
+        </div>
+        <div class="row">
+          <button id="scope-session">This session</button>
+          <button class="yes" id="scope-permanent">Save permanently</button>
+          <button id="scope-cancel">Cancel</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="dim" id="todo-panel" style="display: none"></div>
+    <script src="static/md.js"></script>
+    <script src="static/app.js"></script>
+  </body>
 </html>

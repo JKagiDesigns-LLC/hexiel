@@ -17,6 +17,7 @@ from __future__ import annotations
 import re
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 FORMAT_TIMEOUT = 30.0
@@ -31,12 +32,22 @@ CHECKERS = (                      # suffix -> (name, args-builder); first instal
 )
 
 
+def _venv_bin(name: str) -> str | None:
+    venv = getattr(sys, "prefix", None)
+    if venv:
+        candidate = Path(venv) / "bin" / name
+        if candidate.is_file():
+            return str(candidate)
+    return shutil.which(name)
+
+
 def formatter_for(path: Path) -> tuple[str, list[str]] | None:
     """(name, cmd) for this file type, or None when nothing applies/is installed."""
     suffix = path.suffix.lower()
     for suffixes, name, build, _unused in CHECKERS:
-        if suffix in suffixes and shutil.which(name):
-            return name, [a.replace("\\", "/") for a in build(str(path))]
+        exe = _venv_bin(name)
+        if suffix in suffixes and exe:
+            return name, [a if a != name else exe for a in build(str(path))]
     return None
 
 

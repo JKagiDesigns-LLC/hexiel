@@ -101,14 +101,21 @@ def build_session(cwd: str, model_name: str | None, resumed: dict | None = None,
     session.tools.append(ToolDef(
         "task", "Delegate a self-contained investigation (e.g. 'find where X is configured and how "
         "it is used', 'research Y on the web') to a subagent with its own context and read-only "
-        "tools. Only its final answer is returned — use it for searches that would otherwise "
-        "flood this conversation with file contents.",
+        "tools, or mode=\"write\" for a full implementation job: write clones its own git worktree, "
+        "gets every tool, runs/commits there autonomously (approval-free inside the box) and only "
+        "its final answer is returned — use task for searches that would otherwise flood this "
+        "conversation with file contents, and fan out several in one reply to run them in parallel.",
         {"type": "object", "properties": {
             "description": {"type": "string", "description": "3-6 word label"},
             "prompt": {"type": "string", "description": "the full task, with everything it needs"},
+            "mode": {"type": "string", "enum": ["research", "write"],
+                     "description": "research (default): read-only helper, the answer only. write: the "
+                                    "helper implements, tests and commits inside its own git worktree; "
+                                    "the answer reports the branch and the merge command"},
             "worktree": {"type": "boolean",
                          "description": "run in its own git worktree (safe alongside other runs; "
-                                        "the answer reports the path and merge hint)"}},
+                                        "the answer reports the path and merge hint) — write mode "
+                                        "always gets one, named after the description unless given"}},
         "required": ["prompt"]},
         readonly=True, run=lambda args, ctx: session.run_subagent(args)))
     if settings.consult_mode != "off" and (settings.planner_profile or settings.fallback_profile):

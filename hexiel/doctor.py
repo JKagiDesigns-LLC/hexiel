@@ -198,7 +198,7 @@ def ollama_runtime_checks(model_cfg) -> list[tuple[bool, str, str, str]]:
 
 
 def wizard(cwd: str) -> None:
-    """First-run guided setup: config, provider pick, gitlab token (optional)."""
+    """First-run guided setup: config, provider pick, gitlab token (optional), Hexiel Remote (optional)."""
     print("Welcome to hexiel — guided setup (all questions optional, Enter keeps defaults)\n")
     if not CONFIG_FILE.exists():
         load_config()   # writes starter config
@@ -215,6 +215,21 @@ def wizard(cwd: str) -> None:
     if not load_token():
         print("  no GitLab token: /ship and /heal can push branches but will not open MRs.")
         print("  add later with /setup-gitlab <token> (api scope PAT).")
+    from . import remote
+    if not remote.load_config().get("device_token"):
+        print("\n  Hexiel Remote (paid): drive this machine from a browser or phone.")
+        print("  Sign in later with `hexiel remote login`; automations need the background service.")
+    else:
+        enable = "n"
+        if sys.stdin.isatty():
+            enable = input("\nInstall the Hexiel Remote background service (starts at login)? [Y/n] ").strip().lower() or "y"
+        if enable.startswith("y"):
+            try:
+                print("  " + remote.install_service())
+            except (RuntimeError, OSError) as exc:
+                print(f"  ! could not install the background service: {exc}")
+        else:
+            print("  skipped Hexiel Remote background service. Run `hexiel remote install` anytime.")
     print("\nDone. Start a session with `hexiel` (TUI), `hexiel --serve` (browser), or `hexiel -p \"…\"`.")
 
 

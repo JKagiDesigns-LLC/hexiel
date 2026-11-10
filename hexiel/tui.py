@@ -2768,8 +2768,11 @@ class HexielTUI(App):
                 self._flush_timer = self.set_timer(self._flush_after(), self._flush_stream)
         elif event == "turn_end":
             self.finalize_stream()
-            error = payload[0].get("error") if payload and isinstance(payload[0], dict) else None
-            if error:
+            payload_dict = payload[0] if payload and isinstance(payload[0], dict) else {}
+            error = payload_dict.get("error")
+            if error and payload_dict.get("kind") == "loop_guard":
+                pass          # the 🛑 note already announces it — don't double-display as a fake provider error
+            elif error:
                 chat.mount(Static(f"[red]provider error:[/red] {_literal(error)}", classes="note"))
         elif event == "tool_call":
             # seal this step's text so the next step's reply renders *below* the

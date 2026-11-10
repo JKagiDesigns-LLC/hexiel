@@ -38,6 +38,20 @@ def test_status_classification():
     assert not isinstance(exc.value, llm.RateLimitError)
 
 
+def test_credit_exhaustion_400_is_a_limit_not_a_provider_error():
+    """An exhausted Anthropic credit balance answers with a 400 "invalid_request_error", but it is a
+    spend limit, not a bad request: it must raise a long-term RateLimitError so the fallback chain
+    walks on to the local models instead of failing the turn (seen 2026-11-09)."""
+    with pytest.raises(llm.RateLimitError) as exc:
+        llm.raise_for_status(
+            400, {},
+            '{"type":"error","error":{"type":"invalid_request_error","message":"Your credit balance '
+            'is too low to access the Anthropic API. Please go to Plans & Billing"}}', "anthropic")
+    assert exc.value.long_term and exc.value.retry_after is None
+    with pytest.raises(llm.ProviderError):     # a plain 400 with no limit language stays a hard error
+        llm.raise_for_status(400, {}, '{"type":"error","error":{"message":"no such model"}}', "anthropic")
+
+
 @pytest.fixture
 def clock(monkeypatch):
     """Instant time: sleep advances a fake clock."""

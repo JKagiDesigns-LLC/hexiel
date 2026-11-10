@@ -154,6 +154,86 @@ def test_task_worktree_failure_falls_back(tmp_path, monkeypatch):
     assert "ran in place" in result.text and any("worktree unavailable" in n for n in notes)
 
 
+# ---------------------------------------------------------------- write-mode subagents
+
+def test_task_write_mode_runs_boxed_and_reports_the_merge(tmp_path, monkeypatch):
+    """mode=\"write\": the helper gets every tool, its own ephemeral worktree and approval-free
+    autonomy inside that box; the answer reports the branch and the merge command."""
+    cwd = repo(tmp_path)
+    s = _mk_session(cwd)
+    helpers = []
+
+    def fake_stream(self, provider, defs):
+        helpers.append(self)
+        return {"role": "assistant", "content": "did the work"}
+
+    from hexiel.session import Session as S
+    monkeypatch.setattr(S, "_stream_assistant", fake_stream)
+    monkeypatch.setattr("hexiel.llm.make_provider", lambda *a, **k: None)
+    result = s.run_subagent({"description": "fix login bug", "prompt": "fix it", "mode": "write"})
+    helper = helpers[0]
+    assert helper.cwd != cwd and ("wt-" in helper.cwd or helper.cwd.endswith("fix-login-bug"))
+    names = [t.name for t in helper.tools]
+    assert "write" in names and "edit" in names and "bash" in names and "task" not in names
+    assert helper.on_approve("bash", {}) == "yes"
+    assert helper.system_prompt.startswith("You are a self-contained coding subagent")
+    assert "git merge hexiel/fix-login-bug" in result.text
+    assert len(wt.list_worktrees(cwd)) == 2                    # main + the auto-created box
+
+
+def test_task_write_auto_name_uses_exact_match_not_prefix(tmp_path, monkeypatch):
+    """A label-slug work box adopts only an exactly named worktree — never one that merely
+    starts with the same words (its commits would land on someone else's branch)."""
+    cwd = repo(tmp_path)
+    wt.create(cwd, "fix-login-bug-page")                       # a prefix match that must be ignored
+    s = _mk_session(cwd)
+    boxes = []
+
+    def fake_stream(self, provider, defs):
+        boxes.append(self.cwd)
+        return {"role": "assistant", "content": "done"}
+
+    from hexiel.session import Session as S
+    monkeypatch.setattr(S, "_stream_assistant", fake_stream)
+    monkeypatch.setattr("hexiel.llm.make_provider", lambda *a, **k: None)
+    s.run_subagent({"description": "fix login bug", "prompt": "fix", "mode": "write"})
+    assert "fix-login-bug-page" not in boxes[0]
+    assert len(wt.list_worktrees(cwd)) == 3                    # main + the user's + the exact new box
+
+
+def test_task_write_downgrades_to_research_without_a_worktree(tmp_path, monkeypatch):
+    """A worktree failure must never turn write mode loose on the real tree: the helper is
+    downgraded to a read-only research agent instead."""
+    cwd = repo(tmp_path)
+    s = _mk_session(cwd)
+    notes = []
+    s.on_event = lambda e, *p, **k: notes.append(p[0]) if e == "note" else None
+    helpers = []
+
+    def fake_stream(self, provider, defs):
+        helpers.append(self)
+        return {"role": "assistant", "content": "investigated instead"}
+
+    from hexiel.session import Session as S
+    monkeypatch.setattr(S, "_stream_assistant", fake_stream)
+    monkeypatch.setattr("hexiel.llm.make_provider", lambda *a, **k: None)
+    monkeypatch.setattr(wt, "create", lambda *a, **k: (_ for _ in ()).throw(OSError("disk full")))
+    result = s.run_subagent({"prompt": "fix it", "mode": "write"})
+    assert all(t.readonly for t in helpers[0].tools)           # downgraded: nothing writable
+    assert helpers[0].on_approve("bash", {}) == "no"
+    assert any("downgraded" in n for n in notes)
+    assert "git merge" not in result.text
+
+
+def test_multiple_write_tasks_are_parallel_safe(tmp_path):
+    """Fan-out: several task calls in one reply batch concurrently — the task tool itself is
+    read-only (its helpers work in their own boxes), so _parallel_safe must not veto."""
+    cwd = repo(tmp_path)
+    s = _mk_session(cwd)
+    spec = {"name": "task", "id": "call-1", "arguments": {"prompt": "p", "mode": "write"}}
+    assert s._parallel_safe([spec, dict(spec, id="call-2")])
+
+
 # ---------------------------------------------------------------- headless / TUI
 
 def test_main_wires_the_worktree_flag_before_building_the_session(tmp_path, monkeypatch):

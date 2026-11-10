@@ -73,7 +73,9 @@ def test_tasks_list_shows_a_running_task_and_kill_stops_it(tmp_path):
     listing = _tasks_tool({"op": "list"}, ctx)
     assert tid in listing.text and "running" in listing.text
     out = _tasks_tool({"op": "output", "id": tid}, ctx)
-    assert "(no output yet)" == out.text.strip()
+    # a quiet start says how long it has been running instead of a bare "(no output yet)":
+    # the bare string made the model re-poll until the loop guard ended the whole turn
+    assert "no output yet" in out.text and "still running" in out.text
     killed = _tasks_tool({"op": "kill", "id": tid}, ctx)
     assert not killed.is_error and "killed" in killed.text
     assert wait_until(lambda: _TASKS[tid].done)

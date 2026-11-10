@@ -1028,7 +1028,8 @@ def maybe_delegate(session, request: str, *, forced: bool = False) -> bool:
     """Called once per turn, after the user's message is in the history. True = this module handled the
     whole turn (and ended it); False = carry on as a normal turn."""
     st = session.settings
-    if request.strip().lower() == "resume" and forced:
+    from .session import strip_env_note
+    if strip_env_note(request).strip().lower() == "resume" and forced:      # the history entry carries the env note
         try:
             return resume(session)
         finally:

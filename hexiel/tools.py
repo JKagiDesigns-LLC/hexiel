@@ -204,7 +204,7 @@ def _new_task(argv: list[str], label: str, cwd: str, *, track: str = "", cmd: st
               wake: bool = False) -> ShellTask:
     proc = subprocess.Popen(argv, cwd=cwd, stdin=subprocess.DEVNULL,
                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
-                            bufsize=1, start_new_session=(os.name != "nt"))
+                            encoding="utf-8", errors="replace", bufsize=1, start_new_session=(os.name != "nt"))
     task = ShellTask(f"bg-{next(_task_seq)}", label[:80], proc, time.time(), wake=wake)
     if track:
         task.run = testrun.start(cmd, cwd, track)
@@ -284,9 +284,27 @@ def _park_on_timeout(proc: subprocess.Popen, label: str, parked: dict) -> subpro
             fcntl.fcntl(fd, fcntl.F_SETFL, fcntl.fcntl(fd, fcntl.F_GETFL) & ~fcntl.O_NONBLOCK)
         except Exception:                                # noqa: BLE001 - preview is best effort only
             grabbed = ""
+    # communicate() already consumed some output into its own buffers before the timeout hit: keep it
+    early = ""
+    try:
+        chunks = getattr(proc, "_fileobj2output", {}).get(proc.stdout) or []
+        early = b"".join(c if isinstance(c, bytes) else c.encode("utf-8", "replace") for c in chunks).decode("utf-8", "replace")
+    except Exception:                                    # noqa: BLE001 - best effort; a private attribute
+        early = ""
     task = ShellTask(f"bg-{next(_task_seq)}", label[:80], proc, time.time(), wake=True)
-    if grabbed:
-        task.out.append(grabbed)
+    if early or grabbed:
+        task.out.append(early + grabbed)
+    if proc.stderr is not None:                          # the parked command's stderr pipe must be drained too,
+        def _drain_err():                                # or it blocks forever once 64 KB of errors pile up
+            try:
+                for line in proc.stderr:
+                    with task.lock:
+                        task.out.append(line)
+                        if sum(len(l) for l in task.out) > _TASK_KEEP_CHARS:
+                            del task.out[0]
+            except Exception:                            # noqa: BLE001
+                pass
+        threading.Thread(target=_drain_err, daemon=True, name="hexiel-shell-stderr").start()
     threading.Thread(target=_pump, args=(task,), daemon=True, name="hexiel-shell-task").start()
     _register_task(task)
     parked["task"] = task
@@ -309,9 +327,28 @@ def _tasks_tool(args: dict, ctx: ToolContext) -> ToolResult:
             lines.append(f"{t.id}  {state}  {size} chars of output — {t.label}")
         return text_result("\n".join(lines) or "no background tasks")
     tid = str(args.get("id", ""))
-    task = next((t for t in tasks if t.id.endswith(tid)), None)
+    want = tid.strip()
+    if want.isdigit():
+        want = f"bg-{want}"
+    task = next((t for t in tasks if want and t.id == want), None)     # exact match: '' or '1' must never hit bg-11
     if task is None:
-        return text_result(f"error: no task matching {tid or '(no id)'} — try op='list'", True)
+        return text_result(f"error: no task matching {tid or '(no id)'} — give the exact id (e.g. 'bg-3'); "
+                           "try op='list'", True)
+    if op == "wait":
+        # Blocks (up to `seconds`, default 60, max 300) until the task finishes, so a model with nothing
+        # else to do has a real way to wait instead of burning turns on no-op shell calls.
+        try:
+            limit = min(max(float(args.get("seconds") or 60), 1.0), 300.0)
+        except (TypeError, ValueError):
+            limit = 60.0
+        deadline = time.time() + limit
+        while not task.done and time.time() < deadline:
+            time.sleep(0.5)
+        if not task.done:
+            return text_result(f"({task.id} is still running after waiting {int(limit)}s — "
+                               f"{int(time.time() - task.started)}s elapsed in total. Wait again with op='wait', "
+                               "or carry on with other work; a completion notice follows when it finishes)")
+        op = "output"
     if op == "output":
         with task.lock:
             body = "".join(task.out).strip()
@@ -323,9 +360,9 @@ def _tasks_tool(args: dict, ctx: ToolContext) -> ToolResult:
             # build on ssh). Say how long it has actually been running and what to do instead.
             return text_result(
                 f"({task.id} is still running — {int(time.time() - task.started)}s elapsed, no output yet. "
-                "Quiet minutes are normal for long builds (gradle, npm, docker) over ssh. Do other work "
-                "or wait: it finishes on its own and a completion notice will follow; polling this same "
-                "'output' call again without waiting wastes turns and ends the turn via the loop guard)"
+                "Quiet minutes are normal for long builds (gradle, npm, docker) over ssh. To wait, call "
+                f"tasks with op='wait', id='{task.id}' (blocks up to 5 minutes); do not poll 'output' again "
+                "or run no-op shell commands: both waste turns and end the turn via the loop guard)"
             )
         out = head_tail(body) if body else f"(finished, exit code {task.code}, no output)"
         if task.done and body:
@@ -338,7 +375,7 @@ def _tasks_tool(args: dict, ctx: ToolContext) -> ToolResult:
             return text_result(f"error: could not kill {task.id}", True)
         task.out.append("")                              # nudge the pump loop to its end
         return text_result(f"killed {task.id} — {task.label}")
-    return text_result("error: op must be list, output or kill", True)
+    return text_result("error: op must be list, output, wait or kill", True)
 
 
 def _clean(text: str) -> str:
@@ -372,6 +409,7 @@ def run_cancellable(argv, *, cwd=None, timeout=None, stop=None, input=None, on_t
     which is called with the LIVE process instead (the caller then owns it, e.g. parking a background task)."""
     proc = subprocess.Popen(argv, cwd=cwd, stdin=subprocess.PIPE if input is not None else None,
                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                            encoding="utf-8", errors="replace",       # binary output must not raise out of the tool
                             start_new_session=(os.name != "nt"))
     if on_start is not None:
         try:
@@ -410,6 +448,9 @@ def _run_shell(args: dict, ctx: ToolContext, argv: list[str], shell_label: str) 
     cmd = args.get("command", "").strip()
     if not cmd:
         return text_result("error: command is required", True)
+    if cmd == ":":
+        return text_result("error: that command does nothing (it is a shell no-op). To wait for a background "
+                           "task use the tasks tool with op='wait'; if there is nothing left to do, end your turn.", True)
     from . import sandbox as sandbox_mod
     argv, sandbox_note = sandbox_mod.wrap(ctx.cwd, argv)
     framework = testrun.detect(cmd, ctx.test_commands) or testrun.known_test(ctx.cwd, cmd)
@@ -616,6 +657,27 @@ def _diagnostics(args: dict, ctx: ToolContext) -> ToolResult:
     return text_result(body + f"\n({diags_mod.available(ctx.cwd)})")
 
 
+def _atomic_write(path: Path, text: str, newline: str | None = None) -> None:
+    """Write via a temp file in the same folder and swap it in, so a kill or a full disk never leaves a
+    truncated file. Follows symlinks (the target is replaced, not the link) and keeps the file mode."""
+    target = path.resolve() if path.is_symlink() else path
+    tmp = target.with_name(f".{target.name}.{os.getpid()}.hexiel-tmp")
+    try:
+        with open(tmp, "w", encoding="utf-8", newline=newline) as fh:
+            fh.write(text)
+        try:
+            shutil.copymode(target, tmp)
+        except OSError:
+            pass                                          # a new file: default mode
+        os.replace(tmp, target)
+    finally:
+        if tmp.exists():
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
+
+
 def _write(args: dict, ctx: ToolContext) -> ToolResult:
     path = _resolve_path(args["path"], ctx)
     content = args.get("content", "")
@@ -625,7 +687,7 @@ def _write(args: dict, ctx: ToolContext) -> ToolResult:
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         existed = path.exists()
-        path.write_text(content)
+        _atomic_write(path, content)
     except OSError as exc:
         return text_result(f"error: {exc}", True)
     fmt = format_note(args, path, ctx)                 # format first: the guard records what is on disk now
@@ -705,10 +767,19 @@ def _edit(args: dict, ctx: ToolContext) -> ToolResult:
     if stale is not None:
         return stale
     old, new = args["old_string"], args.get("new_string", "")
+    if not old:
+        return text_result("error: old_string is empty — give the exact text to replace (to create or "
+                           "overwrite a whole file use the write tool)", True)
     try:
-        text = path.read_text()
+        with open(path, encoding="utf-8", newline="") as fh:       # newline="": CRLF files stay CRLF
+            text = fh.read()
+    except UnicodeDecodeError:
+        return text_result("error: the file is not valid UTF-8 text, so it cannot be edited with this tool — "
+                           "use bash or python for a binary or legacy-encoded file", True)
     except OSError as exc:
         return text_result(f"error: {exc}", True)
+    if "\r\n" in text and "\r\n" not in old:                   # the model sees \n; match and write the file's own endings
+        old, new = old.replace("\n", "\r\n"), new.replace("\n", "\r\n")
     # AST-aware anchor: when the exact string missed, a whitespace-equivalent span still counts —
     # indentation drift and tabs-vs-spaces never force a re-read loop (but ambiguity does)
     how = "exact"
@@ -728,7 +799,7 @@ def _edit(args: dict, ctx: ToolContext) -> ToolResult:
                 f"error: old_string occurs {count} times; make it unique or pass replace_all=true", True)
         text = text.replace(old, new) if bool(args.get("replace_all")) else text.replace(old, new, 1)
     try:
-        path.write_text(text)
+        _atomic_write(path, text, newline="")
     except OSError as exc:
         return text_result(f"error: {exc}", True)
     fmt = format_note(args, path, ctx)                 # format first: the guard records what is on disk now
@@ -1515,10 +1586,10 @@ def build_tools(chain: Toolchain) -> list[ToolDef]:
                     run_in_background={"type": "boolean"}),
                 run=_run_powershell),
         ToolDef("tasks", "This window's background shell tasks: list them, read a task's output, "
-                "or kill one (op must be list | output | kill; kill/output/id need the task id, "
-                "e.g. 'bg-1' or just '1').",
-                obj(op={"type": "string", "enum": ["list", "output", "kill"]},
-                    id={"type": "string"}),
+                "wait for one to finish (op='wait', optional seconds up to 300), or kill one (op must be "
+                "list | output | wait | kill; output/wait/kill need the task id, e.g. 'bg-1' or just '1').",
+                obj(op={"type": "string", "enum": ["list", "output", "wait", "kill"]},
+                    id={"type": "string"}, seconds={"type": "number"}),
                 readonly=True, always_ok=True, run=_tasks_tool),
         ToolDef("read", "Read a text file with line numbers; supports offset/limit for long files.",
                 obj(path={"type": "string"}, offset={"type": "integer"}, limit={"type": "integer"}),

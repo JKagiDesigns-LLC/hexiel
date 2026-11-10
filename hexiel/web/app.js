@@ -526,7 +526,7 @@ function renderTests() {
   badge.hidden = false;
   badge.classList.toggle("failing", t.failed > 0);
   badge.innerHTML =
-    `<span class="tb-label">${t.kind === "command" ? "⏳" : "🧪"} ${t.label}</span><span class="tb-bar${pct == null ? " indeterminate" : ""}">` +
+    `<span class="tb-label">${t.kind === "command" ? "⏳" : "🧪"} ${esc(t.label)}</span><span class="tb-bar${pct == null ? " indeterminate" : ""}">` +
     `<i style="width:${pct == null ? 30 : Math.round(pct * 100)}%"></i></span>` +
     `<span class="tb-text">${pct == null ? "" : Math.round(pct * 100) + "% · "}${bits.join(" · ")}` +
     `${tests.length > 1 ? ` (+${tests.length - 1})` : ""}</span>`;
@@ -563,13 +563,13 @@ function renderTimers() {
   badge.hidden = false;
   badge.classList.toggle("over", left <= 0);
   badge.textContent =
-    `⏱ ${soonest.label} · ` +
+    `⏱ ${esc(soonest.label)} · ` +
     (left > 0 ? `${fmtDuration(left)} left` : `over by ${fmtDuration(-left)}`) +
     (timers.length > 1 ? ` (+${timers.length - 1})` : "");
   badge.title = timers
     .map(
       (t) =>
-        `${t.label}: estimated ${fmtDuration(t.ends - t.started)}, ` +
+        `${esc(t.label)}: estimated ${fmtDuration(t.ends - t.started)}, ` +
         (t.ends > now
           ? `${fmtDuration(t.ends - now)} left`
           : `over by ${fmtDuration(now - t.ends)}`),

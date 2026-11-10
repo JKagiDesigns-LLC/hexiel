@@ -25,6 +25,7 @@ BUDGET = {"prompt_tokens": 400, "completion_tokens": 30}
 
 @pytest.fixture
 def env(tmp_path, monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key-not-real")    # the router checks the key exists; never rely on the ambient env
     s = make_session(tmp_path)
     s.model_config = GMK
     s.settings = Settings(router_profile="anthropic-haiku", overflow_profile="anthropic-haiku",

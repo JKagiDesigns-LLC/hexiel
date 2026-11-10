@@ -211,7 +211,9 @@ def answer_chat(session, mcs) -> str:
 
 def _answer_once(session, mc) -> str:
     prev_mc, prev_system = session.model_config, session.system_prompt
+    prev_override = getattr(session, "_provider_override", None)
     session.model_config, session.system_prompt = mc, prev_system + CHAT_NOTE
+    session._provider_override = None          # a failover provider belongs to the main model, never to this router model
     try:
         try:
             provider = llm.make_provider(mc, session.settings)
@@ -238,6 +240,7 @@ def _answer_once(session, mc) -> str:
         return "done"
     finally:
         session.model_config = prev_mc
+        session._provider_override = prev_override
         session.system_prompt = prev_system
         session.active_model = ""
         session.on_event("model_active")
@@ -275,6 +278,8 @@ def overflow_or_main(session, prompt: str, route: str = ""):
     if boot is not None and boot.name != main.name and not cooling_down(boot.name):
         session.on_event("note", f"✅ {boot.name} is available again — switching back to it")
         session.__dict__.pop("_failed_over_from", None)
+        session.model_config = boot            # make it the session's model, or the turn's cleanup puts the fallback back
+        session._provider_override = None
         return boot
     if not modelbusy.is_local(main):
         return main                            # cloud models serve everyone at once

@@ -11,6 +11,7 @@ import json
 import os
 import platform
 import sys
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -22,7 +23,19 @@ from .config import home_data_dir
 
 PING_URL = "https://remote.hexiel.tech/api/public/ping"
 PING_TIMEOUT = 5.0
-STORAGE = home_data_dir() / "telemetry.json"
+RETRY_AFTER = 3600.0          # after a failed ping, wait this long before trying again
+STORAGE: Path | None = None   # tests override; None = <data dir>/telemetry.json, resolved per call
+
+
+def _storage() -> Path:
+    return STORAGE if STORAGE is not None else home_data_dir() / "telemetry.json"
+
+
+def _disabled() -> bool:
+    """Opt-out: DO_NOT_TRACK=1 (the community standard) or HEXIEL_TELEMETRY=off."""
+    if os.environ.get("DO_NOT_TRACK", "").strip().lower() in ("1", "true", "yes"):
+        return True
+    return os.environ.get("HEXIEL_TELEMETRY", "").strip().lower() in ("0", "off", "false", "no")
 
 
 def _machine_fingerprint() -> str:
@@ -81,7 +94,7 @@ def _event_kind() -> str:
     We store the last version we pinged for; if none -> install, if different -> upgrade,
     if same -> already counted."""
     try:
-        state = json.loads(STORAGE.read_text())
+        state = json.loads(_storage().read_text())
     except (OSError, ValueError):
         state = {}
     last = state.get("version")
@@ -92,32 +105,70 @@ def _event_kind() -> str:
 
 def _record_ping(event: str) -> None:
     try:
-        state = json.loads(STORAGE.read_text())
+        state = json.loads(_storage().read_text())
     except (OSError, ValueError):
         state = {}
     state["version"] = __version__
     state["last_event"] = event
     state["last_ping"] = time.time()
     try:
-        STORAGE.parent.mkdir(parents=True, exist_ok=True)
-        STORAGE.write_text(json.dumps(state, indent=2))
+        st = _storage()
+        st.parent.mkdir(parents=True, exist_ok=True)
+        tmp = st.with_suffix(".tmp")
+        tmp.write_text(json.dumps(state, indent=2))
+        os.replace(tmp, st)
     except OSError:
         pass
 
 
-def ping() -> None:
-    """Send one anonymous install/upgrade ping if needed. Never raises."""
-    event = _event_kind()
-    if not event:
-        return
-    payload = {
-        "machine_id": _machine_fingerprint(),
-        "event": event,
-        "version": __version__,
-        "platform": platform.system(),
-    }
+def _note_attempt() -> None:
+    """Remember when we last tried, so an offline machine is not retried on every launch."""
     try:
-        httpx.post(PING_URL, json=payload, timeout=PING_TIMEOUT)
-        _record_ping(event)
+        state = json.loads(_storage().read_text())
+    except (OSError, ValueError):
+        state = {}
+    state["last_attempt"] = time.time()
+    try:
+        st = _storage()
+        st.parent.mkdir(parents=True, exist_ok=True)
+        st.write_text(json.dumps(state, indent=2))
+    except OSError:
+        pass
+
+
+def _recently_tried() -> bool:
+    try:
+        last = float(json.loads(_storage().read_text()).get("last_attempt", 0))
+    except (OSError, ValueError, TypeError):
+        return False
+    return 0 <= time.time() - last < RETRY_AFTER
+
+
+def ping() -> None:
+    """Send one anonymous install/upgrade ping if needed. Never raises.
+
+    The ping counts as delivered only when the server answers 2xx (or a permanent 4xx, which a
+    retry cannot fix); a network error or 5xx/404 leaves it pending and it is retried later."""
+    try:
+        if _disabled():
+            return
+        event = _event_kind()
+        if not event or _recently_tried():
+            return
+        payload = {
+            "machine_id": _machine_fingerprint(),
+            "event": event,
+            "version": __version__,
+            "platform": platform.system(),
+        }
+        _note_attempt()
+        resp = httpx.post(PING_URL, json=payload, timeout=PING_TIMEOUT)
+        if resp.status_code < 300 or resp.status_code in (400, 422):
+            _record_ping(event)
     except Exception:  # noqa: BLE001 - telemetry is best-effort
         pass
+
+
+def ping_in_background() -> None:
+    """Run ping() on a daemon thread so a slow or unreachable server never delays startup."""
+    threading.Thread(target=ping, name="hexiel-telemetry", daemon=True).start()

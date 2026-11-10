@@ -97,13 +97,32 @@ def last_due(expr: str, now: datetime.datetime, lookback_hours: int = 24 * 8) ->
 def load() -> list[dict]:
     try:
         return json.loads(jobs_file().read_text())
-    except (OSError, ValueError):
+    except OSError:
+        return []
+    except ValueError:                      # a damaged file: keep it for recovery instead of overwriting it with []
+        try:
+            shutil.copy2(jobs_file(), jobs_file().with_name(f"jobs.json.corrupt-{int(time.time())}"))
+        except OSError:
+            pass
         return []
 
 
 def save(jobs: list[dict]) -> None:
     jobs_file().parent.mkdir(parents=True, exist_ok=True)
-    jobs_file().write_text(json.dumps(jobs, indent=2))
+    tmp = jobs_file().with_name(f".jobs.json.{os.getpid()}.tmp")
+    tmp.write_text(json.dumps(jobs, indent=2))
+    os.replace(tmp, jobs_file())            # whole-file swap: a crash never leaves half a job list
+
+
+def _update_job(job_id: str, **fields) -> None:
+    """Change fields of ONE job in the file as it is now. A tick can run for many minutes, and the user may
+    add or remove jobs meanwhile: saving the list loaded at the start would undo that."""
+    current = load()
+    for j in current:
+        if j.get("id") == job_id:
+            j.update(fields)
+            save(current)
+            return
 
 
 def add(name: str, schedule: str, prompt: str, cwd: str, model: str = "", access: str = "readonly") -> dict:
@@ -422,13 +441,21 @@ def deliver(job: dict, ok: bool, answer: str) -> Path:
     return path
 
 
+def osascript_notify_argv(title: str, body: str) -> list[str]:
+    """A macOS notification whose text travels as arguments, never spliced into the script: model output in
+    the body (or a job name in the title) cannot break out of the string and run AppleScript."""
+    return ["osascript", "-e", "on run argv", "-e", "display notification (item 1 of argv) with title (item 2 of argv)",
+            "-e", "end run", body, title]
+
+
 def _notify(title: str, body: str) -> None:
     try:
         if shutil.which("notify-send"):
             subprocess.Popen(["notify-send", "-a", "hexiel", title, body],
                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         elif shutil.which("osascript"):
-            subprocess.Popen(["osascript", "-e", f'display notification "{body[:150]}" with title "{title}"'])
+            subprocess.Popen(osascript_notify_argv(title, body[:150]),
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     except OSError:
         pass
 
@@ -459,13 +486,13 @@ def tick(now: datetime.datetime | None = None, runner=run_job) -> list[str]:
             if due is None or due <= last:
                 continue
             job["last_run"] = now.timestamp()       # mark first: a crash must not loop
-            save(jobs)
+            _update_job(job["id"], last_run=job["last_run"])
             try:
                 ok, answer = runner(job)
             except Exception as exc:  # noqa: BLE001 - one failing job must not stop the others
                 ok, answer = False, f"the job crashed: {exc!r}"
             job["last_status"] = "ok" if ok else "failed"
-            save(jobs)
+            _update_job(job["id"], last_status=job["last_status"])
             deliver(job, ok, answer)
             ran.append(job["id"])
     finally:

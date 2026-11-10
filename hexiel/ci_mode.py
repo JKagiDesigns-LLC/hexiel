@@ -127,7 +127,7 @@ def gitlab_diff(ctx: dict, base_sha: str) -> str:
                               capture_output=True, text=True, timeout=60)
         if proc.stdout.strip():
             return proc.stdout.strip()
-        proc = subprocess.run(["git", "show", ctx["sha"]], cwd=os.getcwd(),
+        proc = subprocess.run(["git", "show", ctx.get("sha") or "HEAD"], cwd=os.getcwd(),
                               capture_output=True, text=True, timeout=60)
         return proc.stdout.strip()[:14000]
     except (OSError, subprocess.SubprocessError):

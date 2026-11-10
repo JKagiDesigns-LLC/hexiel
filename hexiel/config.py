@@ -326,6 +326,7 @@ def _settings_from(settings_raw: dict) -> "Settings":
     return Settings(
         auto_approve=mode != "off",
         guard_commits=mode == "except-commits",
+        redact_secrets="off" if str(settings_raw.get("redact_secrets", "full")).strip().lower() == "off" else "full",  # pragma: allowlist secret
         compact_threshold=float(settings_raw.get("compact_threshold", 0.82)),
         compact_profile=str(settings_raw.get("compact_profile", "")),
         cloud_fallback_profile=str(settings_raw.get("cloud_fallback_profile", "")),

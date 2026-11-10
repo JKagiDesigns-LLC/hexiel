@@ -260,6 +260,7 @@ def escalate(session, reason: str, steps: int = ESCALATE_STEPS) -> bool:
     st["bursts"] += 1
     st["burst"] = {"left": steps}
     session._escalated_from = session.model_config
+    session._escalated_override = getattr(session, "_provider_override", None)   # a failover provider, restored after the burst
     session.model_config = cm
     session._provider_override = provider
     session.set_active_model(cm, "escalated")
@@ -274,7 +275,8 @@ def end_burst(session, why: str = "") -> None:
     if not original:
         return
     session.model_config = original
-    session._provider_override = None
+    session._provider_override = getattr(session, "_escalated_override", None)   # back to what `original` was running on
+    session._escalated_override = None
     session._escalated_from = None
     session.active_model = ""
     st = _state(session)

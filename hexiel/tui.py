@@ -2962,7 +2962,8 @@ class HexielTUI(App):
                 subprocess.Popen(["notify-send", "-a", "hexiel", title, body],
                                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             elif shutil.which("osascript"):
-                subprocess.Popen(["osascript", "-e", f'display notification "{body}" with title "{title}"'],
+                from .jobs import osascript_notify_argv     # text as arguments: no AppleScript injection
+                subprocess.Popen(osascript_notify_argv(title, body),
                                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         except OSError:
             pass

@@ -1,6 +1,7 @@
 """Session state: the agentic loop, token accounting, and auto-compaction."""
 
 import json
+import os
 import queue
 import re
 import threading
@@ -595,6 +596,11 @@ class Session:
             if user_text == prefix or user_text.startswith(prefix + " "):
                 user_text, delegate_mode = user_text[len(prefix):].strip(), mode
                 break
+        if getattr(self, "plugins", None) and not getattr(self, "internal", False) and user_text.strip():
+            from .openwebui_compat import apply_inlet          # OpenWebUI Filter.inlet: runs on what the person typed
+            user_text, filter_notes = apply_inlet(self.plugins, user_text)
+            for note in filter_notes:
+                self.on_event("note", f"⚠ {note}")
         from . import redact as redact_mod
         scrub_on = getattr(self.settings, "redact_secrets", "full") != "off"
         user_shown = redact_mod.scrub(user_text) if scrub_on else user_text
@@ -892,7 +898,7 @@ class Session:
                 self.on_event("note", "✂ the request exceeds the model's context window — "
                                       "compacting and retrying once")
                 try:
-                    self.compact(provider)               # elision first, then a summary (either may be enough)
+                    self.compact(self._provider_override or provider)               # elision first, then a summary (either may be enough)
                 except Exception:                        # noqa: BLE001 - the deterministic trim still applies
                     pass
                 self._mech_trim_overflow()
@@ -1014,9 +1020,15 @@ class Session:
                 fallback = load_config().model(name)
             except (KeyError, SystemExit):
                 continue
+            try:
+                provider = llm.make_provider(fallback, self.settings)
+            except SystemExit as exc:                 # a missing API key must skip this rung, never end the session
+                tried.add(name)
+                self.on_event("note", f"↪ fallback {name} is unusable ({str(exc).strip()[:100] or 'no API key'}) — trying the next one")
+                continue
             self.on_event("fallback", self.model_config.name, name, reason[:200])
             self.model_config = fallback
-            self._provider_override = llm.make_provider(fallback, self.settings)
+            self._provider_override = provider
             return True
         return False
 
@@ -1501,12 +1513,14 @@ class Session:
         the earlier read's file body shrinks to a one-line stamp the model can follow to the newer read.
         Rewrites land in batches (>= SUPERSEDE_MIN_CHARS reclaimable) so the provider's prompt cache is
         not invalidated for pocket change."""
-        calls: dict[str, str] = {}                   # tool_call_id -> path
+        calls: dict[str, str] = {}                   # tool_call_id -> path + line range
         reads: list[tuple[int, str, str]] = []       # (index in history, path, result text)
         for i, msg in enumerate(self.messages):
             for call in msg.get("tool_calls") or []:
                 if call.get("name") == "read" and isinstance(call.get("arguments"), dict):
-                    calls[str(call.get("id", ""))] = str(call["arguments"].get("path", ""))
+                    a = call["arguments"]            # a different line range is a different read: it never supersedes
+                    calls[str(call.get("id", ""))] = (f"{a.get('path', '')}\0{a.get('offset', '')}\0{a.get('limit', '')}"
+                                                      if a.get("path") else "")
             if (msg.get("role") == "tool" and not msg.get("is_error")
                     and calls.get(str(msg.get("tool_call_id", "")))):
                 path = calls[str(msg["tool_call_id"])]
@@ -1636,6 +1650,7 @@ class Session:
         if not head:
             self.on_event("compact_end", {}, {})
             return
+        n_at_start = len(messages)
         self.compacting = True
         self.on_event("compact_start")
         before = self.last_usage.get("prompt_tokens") or self.estimate_tokens()
@@ -1681,6 +1696,15 @@ class Session:
             self.messages = messages
             return
         summary = "".join(out_parts).strip()
+        if not summary:               # a model that answered with nothing must not replace the history with nothing
+            self.compacting = False
+            self.messages = messages
+            self.on_event("provider_error", "compaction failed: the model returned an empty summary")
+            return
+        if self.messages is not messages or len(messages) != n_at_start:
+            # an idle-timer compaction raced a new turn: the history moved on while the summary was written
+            self.compacting = False
+            return
         try:   # durable facts become project memory — no extra model call
             from . import memory as memory_mod
             memory_mod.save_auto_facts(self.cwd, memory_mod.parse_durable_facts(summary))
@@ -1769,7 +1793,9 @@ class Session:
                 if role == "assistant":
                     body = body[:8000]
                 lines.append(body)
-        return COMPACT_PROMPT + "\n\n" + "\n".join(lines[:400])
+        if len(lines) > 400:                      # keep the opening and the NEWEST work: the head is dropped from history
+            lines = lines[:2] + lines[-398:]
+        return COMPACT_PROMPT + "\n\n" + "\n".join(lines)
 
     # ---------------------------------------------------------------- persistence
 
@@ -1787,8 +1813,11 @@ class Session:
             if self.timers:
                 payload["timers"] = self.timers
             payload.update(prompt_edit.save_extra(self))       # an edited /prompt rides the saved chat
-            (sessions / f"{self.id}.json").write_text(json.dumps(payload))
-        except OSError:
+            target = sessions / f"{self.id}.json"
+            tmp = sessions / f".{self.id}.{os.getpid()}.tmp"      # write whole file, then swap: a kill never leaves half a chat
+            tmp.write_text(json.dumps(payload))
+            os.replace(tmp, target)
+        except (OSError, TypeError, ValueError):
             pass
 
     @classmethod

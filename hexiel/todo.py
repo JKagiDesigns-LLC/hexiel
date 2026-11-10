@@ -68,7 +68,7 @@ def read_todos(cwd: str) -> tuple[str, str, list[TodoItem]]:
     try:
         if not path.exists():
             return "", "", []
-        return _parse(path.read_text())
+        return _parse(path.read_text(encoding="utf-8", errors="replace"))
     except OSError:
         return "", "", []
 

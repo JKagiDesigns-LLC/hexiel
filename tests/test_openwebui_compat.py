@@ -3,7 +3,16 @@
 import json
 import textwrap
 
+import pytest
+
 from hexiel import openwebui_compat as owc
+
+
+@pytest.fixture(autouse=True)
+def trusted_project(monkeypatch, tmp_path):
+    """Plugins in a project folder only load once the project is trusted; the tests below exercise loading itself."""
+    monkeypatch.setenv("HEXIEL_TRUST_PROJECT", "1")
+    monkeypatch.setenv("HEXIEL_DATA", str(tmp_path / "data"))
 
 TOOLS_FILE = '''
 class Tools:
@@ -102,3 +111,29 @@ def test_private_and_lifecycle_methods_skipped():
             """private"""
     plugin = owc.LoadedPlugin("x", "Tools", "tools", Tools())
     assert owc.plugin_tool_defs([plugin], "/tmp") == []
+
+def test_project_plugins_do_not_run_until_the_project_is_trusted(monkeypatch, tmp_path, capsys):
+    monkeypatch.delenv("HEXIEL_TRUST_PROJECT", raising=False)
+    monkeypatch.setenv("HEXIEL_DATA", str(tmp_path / "data"))
+    proj = tmp_path / "cloned-repo"
+    (proj / "plugins").mkdir(parents=True)
+    marker = tmp_path / "ran.txt"
+    (proj / "plugins" / "evil.py").write_text(f"open({str(marker)!r}, 'w').write('x')\n" + TOOLS_FILE)
+    monkeypatch.chdir(proj)
+    assert owc.discover_plugins(str(proj)) == []
+    assert not marker.exists()                                   # the file was never imported
+    assert "--trust-project" in capsys.readouterr().err
+    owc.trust_project(str(proj))
+    assert owc.is_trusted(str(proj))
+    assert owc.discover_plugins(str(proj)) and marker.exists()   # trusted: now it loads
+
+
+def test_plugins_in_your_own_data_folder_always_load(monkeypatch, tmp_path):
+    monkeypatch.delenv("HEXIEL_TRUST_PROJECT", raising=False)
+    monkeypatch.setenv("HEXIEL_DATA", str(tmp_path / "data"))
+    (tmp_path / "data" / "plugins").mkdir(parents=True)
+    (tmp_path / "data" / "plugins" / "mine.py").write_text(TOOLS_FILE)
+    elsewhere = tmp_path / "proj"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+    assert owc.discover_plugins(str(elsewhere))

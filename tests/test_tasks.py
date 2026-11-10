@@ -99,3 +99,34 @@ def test_a_completed_task_reaches_the_model_as_a_message(tmp_path, monkeypatch):
 
 class _FakeProc:
     code = 0
+
+def test_tasks_wait_blocks_until_the_task_finishes(tmp_path):
+    ctx = ctx_for(tmp_path)
+    r = _run_bash({"command": "sleep 1 && echo waited-line", "run_in_background": True}, ctx)
+    tid = task_id_from(r.text)
+    out = _tasks_tool({"op": "wait", "id": tid, "seconds": 20}, ctx)
+    assert not out.is_error and "waited-line" in out.text and "finished" in out.text
+
+
+def test_tasks_wait_reports_still_running_after_its_limit(tmp_path):
+    ctx = ctx_for(tmp_path)
+    r = _run_bash({"command": "sleep 30", "run_in_background": True}, ctx)
+    tid = task_id_from(r.text)
+    out = _tasks_tool({"op": "wait", "id": tid, "seconds": 1}, ctx)
+    assert "still running after waiting" in out.text and "op='wait'" in out.text
+    _tasks_tool({"op": "kill", "id": tid}, ctx)
+
+
+def test_a_shell_noop_points_the_model_at_wait_instead_of_returning_silence(tmp_path):
+    r = _run_bash({"command": ":", "timeout": 5}, ctx_for(tmp_path))
+    assert r.is_error and "op='wait'" in r.text
+
+
+def test_cloud_profile_with_an_unset_key_fails_clearly_not_as_a_401(monkeypatch):
+    from hexiel import llm
+    monkeypatch.delenv("SOME_UNSET_KEY", raising=False)
+    cloud = ModelConfig(name="c", provider="openai", model="m", base_url="https://ollama.com/v1", api_key_env="SOME_UNSET_KEY")
+    with pytest.raises(SystemExit, match="SOME_UNSET_KEY"):
+        llm.make_provider(cloud, Settings())
+    local = ModelConfig(name="l", provider="openai", model="m", base_url="http://192.168.3.10:11434/v1", api_key_env="SOME_UNSET_KEY")
+    llm.make_provider(local, Settings())          # LAN endpoints may run keyless

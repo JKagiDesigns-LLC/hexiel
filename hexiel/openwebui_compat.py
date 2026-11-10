@@ -19,6 +19,7 @@ import asyncio
 import importlib.util
 import inspect
 import json
+import os
 import re
 import sys
 from dataclasses import dataclass, field
@@ -78,19 +79,70 @@ class LoadedPlugin:
     instance: object     # the Tools/pipe/filter instance (valves already set)
 
 
+def _trust_file() -> Path:
+    return Path(home_data_dir()) / "trusted-projects.json"
+
+
+def _read_trusted() -> list[str]:
+    try:
+        data = json.loads(_trust_file().read_text())
+        return [str(p) for p in data] if isinstance(data, list) else []
+    except (OSError, ValueError):
+        return []
+
+
+def is_trusted(cwd: str) -> bool:
+    """Plugins are Python files that run with your privileges the moment hexiel starts. Code that merely
+    sits in a cloned repo's plugins/ folder must not run until the person trusts that project."""
+    if os.environ.get("HEXIEL_TRUST_PROJECT") == "1":
+        return True
+    try:
+        return str(Path(cwd or ".").resolve()) in _read_trusted()
+    except OSError:
+        return False
+
+
+def trust_project(cwd: str) -> str:
+    """Remember a project as trusted (hexiel --trust-project). Returns the recorded path."""
+    path = str(Path(cwd or ".").resolve())
+    trusted = _read_trusted()
+    if path not in trusted:
+        trusted.append(path)
+        _trust_file().parent.mkdir(parents=True, exist_ok=True)
+        tmp = _trust_file().with_name(f".trusted-projects.{os.getpid()}.tmp")
+        tmp.write_text(json.dumps(trusted, indent=2))
+        os.replace(tmp, _trust_file())
+    return path
+
+
 def _plugins_dirs(cwd: str) -> list[Path]:
-    dirs = [Path(home_data_dir()) / "plugins", Path.cwd() / "plugins"]
-    if cwd:
-        project = Path(cwd) / "plugins"
-        if project not in dirs:
-            dirs.append(project)
+    """The folders plugins load from: your own (always) and the project's (only once it is trusted)."""
+    dirs = [Path(home_data_dir()) / "plugins"]
+    if is_trusted(cwd):
+        for project in (Path.cwd() / "plugins", Path(cwd) / "plugins" if cwd else None):
+            if project is not None and project not in dirs:
+                dirs.append(project)
     return dirs
+
+
+def _untrusted_plugin_files(cwd: str) -> list[Path]:
+    if is_trusted(cwd):
+        return []
+    found: list[Path] = []
+    for project in {Path.cwd() / "plugins", Path(cwd) / "plugins" if cwd else Path.cwd() / "plugins"}:
+        if project.is_dir():
+            found.extend(sorted(project.glob("*.py")))
+    return found
 
 
 def discover_plugins(cwd: str) -> list[LoadedPlugin]:
     """Import plugin files and return Tools/Pipe/Filter instances found within."""
     plugins: list[LoadedPlugin] = []
     seen: set[Path] = set()
+    skipped = _untrusted_plugin_files(cwd)
+    if skipped:
+        print(f"hexiel: not loading {len(skipped)} plugin file(s) from this project's plugins/ folder — they run code. "
+              "If you trust this project, run:  hexiel --trust-project", file=sys.stderr)
     for d in _plugins_dirs(cwd):
         if not d.is_dir():
             continue

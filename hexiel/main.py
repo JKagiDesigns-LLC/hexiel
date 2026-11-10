@@ -54,6 +54,8 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--doctor", action="store_true",
                     help="run environment preflight checks and exit")
     ap.add_argument("--setup", action="store_true", help="first-run guided wizard")
+    ap.add_argument("--trust-project", action="store_true",
+                    help="trust this project's plugins/ folder (its Python files then load at startup) and exit")
     ap.add_argument("-V", "--version", action="version", version=f"hexiel {__version__}")
     return ap.parse_args()
 
@@ -91,6 +93,7 @@ def build_session(cwd: str, model_name: str | None, resumed: dict | None = None,
         cwd, skills_mod.prompt_section(skills), toolchain_section(chain, cwd),
         task_state=(todo_mod.summary_line(cwd) if resumed else ""))
     session = Session(model_config, settings, cwd, tools, system)
+    session.plugins = plugins                       # Filter plugins rewrite each message before the model sees it
     prompt_edit.startup(session, resumed)          # an edited /prompt (session copy, dir or global file) takes over
     session.mcp_servers = mcp_servers
     from . import permissions
@@ -163,8 +166,10 @@ def terminal_approval(tool_name: str, args: dict) -> str:
             return {"y": "yes", "a": "always", "n": "no"}[answer]
 
 
-def headless_loop(session: Session, prompts: list[str]) -> None:
+def headless_loop(session: Session, prompts: list[str]) -> bool:
+    """Run the prompts; True when every turn finished without a provider error."""
     thinking = {"chars": 0}
+    failed = {"error": False}
 
     def on_event(event, *payload, **_kw) -> None:
         if event == "thinking":
@@ -198,6 +203,7 @@ def headless_loop(session: Session, prompts: list[str]) -> None:
             sys.stdout.flush()
         elif event == "turn_end" and payload and isinstance(payload[0], dict) and payload[0].get("error"):
             sys.stderr.write(f"\nhexiel: provider error: {payload[0]['error']}\n")
+            failed["error"] = True
         elif event == "compact_end" and payload and payload[0]:
             stats = payload[0]
             sys.stderr.write(f"\n[compacted {stats.get('before', 0) // 1000}k → "
@@ -218,6 +224,7 @@ def headless_loop(session: Session, prompts: list[str]) -> None:
                        if m.get("role") == "assistant" and m.get("content")), "")
         if answer:
             sys.stderr.write(f"[ci] {ci_mode.report(ctx, answer)}\n")
+    return not failed["error"]
 
 
 def _repl_completer(session):
@@ -368,6 +375,10 @@ def main() -> None:
         from .presets import listing
         print(listing())
         return
+    if args.trust_project:
+        from .openwebui_compat import trust_project
+        print(f"hexiel: trusted {trust_project(cwd)} — its plugins/ folder will load from now on")
+        return
     if args.doctor:
         from .doctor import doctor_main
         raise SystemExit(doctor_main(cwd))
@@ -399,7 +410,7 @@ def main() -> None:
     from . import remote
     remote.resume_if_orphaned()                           # a killed /remote-control chat (before 0.4.7) left it paused
     from . import telemetry as telemetry_mod
-    telemetry_mod.ping()                                  # anonymous install/upgrade ping for the website counter
+    telemetry_mod.ping_in_background()                                  # anonymous install/upgrade ping for the website counter
     from . import llm as llm_mod
     if session.model_config.keep_alive:                   # local models: pre-warm so the first real
         threading.Thread(                                 # message doesn't pay the 30–120s reload
@@ -417,7 +428,8 @@ def main() -> None:
         prompts = None
 
     if args.print_mode is not None or ci_ is not None:
-        headless_loop(session, prompts)
+        if not headless_loop(session, prompts):
+            raise SystemExit(1)       # a failed model call must fail the script / CI job, not exit 0
     elif args.serve:
         try:
             from .webui import serve as webui_serve

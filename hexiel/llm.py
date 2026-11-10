@@ -439,7 +439,11 @@ class OpenAICompatProvider(AbortableHTTP):
     @classmethod
     def _convert_messages(cls, messages: list[dict], echo_reasoning: bool = False) -> list[dict]:
         converted = []
-        for msg in messages:
+        later: list[dict] = []           # image user-messages wait until the run of tool results is over: strict
+        for msg in messages:             # endpoints want every tool_call_id answered back to back
+            if later and msg["role"] not in ("tool", "graphic"):
+                converted.extend(later)
+                later = []
             if echo_reasoning and msg["role"] == "assistant" and msg.get("reasoning"):
                 # providers like DeepSeek/Together/Kimi require prior reasoning on tool turns
                 converted.extend(cls._convert_messages([{k: v for k, v in msg.items() if k != "reasoning"}]))
@@ -455,7 +459,7 @@ class OpenAICompatProvider(AbortableHTTP):
                 })
                 # OpenAI protocol carries images in user messages, not tool messages
                 for image in msg.get("images", []):
-                    converted.append({
+                    later.append({
                         "role": "user",
                         "content": [
                             {"type": "image_url",
@@ -490,6 +494,7 @@ class OpenAICompatProvider(AbortableHTTP):
                 ]})
             else:
                 converted.append({"role": msg["role"], "content": msg.get("content", "")})
+        converted.extend(later)
         return converted
 
     def _payload(self, messages, system, tools, *, model, max_output_tokens,
@@ -637,6 +642,20 @@ def warm_up(model_config, settings=None) -> None:
         pass
 
 
+def _is_local_url(url: str) -> bool:
+    """True for localhost / private-network endpoints, which commonly take no API key."""
+    import ipaddress
+    from urllib.parse import urlparse
+    host = (urlparse(url).hostname or "").lower()
+    if host in ("localhost", "host.docker.internal") or host.endswith(".local"):
+        return True
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return ip.is_private or ip.is_loopback or ip.is_link_local
+
+
 def make_provider(model_config, settings) -> tuple[object, str]:
     """Return (provider, system_prompt_is_separate=True) for a model profile."""
     api_key = os.environ.get(model_config.api_key_env, "") if model_config.api_key_env else ""
@@ -649,6 +668,9 @@ def make_provider(model_config, settings) -> tuple[object, str]:
     else:
         if not model_config.base_url:
             raise SystemExit(f"model '{model_config.name}': openai provider needs base_url")
+        if model_config.api_key_env and not api_key and not _is_local_url(model_config.base_url):
+            # an unset key variable used to send an empty key and surface only as an opaque "provider 401"
+            raise SystemExit(f"model '{model_config.name}': set {model_config.api_key_env} (the API key variable is empty)")
         provider = OpenAICompatProvider(api_key, base_url=model_config.base_url)
     from . import spend
     provider.billing = spend.account_for(model_config)

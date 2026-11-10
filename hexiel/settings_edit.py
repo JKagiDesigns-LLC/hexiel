@@ -7,6 +7,7 @@ it is written."""
 
 import dataclasses
 import json
+import os
 import re
 import shutil
 
@@ -358,4 +359,6 @@ def _write(section: str | None, key: str, value) -> None:
     backup = path.with_name(path.name + ".bak")
     if path.exists() and not backup.exists():
         shutil.copy2(path, backup)   # one-time safety copy of the hand-written original
-    path.write_text(new)
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    tmp.write_text(new)
+    os.replace(tmp, path)          # swap in whole: an interrupted write can't leave config.toml empty or partial

@@ -376,9 +376,41 @@ def _json_response(data: dict, status: int = 200, cors: bool = False) -> web.Res
                         status=status, headers=headers)
 
 
+_LOOPBACK_NAMES = {"localhost", "127.0.0.1", "::1", "[::1]"}
+
+
+def _host_only(hostport: str) -> str:
+    hostport = hostport.strip().lower()
+    if hostport.startswith("["):
+        return hostport.split("]")[0] + "]"
+    return hostport.rsplit(":", 1)[0] if hostport.count(":") == 1 else hostport
+
+
+@web.middleware
+async def origin_guard(request: web.Request, handler):
+    """Keep other web pages from driving the agent through the visitor's browser. The server has no login,
+    so (1) a request that carries an Origin must come from this very host:port (a page on another site can
+    send a text/plain POST or open a WebSocket to 127.0.0.1 without any CORS preflight), and (2) a request
+    that arrived over the loopback interface must name a loopback Host (DNS rebinding makes evil.example
+    resolve to 127.0.0.1, which keeps its own Host and Origin)."""
+    host = request.headers.get("Host", "")
+    origin = request.headers.get("Origin")
+    if origin is not None and origin != "null":
+        from urllib.parse import urlparse
+        if urlparse(origin).netloc.lower() != host.strip().lower():
+            raise web.HTTPForbidden(text="cross-origin request refused")
+    elif origin == "null":
+        raise web.HTTPForbidden(text="cross-origin request refused")
+    sock = request.transport.get_extra_info("sockname") if request.transport else None
+    local_ip = sock[0] if sock else ""
+    if local_ip in ("127.0.0.1", "::1") and _host_only(host) not in _LOOPBACK_NAMES:
+        raise web.HTTPForbidden(text="unexpected Host header for a local-only server")
+    return await handler(request)
+
+
 def make_app(session: Session, driver=None) -> web.Application:
     state = WebState(session, driver)
-    app = web.Application(client_max_size=32 * 1024 * 1024)
+    app = web.Application(client_max_size=32 * 1024 * 1024, middlewares=[origin_guard])
     app["state"] = state
 
     async def start_drain(app):

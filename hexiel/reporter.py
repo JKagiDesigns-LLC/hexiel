@@ -35,6 +35,8 @@ _SECRETS = [
     (re.compile(r"\b(?:10|127|192\.168|172\.(?:1[6-9]|2\d|3[01]))\.\d{1,3}\.\d{1,3}(?:\.\d{1,3})?\b"), "<ip>"),
     (re.compile(r"\b[A-Za-z0-9+/_-]{40,}={0,2}"), "<blob>"),
 ]
+# paths outside the home directory still name clients and projects: keep only the file name
+_OTHER_PATHS = re.compile(r"(?:\b[A-Za-z]:[\\/]|(?<![\w.])/(?:mnt|srv|data|media|Volumes|workspace|work|projects|var/www|root|opt/[\w.-]+/(?:data|projects))/)[^\s\"'<>:,;)]*")
 _notice_shown = False
 
 
@@ -47,6 +49,13 @@ def redact(text: str) -> str:
         if len(home) > 3:
             text = text.replace(home, "~")
     text = _HOME_PATHS.sub("~", text)
+    try:
+        cwd = os.getcwd()
+        if len(cwd) > 3:
+            text = text.replace(cwd, "<project>").replace(cwd.replace("\\", "/"), "<project>")
+    except OSError:
+        pass
+    text = _OTHER_PATHS.sub(lambda m: "<path>/" + re.split(r"[\\/]", m.group(0).rstrip("\\/"))[-1], text)
     for pattern, repl in _SECRETS:
         text = pattern.sub(repl, text)
     return text
@@ -117,7 +126,9 @@ def _post(report: dict, timeout: float = 8.0) -> dict | None:
         resp = httpx.post(relay_url().rstrip("/") + "/api/reports", json=report, headers=_headers(), timeout=timeout)
     except httpx.HTTPError:
         return None
-    if resp.status_code == 401 and _headers():            # revoked device token: still report, anonymously
+    if resp.status_code == 401 and _headers():            # revoked device token
+        if mode() != "all":
+            return None                                   # "account" reports never go out anonymously: queue it
         try:
             resp = httpx.post(relay_url().rstrip("/") + "/api/reports", json=report, timeout=timeout)
         except httpx.HTTPError:

@@ -82,7 +82,49 @@ def _path_matches(pattern: str, value: str, cwd: str) -> bool:
     return fnmatch.fnmatch(str(target), pat)
 
 
-def _command_matches(spec: str, command: str) -> bool:
+def command_segments(command: str) -> tuple[list[str], bool]:
+    """Split a shell command line into its simple commands on ; && || | & and newlines (outside quotes).
+    The flag is True when the line also holds command substitution ($( ), backticks, <( ), >( )), whose
+    content cannot be judged by a prefix rule."""
+    segs: list[str] = []
+    cur: list[str] = []
+    quote = ""
+    unsafe = False
+    i, n = 0, len(command)
+    while i < n:
+        ch = command[i]
+        if quote == "'":
+            cur.append(ch)
+            if ch == "'":
+                quote = ""
+        elif ch == "\\" and i + 1 < n:
+            cur.append(ch + command[i + 1])
+            i += 1
+        elif quote == '"':
+            cur.append(ch)
+            if ch == '"':
+                quote = ""
+            elif ch == "`" or (ch == "$" and command[i + 1:i + 2] == "("):
+                unsafe = True
+        elif ch in "'\"":
+            quote = ch
+            cur.append(ch)
+        elif ch == "`" or (ch in "$<>" and command[i + 1:i + 2] == "(" and (ch == "$" or command[i - 1:i] in (" ", "", "\t"))):
+            unsafe = True
+            cur.append(ch)
+        elif ch in ";&|\n":
+            segs.append("".join(cur))
+            cur = []
+            while i + 1 < n and command[i + 1] in ";&|":      # && || ;; |& as one separator
+                i += 1
+        else:
+            cur.append(ch)
+        i += 1
+    segs.append("".join(cur))
+    return [" ".join(x.split()) for x in segs if x.strip()], unsafe
+
+
+def _one_command_matches(spec: str, command: str) -> bool:
     command = " ".join(command.split())
     if spec.endswith(":*"):
         prefix = " ".join(spec[:-2].split())
@@ -90,7 +132,17 @@ def _command_matches(spec: str, command: str) -> bool:
     return fnmatch.fnmatch(command, " ".join(spec.split()))
 
 
-def matches(rule: str, tool: str, args: dict, cwd: str) -> bool:
+def _command_matches(spec: str, command: str, require_all: bool = False) -> bool:
+    """A rule against a command LINE. An allow rule (require_all) only covers the line when every simple
+    command in it matches and nothing is hidden in a substitution, so `git status; rm -rf ~` is not
+    covered by `Bash(git status:*)`. Deny and ask rules match when ANY part of the line matches."""
+    segments, unsafe = command_segments(command)
+    if require_all:
+        return bool(segments) and not unsafe and all(_one_command_matches(spec, seg) for seg in segments)
+    return _one_command_matches(spec, command) or any(_one_command_matches(spec, seg) for seg in segments)
+
+
+def matches(rule: str, tool: str, args: dict, cwd: str, require_all: bool = False) -> bool:
     m = _RULE.match(rule)
     if not m:
         return False
@@ -103,7 +155,7 @@ def matches(rule: str, tool: str, args: dict, cwd: str) -> bool:
         return True
     value = _argument(tool, args)
     if rule_name in COMMAND_TOOLS:
-        return _command_matches(spec, value)
+        return _command_matches(spec, value, require_all)
     if rule_name == "WebFetch" and spec.startswith("domain:"):
         host = (urlparse(value).hostname or "").lower()
         domain = spec[len("domain:"):].strip().lower()
@@ -115,10 +167,37 @@ def matches(rule: str, tool: str, args: dict, cwd: str) -> bool:
 
 def decide(rules: Rules, tool: str, args: dict, cwd: str) -> str | None:
     """'deny' | 'ask' | 'allow' | None (no rule matched → default behaviour)."""
-    for kind in ("deny", "ask", "allow"):
+    for kind in ("deny", "ask"):
         if any(matches(r, tool, args, cwd) for r in getattr(rules, kind)):
             return kind
-    return None
+    if RULE_NAME.get(tool, tool) in COMMAND_TOOLS:
+        return "allow" if _command_allowed(rules.allow, tool, args, cwd) else None
+    return "allow" if any(matches(r, tool, args, cwd) for r in rules.allow) else None
+
+
+def _command_allowed(allow: list[str], tool: str, args: dict, cwd: str) -> bool:
+    """A command line is allowed when a rule covers the whole tool, or every simple command in it is
+    covered by some allow rule and nothing is hidden in a substitution."""
+    applicable = [r for r in allow if _rule_targets(r, tool)]
+    if any(_spec_of(r) in (None, "", "*") for r in applicable):
+        return True
+    segments, unsafe = command_segments(_argument(tool, args))
+    if unsafe or not segments:
+        return False
+    return all(any(matches(r, tool, {"command": seg}, cwd) for r in applicable) for seg in segments)
+
+
+def _rule_targets(rule: str, tool: str) -> bool:
+    m = _RULE.match(rule)
+    if not m:
+        return False
+    rule_name = RULE_NAME.get(tool, tool)
+    return fnmatch.fnmatch(tool, m.group(1)) or fnmatch.fnmatch(rule_name, m.group(1))
+
+
+def _spec_of(rule: str) -> str | None:
+    m = _RULE.match(rule)
+    return None if not m or m.group(2) is None else m.group(2).strip()
 
 
 def always_rule(tool: str, args: dict) -> str:

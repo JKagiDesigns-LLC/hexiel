@@ -264,3 +264,18 @@ def test_recovery_backs_off_when_chain_exhausted(env, monkeypatch):
     monkeypatch.setattr(s, "_sleep_interruptibly", lambda secs: slept.append(secs) or True)
     assert s._recover_unattended({}, "empty") is True
     assert slept == [30]
+
+
+def test_a_fallback_with_no_api_key_is_skipped_not_fatal(env, monkeypatch):
+    """A rung whose key is missing used to raise SystemExit out of the fallback switch and end the
+    session mid-turn; it must be skipped and the next link used."""
+    s, events = env
+    s.model_config = GMK                                   # chain: anthropic-sonnet, glm-flash
+    def provider(mc, settings):
+        if mc.name == "anthropic-sonnet":
+            raise SystemExit("model 'anthropic-sonnet': set ANTHROPIC_API_KEY")
+        return object()
+    monkeypatch.setattr(lmm, "make_provider", provider)
+    assert s._switch_to_fallback("down") is True
+    assert s.model_config.name == "glm-flash"
+    assert any(e[0] == "note" and "unusable" in e[1] for e in events)

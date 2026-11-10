@@ -98,18 +98,20 @@ def list_worktrees(cwd: str) -> list[Worktree]:
     return [w for w in out if not w.bare]
 
 
-def find(cwd: str, name: str) -> Worktree | None:
-    """A worktree by exact or abbreviated name/path segment (for /wt open|remove)."""
+def find(cwd: str, name: str, exact: bool = False) -> Worktree | None:
+    """A worktree by exact name/path, or (unless `exact`) by a prefix that picks ONE worktree: an ambiguous
+    prefix finds nothing rather than whichever came first."""
     want = slug(name)
     worktrees = list_worktrees(cwd)
     for w in worktrees[1:]:                            # never target the main tree
         if w.path.name == want or w.path == Path(name):
             return w
-    for w in worktrees[1:]:
-        if w.path.name.startswith(want) or w.branch == name.removeprefix(BRANCH_PREFIX) \
-                or w.branch.removeprefix(BRANCH_PREFIX) == name:
-            return w
-    return None
+    if exact:
+        return None
+    hits = [w for w in worktrees[1:]
+            if w.path.name.startswith(want) or w.branch == name.removeprefix(BRANCH_PREFIX)
+            or w.branch.removeprefix(BRANCH_PREFIX) == name]
+    return hits[0] if len(hits) == 1 else None
 
 
 def unused_number(root: Path, base: str) -> int:
@@ -184,9 +186,9 @@ def open_session_cwd_for(cwd: str, name: str) -> str:
 def remove(cwd: str, name: str, force: bool = True) -> str:
     """Remove a worktree (by name/path) and, when this module made its branch, the branch too.
     Returns a human line."""
-    w = find(cwd, name)
+    w = find(cwd, name, exact=True)         # removal discards work: never guess from a prefix
     if w is None:
-        raise ValueError(f"no worktree matches {name!r} — /wt lists them")
+        raise ValueError(f"no worktree is named exactly {name!r} — /wt lists them (removal needs the full name)")
     path, branch = w.path, w.branch
     args = ["worktree", "remove"]
     if force:

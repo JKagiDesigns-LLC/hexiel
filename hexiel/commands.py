@@ -27,8 +27,9 @@ class Command:
 
     def render(self, arguments: str) -> str:
         words = arguments.split()
-        text = self.body.replace("$ARGUMENTS", arguments)
-        text = re.sub(r"\$(\d)", lambda m: words[int(m.group(1)) - 1] if 0 < int(m.group(1)) <= len(words) else "", text)
+        # $1..$9 first, on the command's own text: what the user typed may itself contain "$5"
+        text = re.sub(r"\$(\d)", lambda m: words[int(m.group(1)) - 1] if 0 < int(m.group(1)) <= len(words) else "", self.body)
+        text = text.replace("$ARGUMENTS", arguments)
         if "$ARGUMENTS" not in self.body and arguments and not re.search(r"\$\d", self.body):
             text += f"\n\n{arguments}"          # no placeholder: append what the user typed
         return text.strip()
@@ -36,7 +37,7 @@ class Command:
 
 def _parse(path: Path, name: str) -> Command | None:
     try:
-        text = path.read_text()
+        text = path.read_text(encoding="utf-8", errors="replace")     # a cp1252 file must not break the slash menu
     except OSError:
         return None
     meta = {}

@@ -453,6 +453,10 @@ Tools appear as `mcp__<server>__<tool>`; read-only tools skip the approval promp
    write tools are disabled over the API.
 2. **Use OpenWebUI plugins in hexiel:** drop `Tools` / `Pipe` / `Filter` plugin
    files into `plugins/` — methods become tools, `Valves` are honored.
+   Put plugins you chose in `~/.local/share/hexiel/plugins/` (always loaded). A project's own
+   `plugins/` folder loads only after `hexiel --trust-project` in that project, so code in a freshly
+   cloned repo never runs by surprise. Plugin tools always ask for approval. Plugins load at startup.
+   Guide: https://hexiel.tech/plugins/
 
 ## Contributing
 

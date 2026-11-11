@@ -89,6 +89,7 @@ BUILTIN = [
     ("cloud", "<request>", "answer this request with the cloud (planner) model instead of the local one"),
     ("undo", "", "revert the file changes hexiel made in its last turn"),
     ("knowledge", "[sync]", "reference-docs library: status, or sync new docs into it"),
+    ("doctor", "", "health report: what works, what doesn't, and how to fix it (grouped, with advice)"),
     ("jobs", "", "scheduled jobs (ask hexiel to schedule something to create one)"),
     ("inbox", "", "results from scheduled jobs"),
     ("usage", "", "tokens used this session (in / cached / out)"),

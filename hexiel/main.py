@@ -52,7 +52,9 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--presets", action="store_true",
                     help="list ready-made model profiles for the major providers")
     ap.add_argument("--doctor", action="store_true",
-                    help="run environment preflight checks and exit")
+                    help="run environment preflight checks and exit (grouped report with advice)")
+    ap.add_argument("--fix", action="store_true", help="with --doctor: apply the safe generic fixes")
+    ap.add_argument("--json", action="store_true", help="with --doctor: print the report as JSON")
     ap.add_argument("--setup", action="store_true", help="first-run guided wizard")
     ap.add_argument("--trust-project", action="store_true",
                     help="trust this project's plugins/ folder (its Python files then load at startup) and exit")
@@ -381,7 +383,7 @@ def main() -> None:
         return
     if args.doctor:
         from .doctor import doctor_main
-        raise SystemExit(doctor_main(cwd))
+        raise SystemExit(doctor_main(cwd, fix=args.fix, as_json_out=args.json))
     if args.setup:
         from .doctor import wizard
         wizard(cwd)

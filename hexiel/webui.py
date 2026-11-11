@@ -568,6 +568,9 @@ def make_app(session: Session, driver=None) -> web.Application:
             box = jobs_mod.inbox_dir()
             files = sorted(box.glob("*.md"), reverse=True)[:3] if box.exists() else []
             return "\n\n".join(f.read_text()[:3000] for f in files) or "the inbox is empty"
+        if cmd == "doctor":
+            from . import doctor
+            return "🩺 doctor\n" + doctor.render(doctor.checks(session.cwd), colour=False, title=False).strip()
         if cmd == "knowledge":
             from . import knowledge, toolsets
             if arg != "sync":
@@ -1116,6 +1119,14 @@ def make_app(session: Session, driver=None) -> web.Application:
     app.router.add_get("/api/prompt", api_prompt_get)
     app.router.add_post("/api/prompt", api_prompt_set)
     app.router.add_get("/api/stats", api_stats)
+
+    async def api_doctor(request):
+        """The health report as data (the Health page); the probes run off the event loop."""
+        from . import doctor
+        loop = asyncio.get_running_loop()
+        items = await loop.run_in_executor(None, lambda: doctor.checks(session.cwd))
+        return web.Response(text=doctor.as_json(items), content_type="application/json")
+    app.router.add_get("/api/doctor", api_doctor)
 
     app.router.add_post("/api/approve", api_approve)
     app.router.add_post("/api/remote/login", api_remote_login)

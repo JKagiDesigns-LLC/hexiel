@@ -50,16 +50,16 @@ lands, and is documented on hexiel.tech the same day so the site never goes stal
       chars, cached read-only connection). `knowledge_auto = "off"` turns it off; /knowledge shows the cost.
 
 ## Release 0.9.0 — doctor, :checkhealth style
-- [ ] doctor.py around a Check record (group, level OK/WARNING/ERROR/INFO, label, detail, advice lines,
+- [x] doctor.py around a Check record (group, level OK/WARNING/ERROR/INFO, label, detail, advice lines,
       optional fix). Grouped output: Runtime · Models · Tools · Integrations · Project; counts at the end.
-- [ ] Reclassify the fresh-install false failures (memory dir, skills, test runner, GitLab token, "no
+- [x] Reclassify the fresh-install false failures (memory dir, skills, test runner, GitLab token, "no
       config yet") to INFO/WARNING; "provider endpoint" is an ERROR when the default model is not in the
-      server's inventory (passes today).
-- [ ] New checks: Ollama Cloud sign-in state; each key env named by a profile (masked); PATH shadowing;
-      terminal capabilities (true colour, OSC 52); pwsh version on Windows; disk space for models.
-- [ ] `--fix` applies the safe generic fixes (dirs, optional extras, pull the chosen local model);
-      `--json` for CI and the web UI. `/doctor` panel in the TUI; Health page in the web UI.
-- [ ] Golden-output test per section with fake filesystem + fake endpoints.
+      server's inventory; the default model is proven with a one-token request (401 → "ollama signin").
+- [x] New checks: Ollama Cloud sign-in state; each key env named by a profile (masked); PATH shadowing;
+      terminal colours; pwsh on Windows; disk space; helper tools (pyright, ruff, prettier, tesseract…).
+- [x] `--fix` applies the safe generic fixes (dirs, optional extras, pull the chosen local model);
+      `--json` for CI and the web UI (/api/doctor). `/doctor` in the TUI and the web chat.
+- [x] Tests with a fake home, fake endpoints and a fake probe; fresh install shows no ERROR.
 
 ## Release 0.9.1 — installer with discovery and guided setup
 - [ ] install.sh (macOS/Linux) + install.ps1 (Windows): uv first (brings Python), pipx, then venv; checksum

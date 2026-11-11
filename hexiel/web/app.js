@@ -356,6 +356,7 @@ function handleFrame(data) {
     switch (data.t) {
       case "history":
         renderHistory(data.items);
+        if (!busy && !(data.replay || []).length) renderWelcome(); // an empty chat greets with examples
         applyStatus(data.status);
         $("#modal-back").classList.remove("show"); // answered elsewhere while away
         for (const frame of data.replay || []) handleFrame(frame); // what happened while this page was away
@@ -1277,6 +1278,7 @@ function submit() {
   if (!text) return;
   input.value = "";
   input.style.height = "auto";
+  document.querySelectorAll("#chat .welcome").forEach((w) => w.remove()); // the empty-chat card goes once the chat starts
   const div = document.createElement("div");
   div.className = "msg user";
   div.innerHTML = `<div class="bubble">${esc(text)}</div>`;

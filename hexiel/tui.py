@@ -2780,7 +2780,7 @@ class HexielTUI(App):
             self.finalize_stream()
             payload_dict = payload[0] if payload and isinstance(payload[0], dict) else {}
             error = payload_dict.get("error")
-            if error and payload_dict.get("kind") == "loop_guard":
+            if error and payload_dict.get("kind") in ("loop_guard", "budget"):
                 pass          # the 🛑 note already announces it — don't double-display as a fake provider error
             elif error:
                 chat.mount(Static(f"[red]provider error:[/red] {_literal(error)}", classes="note"))

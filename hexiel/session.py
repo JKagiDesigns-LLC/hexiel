@@ -739,8 +739,9 @@ class Session:
                         continue
                     if recoverable and self._recover_unattended(turn, error, backoff=had_error):
                         continue                  # failed over / backed off: keep the turn going
+                    kind = self.__dict__.pop("_error_kind", None)
                     if not self._stop.is_set():
-                        self.on_event("turn_end", {"error": error})
+                        self.on_event("turn_end", {"error": error, **({"kind": kind} if kind else {})})
                     else:
                         self.on_event("turn_end", aborted=True)
                     return
@@ -865,6 +866,7 @@ class Session:
                 if self._switch_to_fallback(stop):
                     continue
                 self._provider_error = stop
+                self.__dict__["_error_kind"] = "budget"       # the 💸 note already said why: views don't repeat it
                 return {"role": "assistant", "content": ""}
             try:
                 return self._stream_once(self._provider_override or provider, tool_defs)

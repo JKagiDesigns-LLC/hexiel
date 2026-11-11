@@ -11,7 +11,7 @@ What it does, in this order, and nothing else:
   4. recommends PowerShell 7 (winget install Microsoft.PowerShell) when only Windows PowerShell 5.1 is present
   5. runs `hexiel --setup`: finds the keys and agents already on this machine and ends in a working chat
 
-Variables: $env:HEXIEL_VERSION = "0.9.1" (default latest) · $env:HEXIEL_SPEC = ".[serve]" (this checkout) · $env:HEXIEL_NO_SETUP = "1" · $env:UV_VERSION
+Variables: $env:HEXIEL_VERSION = "0.9.2" (default latest) · $env:HEXIEL_SPEC = ".[serve]" (this checkout) · $env:HEXIEL_NO_SETUP = "1" · $env:UV_VERSION
 #>
 $ErrorActionPreference = "Stop"
 $UvVersion = if ($env:UV_VERSION) { $env:UV_VERSION } else { "0.13.7" }

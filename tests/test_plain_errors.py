@@ -180,3 +180,12 @@ def test_the_setup_page_shows_keys_profiles_budget_and_takes_edits(setup_app):
 
 def profiles_ready(profiles, name):
     return next(p for p in profiles if p["name"] == name)["ready"]
+
+
+def test_overloaded_is_not_called_a_rate_limit():
+    from hexiel import explain
+    from hexiel.config import ModelConfig
+    mc = ModelConfig(name="s", provider="anthropic", model="claude-sonnet-5-5", api_key_env="ANTHROPIC_API_KEY")
+    said = explain.explain("HTTP 529: Overloaded", mc)
+    assert "overloaded" in said and "rate-limited" not in said
+    assert "rate-limited" in explain.explain("HTTP 429: rate limit exceeded", mc)

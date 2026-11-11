@@ -53,7 +53,10 @@ def explain(error: str, mc=None) -> str:
         return f"'{model}' does not exist at {url or provider} (404) — pick another with /model"
     if status == 402 or "credit balance" in low or "insufficient_quota" in low or "billing" in low:
         return f"the {provider or 'provider'} account is out of credit for '{model}' — add credits or switch models (/model)"
-    if status == 429 or "rate limit" in low or "overloaded" in low:
+    if status == 529 or "overloaded" in low:
+        return (f"the {provider or 'model'} servers are overloaded right now (not your account) — hexiel retries; "
+                "a fallback profile would answer meanwhile")
+    if status == 429 or "rate limit" in low:
         return f"'{model}' is rate-limited right now — hexiel waits and retries by itself; a fallback profile would skip the wait"
     if status in (500, 502, 503, 529):
         return f"the {provider or 'model'} server had an internal error ({status}) — hexiel retries; if it keeps failing, try /model"

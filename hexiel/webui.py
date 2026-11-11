@@ -265,6 +265,8 @@ class WebState:
             with self.replay_lock:
                 self.turn_base, self.replay = None, []
             error = payload[0].get("error") if payload and isinstance(payload[0], dict) else None
+            if payload and isinstance(payload[0], dict) and payload[0].get("kind") in ("loop_guard", "budget"):
+                error = None                  # its note already said why — not a red error a second time
             # Stop is not a failure: it was reported as error "stopped by user", which the views showed in red
             stopped = bool(_kw.get("aborted"))
             self.broadcast({"t": "turn_end", "error": None if stopped else error, "stopped": stopped,

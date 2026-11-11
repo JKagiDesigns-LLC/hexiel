@@ -86,13 +86,14 @@ lands, and is documented on hexiel.tech the same day so the site never goes stal
 - [x] hexiel.tech install section redesigned around the two one-liners + "just works out of the box".
 
 ## Release 0.9.2 — trust: CI, plain-language errors, web parity
-- [ ] GitLab CI test stage on push + install smoke matrix (clean Ubuntu/macOS/Windows: install.sh →
+- [x] GitLab CI test stage on push + install smoke matrix (clean Ubuntu/macOS/Windows: install.sh →
       `hexiel doctor --json` → one `-p` prompt). Fix the order-dependent test_escalate failure.
-- [ ] Errors in one sentence with the fix: dead server (retry capped and visible), missing sign-in (ADVICE
+      (conftest clears model cooldowns between tests; the pipeline runs once the branch is pushed.)
+- [x] Errors in one sentence with the fix: dead server (retry capped and visible), missing sign-in (ADVICE
       line, not raw JSON), crashes ("saved as an incident, run /heal", not a traceback).
-- [ ] Web UI: welcome card with example prompts, Setup page (keys, model, budget), Health page.
-- [ ] Budget hard stop: `stop_at` per account refuses cloud requests past the budget → local fallback.
-- [ ] Website: lead with "ask questions about your spreadsheet or PDF" next to the coding demo (DuckDB,
+- [x] Web UI: welcome card with example prompts, Setup page (keys, model, budget), Health page.
+- [x] Budget hard stop: `stop_at` per account refuses cloud requests past the budget → local fallback.
+- [x] Website: lead with "ask questions about your spreadsheet or PDF" next to the coding demo (DuckDB,
       openpyxl, pypdf already in the box); 60-second bug-fix demo.
 
 ## Release 0.9.3 — Python does the looking: more visibility, fewer tokens (local models first)

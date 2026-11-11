@@ -952,8 +952,8 @@ def spend_rows(settings, inner: int, in_use: set) -> list[str]:
     for r in rows:
         mark = "" if r["source"] == "provider" else "≈"
         figure = mark + spend.money(r["usd"]) + (f" / {spend.money(r['limit'])}" if r["limit"] else "")
-        if r["limit"] and r.get("limit_source") == "plan":
-            figure += " plan"        # the limit comes from the provider's plan, not config.toml
+        if r["limit"] and r.get("limit_source") == "plan" and len(r["account"]) + len(figure) + 6 <= inner:
+            figure += " plan"        # the budget follows the provider's plan (+ bought credits), not config.toml
         name = fit(r["account"], max(4, inner - len(figure) - 1))
         colour = TEXT
         if r["limit"]:
@@ -963,6 +963,15 @@ def spend_rows(settings, inner: int, in_use: set) -> list[str]:
         if r["limit"]:
             pct = min(999, r["pct"] or 0)
             out.append(f"{meter(min(100, pct), inner - 6)} [{colour}]{pct:>3}%[/]")
+            # what is left (the provider's own remainder when it says — bought credits included) and when
+            # the plan renews; then today's bill, and the day the money runs out at this week's pace
+            left = f"{spend.money(r['left'])} left" if r.get("left") is not None else ""
+            renews = f"renews {spend._day(r['renews'])}" if r.get("renews") else ""
+            out.append(f"[{colour if (r.get('left') or 1) <= 0 else MUTED}]{fit(' · '.join(p for p in (left, renews) if p), inner)}[/]")
+        out.append(f"[{MUTED}]{fit(f'today {spend.money(r['today'])} · ~{spend.money(r['per_day'])}/day', inner)}[/]")
+        runway = spend.runway(r)
+        if runway.startswith("runs out"):
+            out.append(f"[{YELLOW}]{fit('⚠ ' + runway, inner)}[/]")
     return out
 
 

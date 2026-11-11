@@ -229,6 +229,8 @@ class Settings:
     digest_timeout: int = 90          # seconds a tool model gets to condense one output before hexiel uses the raw text
     spend: dict = field(default_factory=dict)         # [spend]: limits, billing cycles and prices per account (see spend.py)
     delegate_review: str = "auto"     # after a delegated run the planner model reviews the diff: "auto" (when it is a different model than the worker) | "always" | "off"
+    knowledge_auto: str = "auto"      # attach matching passages from the knowledge library to each message, for the topics the project uses: "auto" | "off"
+    knowledge_auto_chars: int = 1500  # at most this many characters of passages per message (~350 tokens)
 
 
 @dataclass
@@ -367,4 +369,6 @@ def _settings_from(settings_raw: dict) -> "Settings":
                        if str(settings_raw.get("error_reports", "account")).lower() in ("account", "all", "off") else "account"),
         delegate_review=(str(settings_raw.get("delegate_review", "auto")).lower()
                          if str(settings_raw.get("delegate_review", "auto")).lower() in ("off", "auto", "always") else "auto"),
+        knowledge_auto="off" if str(settings_raw.get("knowledge_auto", "auto")).lower() in ("off", "false", "0") else "auto",
+        knowledge_auto_chars=max(300, int(settings_raw.get("knowledge_auto_chars", 1500))),
     )

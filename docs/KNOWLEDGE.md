@@ -64,15 +64,35 @@ top level of `knowledge/` go to the topic `general`.
   tool that changes things.
 - Retrieved passages are treated as reference material, never as instructions.
 
+### The library is used by itself
+
+You do not have to tell hexiel which docs apply. On every project it reads the tree once
+(manifests such as `pom.xml`, `build.gradle`, `package.json`, `pyproject.toml`, `go.mod`; the
+dependency names in them; the file types present) and matches that against your topic
+folders: a Maven project with a `cucumber-java` dependency and `java.version = 21` gets
+`java-21` and `cucumber-7`, not `java-8`. When the project does not say which version it uses,
+the newest topic wins. The prompt names the detected topics, `knowledge_search` searches them
+by default, and **passages that match a message are attached to that message automatically**
+— a question about `server.xml` arrives at the model together with the three best passages
+from your Tomcat docs, tagged `[tomcat-10.1/ssl.md]`, before the model has to ask.
+
+This costs nothing from a model: keyword search only, at most ~350 tokens per message, with a
+hard 150 ms budget (a lookup that would take longer attaches nothing rather than slowing the
+turn). Messages with nothing to look up ("thanks", "go ahead") skip it entirely. `/knowledge`
+shows how often it fired and what it cost. Turn it off with `knowledge_auto = "off"` under
+`[settings]` (or `/config` → *Docs auto-attach*); `knowledge_auto_chars` caps the size.
+
 ### Pin a project to versions
 
-Different projects use different versions. In the project, create `.hexiel/knowledge.toml`:
+Detection is a best guess from the files; to be explicit, create `.hexiel/knowledge.toml` in the
+project:
 
 ```toml
 topics = ["java-17", "tomcat-10.1", "angular-18"]
 ```
 
-Those topics are searched by default in that project (and named in the prompt).
+A pin replaces detection for that project: those topics are searched by default (and named in
+the prompt), nothing else.
 
 ## How search works
 

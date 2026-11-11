@@ -859,7 +859,20 @@ def make_app(session: Session, driver=None) -> web.Application:
       _, _, todos = todo_mod.read_todos(session.cwd)
       skills = [{"name": s.name, "description": s.description[:160]}
                 for s in skills_mod.discover(session.cwd)]
+      from . import spend as spend_mod
+      in_use = session.accounts_in_use()
+      budget = []
+      for r in spend_mod.snapshot(session.settings):
+          if r["account"] not in in_use:
+              continue
+          budget.append({"account": r["account"], "usd": round(r["usd"], 2), "limit": round(r["limit"], 2),
+                         "pct": r["pct"], "left": None if r.get("left") is None else round(r["left"], 2),
+                         "label": spend_mod.budget_label(r), "estimate": r["source"] != "provider",
+                         "renews": r["renews"].isoformat() if r.get("renews") else "",
+                         "today": round(r["today"], 2), "per_day": round(r["per_day"], 2),
+                         "runway": spend_mod.runway(r), "warn_at": spend_mod.warn_at(session.settings)})
       return _json_response({
+          "budget": budget,
           "status": status_state(session),
           "models": sorted(cfg.models),
           "current_profile": session.model_config.name,

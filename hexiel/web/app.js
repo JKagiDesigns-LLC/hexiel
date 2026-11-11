@@ -620,6 +620,50 @@ function renderSidebar(state) {
       ? " · ♪ " + esc(chain.test_runners.join(", "))
       : "") +
     "</div>";
+  renderBudget(state.budget || []);
+}
+
+// The bill of the model at work now: spent / budget, a meter, what is left and when the plan renews,
+// today's cost and the pace. Hidden while a model on your own machine works (nothing is billed).
+const money = (n) =>
+  n >= 1000 ? "$" + Math.round(n).toLocaleString() : "$" + Number(n).toFixed(2);
+const shortDay = (iso) =>
+  iso
+    ? new Date(iso + "T12:00:00").toLocaleDateString(undefined, { month: "short", day: "numeric" })
+    : "";
+function renderBudget(rows) {
+  const head = $("#budget-head");
+  const list = $("#budget-list");
+  head.hidden = list.hidden = !rows.length;
+  list.innerHTML = rows
+    .map((r) => {
+      const share = r.limit ? r.usd / r.limit : 0;
+      const tone = !r.limit ? "" : share >= 1 ? "over" : share >= (r.warn_at || 0.8) ? "warn" : "";
+      const figure =
+        (r.estimate ? "≈" : "") + money(r.usd) + (r.limit ? " / " + money(r.limit) : "");
+      const pct = r.limit ? Math.min(100, r.pct || 0) : 0;
+      const detail = [];
+      if (r.limit && r.left !== null) detail.push(money(r.left) + " left");
+      if (r.limit && r.renews) detail.push("renews " + shortDay(r.renews));
+      const runway =
+        r.runway && r.runway.startsWith("runs out")
+          ? `<div class="budget-detail budget-runway">⚠ ${esc(r.runway)} at this pace</div>`
+          : "";
+      const title = r.label ? `budget follows your ${r.label}` : "budget from config.toml";
+      return (
+        `<div class="budget ${tone}" title="${esc(title)}">` +
+        `<div class="budget-row"><span class="budget-name">${esc(r.account)}</span>` +
+        `<span class="budget-figure">${esc(figure)}${r.label ? ` <small>${esc(r.label)}</small>` : ""}</span></div>` +
+        (r.limit
+          ? `<div class="budget-meter"><div class="budget-fill" style="width:${pct}%"></div></div>` +
+            `<div class="budget-detail">${esc(detail.join(" · "))}<span>${r.pct}%</span></div>`
+          : "") +
+        `<div class="budget-detail">today ${esc(money(r.today))} · ~${esc(money(r.per_day))}/day</div>` +
+        runway +
+        "</div>"
+      );
+    })
+    .join("");
 }
 
 // ---------------------------------------------------------------- settings

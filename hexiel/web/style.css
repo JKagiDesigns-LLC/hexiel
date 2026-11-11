@@ -41,6 +41,19 @@ body {
 .side-section { padding: 0 8px 10px; font-size: 13px; }
 .side-item { padding: 6px 8px; border-radius: 6px; cursor: pointer; color: var(--text-dim); }
 .side-item:hover { background: var(--bg-hover); color: var(--text); }
+.budget { padding: 4px 8px 8px; font-variant-numeric: tabular-nums; }
+.budget-row { display: flex; justify-content: space-between; gap: 8px; }
+.budget-name { color: var(--text-dim); }
+.budget-figure { color: var(--text); white-space: nowrap; }
+.budget-figure small { color: var(--text-dim); font-size: 11px; }
+.budget.warn .budget-figure { color: var(--warn); }
+.budget.over .budget-figure { color: var(--err); }
+.budget-meter { height: 5px; margin: 6px 0 4px; border-radius: 3px; background: var(--border); overflow: hidden; }
+.budget-fill { height: 100%; background: var(--ok); transition: width .4s; }
+.budget.warn .budget-fill { background: var(--warn); }
+.budget.over .budget-fill { background: var(--err); }
+.budget-detail { display: flex; justify-content: space-between; gap: 8px; color: var(--text-dim); font-size: 12px; }
+.budget-runway { color: var(--warn); }
 #brand {
   padding: 16px 14px 10px;
   font-weight: 700;

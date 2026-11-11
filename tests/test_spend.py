@@ -83,6 +83,7 @@ def test_free_models_and_old_cycles_do_not_count():
 class Fake(BaseHTTPRequestHandler):
     seen: list = []
     allowance: float = 0.0         # what /api/balance reports this run: 0 = the endpoint says nothing
+    balance: dict | None = None    # a full /api/balance reply (ollama.com's real shape) — wins over allowance
 
     def log_message(self, *a):
         pass
@@ -99,8 +100,9 @@ class Fake(BaseHTTPRequestHandler):
                 "totals": {"groups": [{"model": "glm-5.3-flash", "usage_usd": 2.0,
                                        "input_tokens": 900_000, "output_tokens": 100_000}]}}
         elif url.path == "/api/balance":
-            body = ({"balance_usd": 20.0, "allowance_usd": Fake.allowance, "period": "monthly",
-                     "plan": "Max"} if Fake.allowance else {})
+            body = Fake.balance if Fake.balance is not None else (
+                {"balance_usd": 20.0, "allowance_usd": Fake.allowance, "period": "monthly",
+                 "plan": "Max"} if Fake.allowance else {})
         elif url.path == "/v1/organizations/cost_report":          # amounts in cents, paginated
             body = ({"data": [{"results": [{"amount": "123.50", "currency": "USD"}]}], "has_more": True,
                      "next_page": "p2"} if "page" not in q else
@@ -133,8 +135,16 @@ def fake(monkeypatch):
         monkeypatch.setattr(spend, name, base)
     Fake.seen = []
     Fake.allowance = 0.0
+    Fake.balance = None
     yield Fake
     server.shutdown()
+
+
+# ollama.com/api/balance as it really answers: the plan's allowance and billing period, what is left of
+# the allowance, and the balance of credits bought on top
+REAL_BALANCE = {"included": {"balance_usd": 0, "allowance_usd": 300,
+                             "period": {"from": "2026-10-20T20:11:03Z", "until": "2026-11-20T20:11:03Z"}},
+                "purchased": {"balance_usd": 1.77706}}
 
 
 def test_the_providers_own_figures_win_over_estimates(fake, monkeypatch):
@@ -191,6 +201,55 @@ def test_the_plan_allowance_is_picked_up_and_followed_when_it_changes(fake, monk
     spend.refresh(s, force=True)
     [row] = spend.totals(s)
     assert row["limit"] == 120 and row["limit_source"] == "plan"
+
+
+def test_the_plans_own_period_and_remainder_drive_the_bar(fake, monkeypatch):
+    """The bar follows what ollama.com says: the cycle began on the plan's own date (not config.toml's
+    cycle_day), and the budget is what was spent plus what is left — the allowance *and* the credits you
+    bought — so a top-up grows the bar instead of overflowing it."""
+    monkeypatch.setenv("OLLAMA_API_KEY", "olk")
+    monkeypatch.setattr(spend, "SNAPSHOT_SECONDS", 0)
+    Fake.balance = REAL_BALANCE
+    s = Settings(spend={"ollama": {"limit": 60, "cycle_day": 23}})          # the 23rd is wrong: the plan says the 20th
+    spend.refresh(s, force=True)
+    today = dt.date(2026, 10, 30)
+    [row] = spend.totals(s, today)
+    assert row["since"] == dt.date(2026, 10, 20) and row["renews"] == dt.date(2026, 11, 20)
+    assert row["usd"] == pytest.approx(55.16) and row["source"] == "provider"      # Oct 22 counts now
+    assert row["left"] == pytest.approx(1.77706) and row["purchased_left"] == pytest.approx(1.77706)
+    assert row["limit"] == pytest.approx(55.16 + 1.77706) and row["limit_source"] == "plan"
+    assert row["pct"] == 96 and row["plan_usd"] == 300
+    assert spend.budget_label(row) == "plan + credits"
+    # today and the pace of the week come from the provider's daily buckets
+    assert row["today"] == 0 and row["per_day"] == pytest.approx((4.75 + 0.41) / 7)     # Oct 23-29
+    line = spend.summary_lines(s)[0]
+    assert "$1.78 left ($1.78 of it bought credits)" in line and "renews Nov 20" in line
+    # a credit top-up is announced once, and raises the budget
+    notes = spend.alerts(s)
+    assert any("💳 ollama: $1.78 of bought credits" in n for n in notes)
+    assert not any("💳" in n for n in spend.alerts(s))
+    Fake.balance = {**REAL_BALANCE, "purchased": {"balance_usd": 41.77706}}
+    spend.refresh(s, force=True)
+    [row] = spend.totals(s, today)
+    assert row["left"] == pytest.approx(41.77706) and row["pct"] == 56
+    assert any("$41.78 of bought credits" in n for n in spend.alerts(s))
+    # detect_limits = false pins both the limit and the cycle day you wrote
+    pinned = Settings(spend={"ollama": {"limit": 60, "cycle_day": 23, "detect_limits": False}})
+    spend.refresh(pinned, force=True)
+    [row] = spend.totals(pinned, today)
+    assert row["since"] == dt.date(2026, 10, 23) and row["limit"] == 60 and row["limit_source"] == "config"
+    assert row["left"] == pytest.approx(60 - 5.16) and row["renews"] == dt.date(2026, 11, 23)
+
+
+def test_the_sidebar_says_what_is_left_and_when_it_renews(fake, monkeypatch):
+    from hexiel.tui import spend_rows
+    monkeypatch.setenv("OLLAMA_API_KEY", "olk")
+    monkeypatch.setattr(spend, "SNAPSHOT_SECONDS", 0)
+    Fake.balance = REAL_BALANCE
+    s = Settings(spend={"ollama": {"limit": 60}})
+    spend.refresh(s, force=True)
+    text = "\n".join(spend_rows(s, 27, {"ollama"}))
+    assert "$1.78 left · renews Nov 20" in text and "today $" in text
 
 
 def test_plan_allowances_are_told_apart_from_spend_and_remainder():

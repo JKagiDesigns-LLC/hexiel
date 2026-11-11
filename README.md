@@ -111,11 +111,16 @@ hexiel -m sonnet          # pick a model profile for this run
 - **Reading history:** scroll up while hexiel works and it never yanks you back down;
   a floating **↓ scroll to bottom** tag returns you to the newest messages (scrolling
   back down by hand does the same).
-- **Budget:** the sidebar's SPEND line tracks each paid bill against your plan — the
-  dollar allowance is read from the provider (Ollama Cloud: `/api/balance`) on the
-  same periodic refresh as the spend figure, so changing your plan (Pro → Max) is
-  picked up without editing `config.toml`. Pin your own cap with
-  `detect_limits = false` in that account's `[spend.NAME]` table.
+- **Budget:** the sidebar's SPEND block tracks each paid bill against your plan. For
+  Ollama Cloud it follows `/api/balance` on the same periodic refresh as the spend
+  figure: the plan's own billing period (not a guessed day of the month), the monthly
+  allowance, and what is left of it *plus any credits you bought on top* — so an
+  upgrade (Pro → Max) or a credit top-up shows up as a bigger budget and a new
+  "$ left" figure without editing `config.toml`. Under the bar: what is left and when
+  the plan renews, what today cost, this week's pace, and the day the money runs out
+  at that pace. (Ollama's paid plans have no daily cap — only monthly credits.) Pin
+  your own cap and cycle day with `detect_limits = false` in that account's
+  `[spend.NAME]` table; `/usage` prints the same for every account.
 - **Activity line:** while hexiel works, the bottom-left shows what it's doing —
   thinking, writing, running your tests — with elapsed time and tokens.
   `Ctrl+C` stops a turn — double-tapping `Esc` also stops the current task
@@ -188,7 +193,12 @@ ask about something not in the library it can find the official docs and offer t
 download them (`knowledge_add`, with your approval). Search is hybrid — SQLite keyword
 (BM25) plus **Ollama embeddings** (`nomic-embed-text`, pulled automatically on first sync),
 so "how do I encrypt connections?" finds the TLS page. No Ollama? Keyword search still
-works. Pin a project to versions with `.hexiel/knowledge.toml` (`topics = ["java-21"]`).
+works. hexiel works out which topics a project uses from its files (a `pom.xml` naming
+Java 21 and cucumber → `java-21`, `cucumber-7`) and attaches the passages that match each
+message to it automatically — keyword-only, a few hundred tokens, a hard 150 ms budget — so
+the model reads your docs before it answers. Pin a project explicitly with
+`.hexiel/knowledge.toml` (`topics = ["java-21"]`); `knowledge_auto = "off"` turns the
+attachment off.
 The crawler stays on the docs site, honours `robots.txt` and rate-limits itself. In the
 TUI/browser: `/knowledge` and `/knowledge sync`. Full guide: **[docs/KNOWLEDGE.md](docs/KNOWLEDGE.md)**.
 

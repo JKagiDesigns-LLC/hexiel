@@ -42,6 +42,9 @@ FIELDS = [
              "empty = the current model"},
     {"key": "settings.cloud_fallback_profile", "label": "Cloud fallback", "kind": "choice",
      "help": "used only for cloud tasks (plans, advice, summaries) when the planner/summary model fails or is rate-limited; empty = none"},
+    {"key": "settings.knowledge_auto", "label": "Docs auto-attach", "kind": "choice", "options": ["auto", "off"],
+     "help": "attach passages from your knowledge library that match each message, for the technologies this "
+             "project uses (detected from its files); off = only when the model calls knowledge_search"},
     {"key": "settings.request_timeout", "label": "Request timeout", "kind": "number",
      "options": [300, 600, 900, 1800, 3600], "help": "seconds per model request"},
     {"key": "settings.auto_resume", "label": "Auto-resume", "kind": "bool",

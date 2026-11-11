@@ -528,6 +528,23 @@ class Session:
                               + "\nUse these measured figures when you answer; they are fresher "
                                 "than anything you already know.")
 
+    def _knowledge_note(self, entry: dict, user_text: str) -> None:
+        """Reference passages from the knowledge library that match this message ride along with it, for
+        the topics this project uses (knowledge.auto_context: keyword search, no model call, a hard time
+        budget — the message is never held up). They stay in the history like hook context does, so the
+        cached prompt prefix is untouched."""
+        if str(getattr(self.settings, "knowledge_auto", "auto")).lower() == "off":
+            return
+        try:
+            from . import knowledge
+            note = knowledge.auto_context(self.cwd, user_text,
+                                          max_chars=int(getattr(self.settings, "knowledge_auto_chars", 1500)))
+        except Exception:      # noqa: BLE001 - the library is a bonus, never a blocker
+            note = ""
+        if note:
+            entry["content"] += "\n\n" + note
+            self.save()
+
     def _restore_weather_note(self) -> None:
         prev = getattr(self, "_weather_prev_system", None)
         if prev is not None:
@@ -662,6 +679,7 @@ class Session:
         if handled:
             return
         self._weather_card(user_text)
+        self._knowledge_note(entry, user_text)
         prev_mc = self.model_config      # an overflow model for this one request only (router.py)
         self.__dict__["_turn_boot_model"] = prev_mc.name
         self.__dict__.pop("_idle_token", None)   # any pending idle compaction is no longer wanted

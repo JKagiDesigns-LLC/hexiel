@@ -110,6 +110,81 @@ def test_project_pin_and_tool(lib):
     assert "java-21" in knowledge.prompt_section(str(proj)) and "pinned" in knowledge.prompt_section(str(proj))
 
 
+def _java_project(tmp_path, name="app"):
+    proj = tmp_path / name
+    (proj / "src" / "test").mkdir(parents=True)
+    (proj / "pom.xml").write_text(
+        "<project><properties><java.version>21</java.version></properties><dependencies>"
+        "<dependency><groupId>io.cucumber</groupId><artifactId>cucumber-java</artifactId></dependency>"
+        "</dependencies></project>")
+    (proj / "src" / "Main.java").write_text("class Main {}")
+    return proj
+
+
+def test_topics_are_detected_from_the_project(lib, tmp_path):
+    """No pinning needed: a project with a pom.xml that names Java 21 and cucumber gets java-21 (not java-8)
+    and, once docs for it exist, cucumber; a React project gets neither."""
+    knowledge.sync(say=lambda _m: None, embed=False)
+    proj = _java_project(tmp_path)
+    assert knowledge.detected_topics(str(proj)) == ["java-21"]
+    assert knowledge.topics_for(str(proj)) == ["java-21"]
+    (lib / "cucumber-7").mkdir()
+    (lib / "cucumber-7" / "hooks.md").write_text(
+        "# Steps\n\n## Hooks\nUse `@Before` from io.cucumber.java to run a hook before each scenario.\n")
+    knowledge.sync(say=lambda _m: None, embed=False)                 # the library changed → re-detected
+    assert knowledge.detected_topics(str(proj)) == ["cucumber-7", "java-21"]
+    web = tmp_path / "web"
+    web.mkdir()
+    (web / "package.json").write_text('{"dependencies": {"react": "18.0.0"}}')
+    assert knowledge.detected_topics(str(web)) == []
+    # the newest version wins when the project does not say which it uses
+    (tmp_path / "plain").mkdir()
+    (tmp_path / "plain" / "Build.java").write_text("class Build {}")
+    assert knowledge.detected_topics(str(tmp_path / "plain")) == ["java-21"]
+    # a pin still beats detection
+    (proj / ".hexiel").mkdir()
+    (proj / ".hexiel" / "knowledge.toml").write_text('topics = ["java-8"]\n')
+    assert knowledge.topics_for(str(proj)) == ["java-8"]
+    assert "This project uses: java-21" in knowledge.prompt_section(str(tmp_path / "plain"))
+
+
+def test_matching_passages_ride_along_with_a_message(lib, tmp_path):
+    knowledge.sync(say=lambda _m: None, embed=False)
+    proj = _java_project(tmp_path)
+    note = knowledge.auto_context(str(proj), "how do I declare a record Point with x and y here?")
+    assert note.startswith(knowledge.AUTO_MARK)
+    assert "[java-21/records.md]" in note and "transparent carrier" in note and "java-8" not in note
+    assert "Language > Records" in note                               # the heading trail survives the excerpt
+    assert knowledge.auto_context(str(proj), "hi") == ""              # nothing to look up
+    assert knowledge.auto_context(str(proj), "thanks, looks good to me") == ""
+    assert knowledge.auto_context(str(proj), "what is the weather forecast for tomorrow evening") == ""
+    assert knowledge.auto_context(str(proj), "/model kimi") == ""
+    web = tmp_path / "web"
+    web.mkdir()
+    (web / "package.json").write_text('{"dependencies": {"react": "18.0.0"}}')
+    assert knowledge.auto_context(str(web), "declare a record Point with x and y") == ""   # not this project's docs
+    assert knowledge.auto_context(str(proj), "declare a record Point", budget_s=0) == ""   # out of time → nothing
+    stats = knowledge.auto_stats()
+    assert stats["attached"] >= 1 and stats["last_ms"] < 150
+    assert "auto-attached this session" in knowledge.status()
+
+
+def test_the_session_attaches_passages_to_the_user_turn(lib, tmp_path):
+    from hexiel.config import ModelConfig, Settings
+    from hexiel.session import Session
+    knowledge.sync(say=lambda _m: None, embed=False)
+    proj = _java_project(tmp_path)
+    mc = ModelConfig(name="p", provider="openai", model="m", base_url="http://localhost:11434/v1")
+    s = Session(mc, Settings(), str(proj), [], "sys")
+    entry = {"role": "user", "content": "declare a record Point with x and y"}
+    s._knowledge_note(entry, entry["content"])
+    assert knowledge.AUTO_MARK in entry["content"] and "transparent carrier" in entry["content"]
+    off = Session(mc, Settings(knowledge_auto="off"), str(proj), [], "sys")
+    entry = {"role": "user", "content": "declare a record Point with x and y"}
+    off._knowledge_note(entry, entry["content"])
+    assert knowledge.AUTO_MARK not in entry["content"]
+
+
 def test_cli_status_and_sync(lib, capsys):
     assert knowledge.cli(["sync", "--no-embed"]) == 0
     assert knowledge.cli(["search", "records", "-t", "java-21"]) == 0

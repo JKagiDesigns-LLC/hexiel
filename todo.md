@@ -62,24 +62,28 @@ lands, and is documented on hexiel.tech the same day so the site never goes stal
 - [x] Tests with a fake home, fake endpoints and a fake probe; fresh install shows no ERROR.
 
 ## Release 0.9.1 — installer with discovery and guided setup
-- [ ] install.sh (macOS/Linux) + install.ps1 (Windows): uv first (brings Python), pipx, then venv; checksum
-      verified; never root; last step runs `hexiel --setup`.
-- [ ] hexiel/discover.py — read-only scan, keys masked, nothing written before the review step:
+- [x] install.sh (macOS/Linux) + install.ps1 (Windows) on hexiel.tech: uv first (a pinned release, .sha256
+      verified; brings Python), pipx or venv on request; never root; PATH for new terminals; last step runs
+      `hexiel --setup` (from /dev/tty when piped). Smoke-tested in a clean Ubuntu container as a non-root user.
+- [x] hexiel/discover.py — read-only scan, keys masked, nothing written before the review step:
       Claude Code (~/.claude, ~/.claude.json, skills, .mcp.json) · Codex (~/.codex auth.json/config.toml/
       AGENTS.md) · Gemini CLI (~/.gemini) · OpenCode (~/.local/share/opencode/auth.json, ~/.config/opencode)
       · Goose (~/.config/goose, %APPDATA%\Block\goose) · Aider/Continue · Cursor (mcp.json, rules) · Ollama
       (~/.ollama, localhost:11434, cloud sign-in) · shell rc files + ~/.env + Windows user env (registry) ·
       keychains via `keyring` (only entries other agents stored). Windows paths under %USERPROFILE%.
-- [ ] Rules: API keys only — subscription OAuth tokens (claude.ai, ChatGPT, Google logins) are detected,
+- [x] Rules: API keys only — subscription OAuth tokens (claude.ai, ChatGPT, Google logins) are detected,
       named, and refused with the API-key / Ollama alternative; keys go to ~/.config/hexiel/auth.toml
-      (0600), never config.toml; every finding carries provenance; review table y/n per row.
-- [ ] Defaults after import: default profile = first that answers now (loaded local Ollama model → Ollama
-      Cloud if signed in → cheapest profile with a working key), proven with one tiny request. What was
-      not found → one ADVICE line per provider (sign-up link + exact command); `hexiel auth set NAME`.
-- [ ] Re-runnable: `hexiel --setup`, `/import` in the TUI, Setup page in the web UI share the code.
-- [ ] Tests: three fake-home fixtures (linux/mac/windows layouts), one per source, "OAuth never written",
-      "no leaves config untouched".
-- [ ] hexiel.tech #start page redesigned around the two one-liners + "just works out of the box" line.
+      (0600), never config.toml, and are exported at startup (the shell wins); every finding carries
+      provenance; review y/n per row; unknown variables (a DB password in .env) are never taken.
+- [x] Defaults after import: default profile = first that answers now (loaded local Ollama model → pulled
+      model (profile added) → Ollama Cloud if signed in → cheapest profile with a working key), proven with
+      one request. What was not found → one line per provider (sign-up link + exact command);
+      `hexiel auth set NAME|VARIABLE`, `hexiel auth list`, `hexiel auth remove`.
+- [x] Re-runnable: `hexiel --setup` / `hexiel setup` (auto on the very first terminal start), `/import` in
+      the TUI and the web chat. (The web Setup page is in 0.9.2.)
+- [x] Tests: fake-home fixtures (linux/mac/windows layouts), every source, "OAuth never written", "no leaves
+      config untouched", auth CLI and startup export.
+- [x] hexiel.tech install section redesigned around the two one-liners + "just works out of the box".
 
 ## Release 0.9.2 — trust: CI, plain-language errors, web parity
 - [ ] GitLab CI test stage on push + install smoke matrix (clean Ubuntu/macOS/Windows: install.sh →

@@ -185,6 +185,60 @@ async def web_spend_shot(out: Path) -> None:
     out.write_text("")           # the PNG was written directly; export() skips the SVG conversion for an empty file
 
 
+async def setup_shot(out: Path) -> None:
+    """hexiel --setup on a machine that already has Claude Code, Codex, Gemini CLI and OpenCode: keys found
+    with their provenance (masked), subscription logins refused, MCP servers imported, a default proven."""
+    import json
+    from hexiel import discover, setup
+    home = SCRATCH / "home-setup"
+    if home.exists():
+        import shutil
+        shutil.rmtree(home)
+    home.mkdir(parents=True)
+    os.environ["HEXIEL_DISCOVER_HOME"] = str(home)
+    os.environ["HEXIEL_HOME"] = str(home / ".config" / "hexiel")
+    os.environ["XDG_DATA_HOME"] = str(home / ".local" / "share")
+    os.environ["XDG_CONFIG_HOME"] = str(home / ".config")
+    import hexiel.config as config
+    config.CONFIG_FILE = home / ".config" / "hexiel" / "config.toml"
+    (home / ".zshrc").write_text("export ANTHROPIC_API_KEY=sk-ant-api03-abcdefghijklmnopqrstuvwxyz0123\n")
+    (home / ".claude").mkdir()
+    (home / ".claude.json").write_text(json.dumps({"oauthAccount": {"emailAddress": "you@example.com"},
+                                                  "mcpServers": {"ollama-vision": {"command": "uvx", "args": ["ollama-vision"]}}}))
+    (home / ".claude" / ".credentials.json").write_text(json.dumps({"claudeAiOauth": {"accessToken": "sk-ant-oat01-secret"}}))
+    (home / ".claude" / "skills" / "docs").mkdir(parents=True)
+    (home / ".codex").mkdir()
+    (home / ".codex" / "auth.json").write_text(json.dumps({"tokens": {"access_token": "eyJ-chatgpt"}}))
+    (home / ".codex" / "config.toml").write_text('[mcp_servers.github]\ncommand = "npx"\nargs = ["-y", "@modelcontextprotocol/server-github"]\n')
+    (home / ".gemini").mkdir()
+    (home / ".gemini" / ".env").write_text("GEMINI_API_KEY=AIzaSyD-0123456789abcdefghijklmnop\n")  # pragma: allowlist secret
+    oc = home / ".local" / "share" / "opencode"
+    oc.mkdir(parents=True)
+    (oc / "auth.json").write_text(json.dumps({"deepseek": {"type": "api", "key": "sk-deepseek-0123456789abcdef"}}))
+    discover.scan_keyring = lambda: []
+    discover.scan_ollama = lambda: [discover.Finding("ollama", "Ollama running at http://localhost:11434", "http://localhost:11434",
+                                                     "Ollama", note="2 local model(s); loaded now: qwen3.6:35b-a3b-coding",
+                                                     data={"reachable": True, "base_url": "http://localhost:11434",
+                                                           "local": ["qwen3.6:35b-a3b-coding", "gemma4:31b"], "cloud": [],
+                                                           "loaded": ["qwen3.6:35b-a3b-coding"]})]
+    import hexiel.doctor as doctor
+    doctor.probe_model = lambda mc, key="": "ok"
+    lines = ["$ curl -fsSL https://hexiel.tech/install.sh | sh", "…", "✓ hexiel 0.9.1 installed at ~/.local/bin/hexiel", ""]
+    setup.run(str(home), ask=lambda _p: "", say=lambda l: lines.extend(str(l).splitlines() or [""]), interactive=False)
+    lines += ["", "$ hexiel auth list"]
+    from hexiel import auth
+    lines += [f"  {env} = {auth.mask(v)}" for env, v in auth.keys().items()]
+    _terminal_svg("hexiel --setup — finds what the machine already has, asks, proves a model answers", lines, out, width=1320)
+
+
+async def installer_shot(out: Path) -> None:
+    """install.sh in a clean Ubuntu 24.04 container as a non-root user (the smoke log from scripts/… run)."""
+    log = Path(os.environ.get("HEXIEL_SMOKE_LOG", "/tmp/opencode/tickets/smoke-ubuntu.log"))
+    lines = ["$ docker run --rm -v website/src:/s:ro ubuntu:24.04  …  su tester -c 'HEXIEL_NO_SETUP=1 sh /s/install.sh'", ""]
+    lines += [l.rstrip() for l in log.read_text().splitlines()]
+    _terminal_svg("install.sh — clean Ubuntu 24.04, non-root user, no Python installed", lines, out, width=1320)
+
+
 def export(name: str, coro_factory) -> None:
     OUT.mkdir(parents=True, exist_ok=True)
     svg = OUT / f"{name}.svg"
@@ -198,7 +252,7 @@ def export(name: str, coro_factory) -> None:
 
 def main(argv: list[str]) -> None:
     shots = {"spend": spend_shot, "spend_topup": spend_topup_shot, "spend_web": web_spend_shot,
-             "knowledge": knowledge_shot, "doctor": doctor_shot}
+             "knowledge": knowledge_shot, "doctor": doctor_shot, "setup": setup_shot, "installer": installer_shot}
     for name in argv or list(shots):
         if name in shots:
             export(name, shots[name])

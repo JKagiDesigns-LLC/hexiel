@@ -43,11 +43,33 @@
 
 ## Quickstart
 
-The quickest way, from [PyPI](https://pypi.org/project/hexiel/):
+One line, no Python needed:
+
+```bash
+curl -fsSL https://hexiel.tech/install.sh | sh        # macOS, Linux
+irm https://hexiel.tech/install.ps1 | iex             # Windows (PowerShell)
+```
+
+The installer refuses to run as root, brings [uv](https://docs.astral.sh/uv/) (a pinned release, downloaded
+with its `.sha256` and verified) when there is no Python 3.11+, installs hexiel with it, puts `hexiel` on your
+PATH, and runs `hexiel --setup`. Setup looks in the usual places on your machine for what is already there —
+API keys exported in your shell or `.env`, and the keys, MCP servers, skills and rules of Claude Code, Codex,
+Gemini CLI, OpenCode, Goose, Aider, Continue and Cursor, plus your local Ollama — shows each finding with
+where it came from (secrets masked), asks y/n per item, stores the keys in `~/.config/hexiel/auth.toml`
+(mode 0600; the shell's own value always wins), and picks the first model that actually answers: a model
+loaded on your Ollama, one pulled there, Ollama Cloud if you are signed in, else the cheapest profile with a
+working key — proven with one request. Only API keys are taken: a subscription login (claude.ai, ChatGPT,
+Google) is named and refused, with the API-key or Ollama alternative. What is still missing gets one line
+each with the sign-up link and the exact command. Run it again any time: `hexiel --setup`, or `/import`
+inside a session. Paste a key without editing files: `hexiel auth set anthropic` (or a variable name);
+`hexiel auth list` shows what is stored, masked.
+
+Prefer your own tooling? From [PyPI](https://pypi.org/project/hexiel/):
 
 ```bash
 pipx install 'hexiel[serve]'          # or, inside a virtualenv: pip install 'hexiel[serve]'
-hexiel --doctor                       # preflight checks with copy-paste fixes
+hexiel --setup                        # find keys and agents already here, pick a model that answers
+hexiel --doctor                       # health report with fixes (grouped, :checkhealth style)
 cd ~/code/your-project && hexiel
 ```
 
@@ -92,6 +114,9 @@ hexiel --serve            # browser UI at http://127.0.0.1:8777
 hexiel -p "explain this repo in one paragraph"   # one-shot, headless
 hexiel -c                 # resume this project's last conversation
 hexiel -m sonnet          # pick a model profile for this run
+hexiel --setup            # (again) find keys and agents on this machine, pick a model that answers
+hexiel --doctor           # health report: Runtime · Models · Tools · Integrations · Project, with fixes
+hexiel auth set anthropic # store a key (hidden input) in ~/.config/hexiel/auth.toml, 0600
 ```
 
 ## Using it

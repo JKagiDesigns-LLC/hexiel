@@ -2028,7 +2028,7 @@ class HexielTUI(App):
             "config": self.cmd_config, "update": self.cmd_update, "mcp": self.cmd_mcp,
             "prompt": self.cmd_prompt, "context": self.cmd_context,
             "plan": self.cmd_plan, "permissions": self.cmd_permissions,
-            "undo": self.cmd_undo, "usage": self.cmd_usage, "spend": self.cmd_spend, "toolmodels": self.cmd_toolmodels, "jobs": self.cmd_jobs, "knowledge": self.cmd_knowledge, "doctor": self.cmd_doctor, "inbox": self.cmd_inbox,
+            "undo": self.cmd_undo, "usage": self.cmd_usage, "spend": self.cmd_spend, "toolmodels": self.cmd_toolmodels, "jobs": self.cmd_jobs, "knowledge": self.cmd_knowledge, "doctor": self.cmd_doctor, "import": self.cmd_import, "inbox": self.cmd_inbox,
             "model": self.cmd_model, "models": self.cmd_models, "auto": self.cmd_auto,
             "memory": self.cmd_memory, "skills": self.cmd_skills,
             "ship": self.cmd_ship, "heal": self.cmd_heal,
@@ -3012,6 +3012,19 @@ class HexielTUI(App):
                 text = f"doctor failed: {exc}"
             self.call_from_thread(self.add_note, "🩺 doctor\n" + text.replace("[", "\\["))
         threading.Thread(target=work, daemon=True, name="hexiel-doctor").start()
+
+    def cmd_import(self, arg: str) -> None:
+        """Find keys, MCP servers and agents already on this machine and set hexiel up from them (setup.py)."""
+        self.add_note("looking for keys and agents on this machine …")
+
+        def work() -> None:
+            from . import setup as setup_mod
+            try:
+                text = setup_mod.import_report(self.session.cwd)
+            except Exception as exc:  # noqa: BLE001
+                text = f"import failed: {exc}"
+            self.call_from_thread(self.add_note, "📥 import\n" + text.replace("[", "\\["))
+        threading.Thread(target=work, daemon=True, name="hexiel-import").start()
 
     def cmd_knowledge(self, arg: str) -> None:
         """Reference-docs library: status, or `sync` in the background."""

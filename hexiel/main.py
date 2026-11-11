@@ -340,9 +340,21 @@ def main() -> None:
     ensure_streams()                  # no console (Windows scheduled task): log to a file instead of crashing
     from .remote import load_service_env
     load_service_env()                # keys recorded by `hexiel remote install` (a service doesn't see your shell profile)
+    from .auth import keys_into_env
+    keys_into_env()                   # keys stored by setup / `hexiel auth set` — the shell's own values win
     if len(sys.argv) > 1 and sys.argv[1] in ("knowledge", "rag"):
         from .knowledge import cli as knowledge_cli
         raise SystemExit(knowledge_cli(sys.argv[2:]))
+    if len(sys.argv) > 1 and sys.argv[1] == "auth":
+        from .auth import cli as auth_cli
+        raise SystemExit(auth_cli(sys.argv[2:]))
+    if len(sys.argv) > 1 and sys.argv[1] == "setup":
+        from .doctor import wizard
+        wizard(str(Path(sys.argv[2]).resolve()) if len(sys.argv) > 2 else os.getcwd())
+        return
+    if len(sys.argv) > 1 and sys.argv[1] == "doctor":
+        from .doctor import doctor_main
+        raise SystemExit(doctor_main(os.getcwd(), fix="--fix" in sys.argv, as_json_out="--json" in sys.argv))
     if len(sys.argv) > 1 and sys.argv[1] == "jobs":
         raise SystemExit(jobs_cli(sys.argv[2:]))
     if len(sys.argv) > 1 and sys.argv[1] in ("instructions", "import-agents"):
@@ -390,6 +402,13 @@ def main() -> None:
         return
 
     if args.print_mode is None and not args.serve and sys.stdin.isatty() and sys.stdout.isatty():
+        from .config import CONFIG_FILE
+        if not CONFIG_FILE.exists() and not os.environ.get("HEXIEL_NO_SETUP"):
+            from .doctor import wizard          # the very first start: find keys and agents, pick a model that answers
+            try:
+                wizard(cwd)
+            except (EOFError, KeyboardInterrupt, OSError):
+                pass
         from .instructions import offer_import
         try:
             offer_import(cwd)                 # one-time, prompted; declining is remembered

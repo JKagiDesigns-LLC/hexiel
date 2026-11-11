@@ -90,6 +90,7 @@ BUILTIN = [
     ("undo", "", "revert the file changes hexiel made in its last turn"),
     ("knowledge", "[sync]", "reference-docs library: status, or sync new docs into it"),
     ("doctor", "", "health report: what works, what doesn't, and how to fix it (grouped, with advice)"),
+    ("import", "", "find keys, MCP servers and agents already on this machine and set hexiel up from them"),
     ("jobs", "", "scheduled jobs (ask hexiel to schedule something to create one)"),
     ("inbox", "", "results from scheduled jobs"),
     ("usage", "", "tokens used this session (in / cached / out)"),

@@ -232,12 +232,19 @@ def probe_model(mc, key: str = "") -> str:
     """'ok', 'unauthorized', '' (no probe possible) or the error text — a one-token chat request."""
     import httpx
     url = (mc.base_url or "").rstrip("/")
-    if not url:
-        return ""
-    headers = {"authorization": f"Bearer {key}"} if key else {}
     try:
-        resp = httpx.post(f"{url}/chat/completions", headers=headers, timeout=60,
-                          json={"model": mc.model, "messages": [{"role": "user", "content": "hi"}], "max_tokens": 1})
+        if getattr(mc, "provider", "") == "anthropic" and not url:
+            if not key:
+                return ""
+            resp = httpx.post("https://api.anthropic.com/v1/messages", timeout=60,
+                              headers={"x-api-key": key, "anthropic-version": "2023-06-01"},
+                              json={"model": mc.model, "max_tokens": 1, "messages": [{"role": "user", "content": "hi"}]})
+        elif not url:
+            return ""
+        else:
+            headers = {"authorization": f"Bearer {key}"} if key else {}
+            resp = httpx.post(f"{url}/chat/completions", headers=headers, timeout=60,
+                              json={"model": mc.model, "messages": [{"role": "user", "content": "hi"}], "max_tokens": 1})
     except httpx.HTTPError as exc:
         return f"{type(exc).__name__}: {exc}"[:160]
     if resp.status_code == 200:
@@ -501,36 +508,7 @@ def doctor_main(cwd: str = ".", fix: bool = False, as_json_out: bool = False) ->
 # ---------------------------------------------------------------- first run
 
 def wizard(cwd: str) -> None:
-    """First-run guided setup: config, provider pick, gitlab token (optional), Hexiel Remote (optional)."""
-    print("Welcome to hexiel — guided setup (all questions optional, Enter keeps defaults)\n")
-    if not CONFIG_FILE.exists():
-        load_config()   # writes starter config
-        print(f"  wrote {CONFIG_FILE}")
-    from .config import list_ollama_models
-    models = list_ollama_models()
-    if models:
-        names = ", ".join(models[:12]) + (" …" if len(models) > 12 else "")
-        print(f"  Ollama reachable — models: {names}")
-        print("  config already defaults to ollama cloud models; /model NAME switches anytime")
-    else:
-        print("  Ollama not reachable on localhost:11434 — `ollama serve` + "
-              "`ollama pull <model>` enables it, or add a cloud profile to config.toml")
-    if not load_token():
-        print("  no GitLab token: /ship and /heal can push branches but will not open MRs.")
-        print("  add later with /setup-gitlab <token> (api scope PAT).")
-    from . import remote
-    if not remote.load_config().get("device_token"):
-        print("\n  Hexiel Remote (paid): drive this machine from a browser or phone.")
-        print("  Sign in later with `hexiel remote login`; automations need the background service.")
-    else:
-        enable = "n"
-        if sys.stdin.isatty():
-            enable = input("\nInstall the Hexiel Remote background service (starts at login)? [Y/n] ").strip().lower() or "y"
-        if enable.startswith("y"):
-            try:
-                print("  " + remote.install_service())
-            except (RuntimeError, OSError) as exc:
-                print(f"  ! could not install the background service: {exc}")
-        else:
-            print("  skipped Hexiel Remote background service. Run `hexiel remote install` anytime.")
-    print("\nDone. Start a session with `hexiel` (TUI), `hexiel --serve` (browser), or `hexiel -p \"…\"`.")
+    """First-run guided setup (setup.py): discovery of keys and agents, review, a proven default model,
+    GitLab token and Hexiel Remote notes. HEXIEL_SETUP_OFFLINE=1 skips every network probe."""
+    from . import setup
+    setup.run(cwd, network=os.environ.get("HEXIEL_SETUP_OFFLINE") != "1")

@@ -571,6 +571,9 @@ def make_app(session: Session, driver=None) -> web.Application:
         if cmd == "doctor":
             from . import doctor
             return "🩺 doctor\n" + doctor.render(doctor.checks(session.cwd), colour=False, title=False).strip()
+        if cmd == "import":
+            from . import setup as setup_mod
+            return "📥 import\n" + setup_mod.import_report(session.cwd)
         if cmd == "knowledge":
             from . import knowledge, toolsets
             if arg != "sync":

@@ -24,9 +24,12 @@ def _prep(monkeypatch, tmp_home, token=True, tty=True, answer="y"):
     monkeypatch.setattr(remote.shutil, "which", lambda name: "/usr/bin/systemctl")
     monkeypatch.setattr(remote, "_run", lambda cmd: remote.subprocess.CompletedProcess(cmd, 0, "", ""))
 
-    # Ensure wizard writes config under the temp home.
+    # Ensure wizard writes config under the temp home, scans only the temp home and never probes a model.
     import hexiel.config as config
     monkeypatch.setattr(config, "CONFIG_FILE", tmp_home / ".config" / "hexiel" / "config.toml")
+    monkeypatch.setenv("HEXIEL_DISCOVER_HOME", str(tmp_home))
+    monkeypatch.setenv("HEXIEL_SETUP_OFFLINE", "1")
+    monkeypatch.setattr("hexiel.discover.scan_keyring", lambda: [])
 
     # Mark signed in if requested.
     if token:

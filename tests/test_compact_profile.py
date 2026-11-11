@@ -109,3 +109,21 @@ def test_summary_model_is_editable_in_settings(tmp_path, monkeypatch):
     assert row["label"] == "Summary model"
     settings_edit.apply(s, "settings.compact_profile", "cloud", "session")
     assert s.settings.compact_profile == "cloud"
+
+
+def test_the_todo_list_survives_a_weak_summarizer(tmp_path, monkeypatch):
+    """The 2026-11-11 outage: cloud 429 → the local 12B wrote the summary → after compaction the
+    session greeted the user because the task was gone. The open todo list is pinned verbatim."""
+    from hexiel import todo as todo_mod
+    local, cloud = Writer(text="thin summary"), Writer(error=llm.RateLimitError("429 usage limit", retry_after=1))
+    s, events, _ = setup(tmp_path, monkeypatch, local, cloud)
+    todo_mod.action_create({"title": "Simplify spendera", "steps": ["strip the hero card", "add e2e"]}, str(tmp_path))
+    s.compact(local, manual=True)
+    text = joined(s)
+    assert "thin summary" in text and "Simplify spendera" in text and "strip the hero card" in text
+    # and when there is no todo list, nothing extra is pinned
+    todo_mod.todo_path(str(tmp_path)).unlink()
+    local2 = Writer(text="summary two")
+    s2, *_ = setup(tmp_path, monkeypatch, local2, profile="")
+    s2.compact(local2, manual=True)
+    assert "open todo list" not in joined(s2)

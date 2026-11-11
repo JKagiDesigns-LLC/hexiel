@@ -204,7 +204,7 @@ def headless_loop(session: Session, prompts: list[str]) -> bool:
             sys.stdout.write(payload[0])
             sys.stdout.flush()
         elif event == "turn_end" and payload and isinstance(payload[0], dict) and payload[0].get("error"):
-            sys.stderr.write(f"\nhexiel: provider error: {payload[0]['error']}\n")
+            sys.stderr.write(f"\nhexiel: {payload[0]['error']}\n")
             failed["error"] = True
         elif event == "compact_end" and payload and payload[0]:
             stats = payload[0]
@@ -215,7 +215,12 @@ def headless_loop(session: Session, prompts: list[str]) -> bool:
     for text in prompts:
         if text:
             sys.stderr.write(f"❯ {text}\n")
-            session.run_turn(text)
+            try:
+                session.run_turn(text)
+            except Exception as exc:  # noqa: BLE001 - the incident is recorded; one sentence, not a traceback
+                from .explain import crash
+                sys.stderr.write(f"\nhexiel: {crash(exc)}\n")
+                failed["error"] = True
     sys.stdout.write("\n")
     if session.usage_by_model:       # one line a script (or the benchmark) can read: tokens per model
         sys.stderr.write("HEXIEL_USAGE " + json.dumps(session.usage_by_model) + "\n")

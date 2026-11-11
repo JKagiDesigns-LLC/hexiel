@@ -206,10 +206,31 @@ def accounts(settings) -> dict:
             day = min(31, max(1, int(body.get("cycle_day", 1) or 1)))
         except (TypeError, ValueError):
             limit, day = 0.0, 1
+        try:
+            stop_at = min(10.0, max(0.0, float(body.get("stop_at", 0) or 0)))
+        except (TypeError, ValueError):
+            stop_at = 0.0
         out[str(name).lower()] = {"limit": limit, "cycle_day": day,
                                   "key_env": str(body.get("key_env", KEY_ENV.get(str(name).lower(), ""))),
-                                  "detect_limits": bool(body.get("detect_limits", True))}
+                                  "detect_limits": bool(body.get("detect_limits", True)), "stop_at": stop_at}
     return out
+
+
+def over_budget(settings, account: str) -> str:
+    """The hard stop: with `stop_at = 1.0` (a share of the budget) under [spend.NAME], a request on that
+    account is refused once spend reaches it — the reason, or "" when the request may go."""
+    conf = accounts(settings).get(account or "")
+    if not conf or not conf.get("stop_at"):
+        return ""
+    row = next((r for r in snapshot(settings) if r["account"] == account), None)
+    if not row or not row["limit"]:
+        return ""
+    share = row["usd"] / row["limit"]
+    if share < conf["stop_at"]:
+        return ""
+    return (f"{account} is over its budget: {money(row['usd'])} of {money(row['limit'])} ({int(100 * share)}%) this cycle, "
+            f"stop_at = {conf['stop_at']:g} under [spend.{account}] — raise it, add credits, or wait for "
+            + (f"{_day(row['renews'])}" if row.get("renews") else "the next cycle"))
 
 
 def warn_at(settings) -> float:

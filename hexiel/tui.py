@@ -132,8 +132,9 @@ class TurnThread(threading.Thread):
         session.on_approve = app.ask_approval
         try:
             session.run_turn(self.prompt)
-        except Exception as exc:  # noqa: BLE001 - surface the crash in the UI
-            post(app.add_note, f"agent crashed: {exc!r}")
+        except Exception as exc:  # noqa: BLE001 - surface the crash in the UI, in plain words
+            from .explain import crash
+            post(app.add_note, "🛑 " + crash(exc).replace("[", "\\["))
         finally:
             session.save()
             post(app.activity.stop)

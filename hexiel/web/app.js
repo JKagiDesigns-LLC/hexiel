@@ -248,6 +248,7 @@ function finishTurn(data) {
   busy = false;
   updateSendButton();
   if (data && data.messages) renderHistory(data.messages);
+  renderWelcome();
   if (data && (data.error || data.stopped)) {
     // after the history, which redraws the chat
     const div = document.createElement("div");
@@ -1047,6 +1048,7 @@ $("#clear-btn").addEventListener("click", async () => {
   if (!confirm("Clear this conversation?")) return;
   await fetch("api/clear", { method: "POST" });
   $("#chat").innerHTML = "";
+  renderWelcome();
   refreshState();
 });
 $("#compact-btn").addEventListener("click", async () => {
@@ -1423,3 +1425,145 @@ document.addEventListener("keydown", (ev) => {
 ["#model-btn", "#compact-btn", "#clear-btn", "#settings-btn"].forEach((sel) =>
   $(sel).addEventListener("click", closeDrawer),
 );
+// ---------------------------------------------------------------- welcome card (empty chat)
+
+function renderWelcome() {
+  if ($("#chat").children.length) return;
+  const project = (document.title.split("·")[1] || "").trim() || "this project";
+  const div = document.createElement("div");
+  div.className = "welcome";
+  div.innerHTML =
+    `<div class="welcome-title"><b>hexiel</b> <span class="dim">· your codebase's guardian angel</span></div>` +
+    `<div class="dim">Ask a question, describe a change, or type <b>/</b> for commands.</div>` +
+    `<div class="welcome-examples">` +
+    ["explain how this project is structured", "fix the failing tests", "what does this spreadsheet say about last month?",
+     "review my last commit"].map((t) => `<button class="example">❯ ${esc(t)}</button>`).join("") +
+    `</div>` +
+    `<div class="dim small">Enter sends · Shift+Enter adds a line · paste or drop an image to show it · ` +
+    `<a href="#setup" id="welcome-setup">Setup</a> stores keys and picks a model · <a href="#health" id="welcome-health">Health</a> checks everything</div>`;
+  $("#chat").appendChild(div);
+  div.querySelectorAll(".example").forEach((b) =>
+    b.addEventListener("click", () => {
+      $("#input").value = b.textContent.replace(/^❯\s*/, "");
+      $("#input").focus();
+    }),
+  );
+  div.querySelector("#welcome-setup").addEventListener("click", (e) => { e.preventDefault(); openSetup(); });
+  div.querySelector("#welcome-health").addEventListener("click", (e) => { e.preventDefault(); openHealth(); });
+}
+
+// ---------------------------------------------------------------- Setup page (keys, model, budget, import)
+
+async function openSetup() {
+  $("#setup-back").classList.add("show");
+  $("#setup-msg").textContent = "";
+  const data = await (await fetch("api/setup")).json();
+  renderSetup(data);
+}
+
+function renderSetup(data) {
+  const keys = data.keys || [];
+  $("#setup-keys tbody").innerHTML = keys
+    .map(
+      (k) =>
+        `<tr><td class="label">${esc(k.env)}<div class="dim small">${esc(k.profiles.join(", "))}</div></td>` +
+        `<td>${k.set ? `<span class="badge saved">${esc(k.masked)}</span> <span class="dim small">${esc(k.source)}</span>` : `<span class="badge session">not set</span>`}</td>` +
+        `<td><input type="password" data-env="${esc(k.env)}" placeholder="paste a key" autocomplete="off"> ` +
+        `<button class="small" data-save="${esc(k.env)}">Save</button></td></tr>`,
+    )
+    .join("");
+  $("#setup-keys").querySelectorAll("button[data-save]").forEach((b) =>
+    b.addEventListener("click", async () => {
+      const env = b.dataset.save;
+      const input = $("#setup-keys").querySelector(`input[data-env="${env}"]`);
+      const value = input.value.trim();
+      if (!value) return;
+      const r = await (
+        await fetch("api/auth", { method: "POST", body: JSON.stringify({ env, value }), headers: { "content-type": "application/json" } })
+      ).json();
+      $("#setup-msg").textContent = r.error ? "⚠ " + r.error : "✓ " + r.message;
+      input.value = "";
+      openSetup();
+    }),
+  );
+  const sel = $("#setup-default");
+  sel.innerHTML = (data.profiles || [])
+    .map((p) => `<option value="${esc(p.name)}"${p.name === data.default ? " selected" : ""}>${esc(p.name)} — ${esc(p.model)}${p.ready ? "" : " (no key)"}</option>`)
+    .join("");
+  sel.onchange = async () => {
+    const r = await (
+      await fetch("api/config", { method: "POST", body: JSON.stringify({ key: "default", value: sel.value, scope: "permanent" }), headers: { "content-type": "application/json" } })
+    ).json();
+    $("#setup-msg").textContent = r.error ? "⚠ " + r.error : "✓ " + r.message;
+    refreshState();
+  };
+  $("#setup-budget tbody").innerHTML = (data.budget || [])
+    .map(
+      (b) =>
+        `<tr><td class="label">${esc(b.account)}</td><td>${esc(b.limit ? "$" + b.limit : "—")}${b.label ? ` <span class="dim small">${esc(b.label)}</span>` : ""}</td>` +
+        `<td><input type="number" min="0" step="1" data-account="${esc(b.account)}" placeholder="$ a cycle"> ` +
+        `<button class="small" data-limit="${esc(b.account)}">Save</button></td>` +
+        `<td><label><input type="checkbox" data-stop="${esc(b.account)}"${b.stop_at ? " checked" : ""}> stop at 100%</label></td></tr>`,
+    )
+    .join("");
+  $("#setup-budget").querySelectorAll("button[data-limit]").forEach((b) =>
+    b.addEventListener("click", async () => {
+      const account = b.dataset.limit;
+      const input = $("#setup-budget").querySelector(`input[data-account="${account}"]`);
+      if (!input.value) return;
+      const r = await (
+        await fetch("api/setup/budget", { method: "POST", body: JSON.stringify({ account, limit: Number(input.value) }), headers: { "content-type": "application/json" } })
+      ).json();
+      $("#setup-msg").textContent = r.error ? "⚠ " + r.error : "✓ " + r.message;
+      openSetup();
+    }),
+  );
+  $("#setup-budget").querySelectorAll("input[data-stop]").forEach((c) =>
+    c.addEventListener("change", async () => {
+      const r = await (
+        await fetch("api/setup/budget", { method: "POST", body: JSON.stringify({ account: c.dataset.stop, stop_at: c.checked ? 1.0 : 0 }), headers: { "content-type": "application/json" } })
+      ).json();
+      $("#setup-msg").textContent = r.error ? "⚠ " + r.error : "✓ " + r.message;
+    }),
+  );
+  $("#setup-findings").textContent = data.findings && data.findings.length ? data.findings.join("\n") : "nothing found yet — click Import to look";
+}
+
+$("#setup-import").addEventListener("click", async () => {
+  $("#setup-findings").textContent = "looking for keys and agents on this machine …";
+  const r = await (await fetch("api/import", { method: "POST" })).json();
+  $("#setup-findings").textContent = r.report || r.error || "";
+  openSetup();
+});
+$("#setup-btn").addEventListener("click", openSetup);
+$("#setup-close").addEventListener("click", () => $("#setup-back").classList.remove("show"));
+
+// ---------------------------------------------------------------- Health page (the doctor)
+
+async function openHealth() {
+  $("#health-back").classList.add("show");
+  $("#health-body").innerHTML = `<div class="dim">running the checks …</div>`;
+  const data = await (await fetch("api/doctor")).json();
+  const groups = {};
+  for (const c of data.checks || []) (groups[c.group] = groups[c.group] || []).push(c);
+  $("#health-body").innerHTML =
+    Object.entries(groups)
+      .map(
+        ([g, rows]) =>
+          `<h5>${esc(g)}</h5>` +
+          rows
+            .map(
+              (c) =>
+                `<div class="check ${esc(c.level)}"><span class="lvl">${esc(c.level.toUpperCase())}</span> ${esc(c.label)}` +
+                (c.detail ? ` <span class="dim">— ${esc(c.detail)}</span>` : "") +
+                (c.advice && c.advice.length ? `<div class="advice">${c.advice.map((a) => "→ " + esc(a)).join("<br>")}</div>` : "") +
+                `</div>`,
+            )
+            .join(""),
+      )
+      .join("") + `<div class="dim" style="margin-top:8px">${esc(data.summary || "")}</div>`;
+}
+$("#health-btn").addEventListener("click", openHealth);
+$("#health-close").addEventListener("click", () => $("#health-back").classList.remove("show"));
+if (location.hash === "#setup") openSetup();
+if (location.hash === "#health") openHealth();

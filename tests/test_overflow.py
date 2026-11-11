@@ -60,7 +60,8 @@ def test_a_second_overflow_gives_up_without_recovering_again(tmp_path, monkeypat
         llm.ProviderError(OVERFLOW), llm.ProviderError(OVERFLOW)])
     s.run_turn("hi")
     assert len(compacts) == 1 and len(trims) == 1              # recovery happens once per turn
-    assert any(e[0] == "turn_end" and "maximum context length" in str(e[1]) for e in events)
+    # the failure surfaces as the plain-language sentence (explain.py), not the raw provider body
+    assert any(e[0] == "turn_end" and "context window" in str(e[1]) for e in events)
 
 
 def test_an_unrelated_provider_error_skips_recovery(tmp_path, monkeypatch, clock):
@@ -68,7 +69,8 @@ def test_an_unrelated_provider_error_skips_recovery(tmp_path, monkeypatch, clock
         llm.ProviderError("provider 403: api key disabled")])
     s.run_turn("hi")
     assert compacts == [] and trims == []
-    assert any(e[0] == "turn_end" and "api key disabled" in str(e[1]) for e in events)
+    # surfaced as the plain-language 403 sentence (the provider refused the key), not recovered
+    assert any(e[0] == "turn_end" and "refused this key" in str(e[1]) for e in events)
 
 
 def test_the_deterministic_trim_does_not_run_when_compaction_was_enough(tmp_path, monkeypatch, clock):

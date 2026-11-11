@@ -8,6 +8,7 @@ The server shares the same Session object the TUI uses, so `hexiel serve` and
 
 import asyncio
 import random
+import re
 import sys
 import json
 import threading
@@ -129,7 +130,12 @@ class WebState:
             nxt = first
             while nxt:
                 try:
-                    session.run_turn(nxt)
+                    try:
+                        session.run_turn(nxt)
+                    except Exception as exc:  # noqa: BLE001 - the incident is recorded; say so in plain words
+                        from .explain import crash
+                        self.broadcast({"t": "note", "text": "🛑 " + crash(exc)})
+                        self.broadcast({"t": "turn_end", "error": crash(exc)})
                 finally:
                     left = session.take_pending()      # arrived as the turn was ending
                     nxt = "\n\n".join(left) if left else None
@@ -1130,6 +1136,102 @@ def make_app(session: Session, driver=None) -> web.Application:
         items = await loop.run_in_executor(None, lambda: doctor.checks(session.cwd))
         return web.Response(text=doctor.as_json(items), content_type="application/json")
     app.router.add_get("/api/doctor", api_doctor)
+
+    async def api_setup(request):
+        """The Setup page as data: every key the config mentions (set where, masked), the
+        profiles (ready = its key is present), the default model and the budget rows."""
+        import os
+
+        def build():
+            from . import auth as auth_mod
+            from . import presets as presets_mod
+            from . import spend as spend_mod
+            cfg = load_config()
+            stored = auth_mod.keys()
+            env_profiles: dict[str, list[str]] = {}
+            for name, mc in cfg.models.items():
+                if mc.api_key_env:
+                    env_profiles.setdefault(mc.api_key_env, []).append(name)
+            for _group, _name, _title, fields, _note in presets_mod.PRESETS:
+                env = fields.get("api_key_env")
+                if env and env not in env_profiles:
+                    env_profiles[env] = []
+            keys = []
+            for env, profs in env_profiles.items():
+                value = stored.get(env) or os.environ.get(env) or ""
+                keys.append({"env": env, "profiles": sorted(profs), "set": bool(value),
+                             "masked": auth_mod.mask(value) if value else "",
+                             "source": "auth.toml" if stored.get(env) else ("environment" if value else "")})
+            keys.sort(key=lambda k: (not k["set"], k["env"]))
+            profiles = []
+            for name, mc in cfg.models.items():
+                ready = not mc.api_key_env or bool(stored.get(mc.api_key_env) or os.environ.get(mc.api_key_env))
+                profiles.append({"name": name, "model": mc.model, "ready": ready})
+            budget = []
+            try:
+                accounts = spend_mod.accounts(session.settings)
+                rows = {r["account"]: r for r in spend_mod.snapshot(session.settings)}
+                for account, conf in accounts.items():
+                    row = rows.get(account) or {}
+                    budget.append({"account": account, "limit": conf.get("limit") or 0,
+                                   "stop_at": conf.get("stop_at") or 0,
+                                   "label": (f"renews {row['renews']:%b %d}" if row.get("renews") else "")})
+            except Exception:  # noqa: BLE001 - a broken spend meter must not blank the page
+                pass
+            return {"keys": keys, "profiles": profiles, "default": cfg.default_model, "budget": budget}
+        loop = asyncio.get_running_loop()
+        return _json_response(await loop.run_in_executor(None, build))
+    app.router.add_get("/api/setup", api_setup)
+
+    async def api_auth(request):
+        """Store a key in auth.toml (0600) and put it in this process's environment."""
+        import os
+        from . import auth as auth_mod
+        data = await request.json()
+        env, value = str(data.get("env", "")).strip(), str(data.get("value", "")).strip()
+        if not re.fullmatch(r"[A-Z][A-Z0-9_]*", env):
+            return _json_response({"error": f"'{env}' does not look like a variable name (UPPER_CASE)"}, 400)
+        if not value:
+            return _json_response({"error": "the key is empty"}, 400)
+        def store():
+            auth_mod.save_key(env, value)
+            os.environ[env] = value
+        await asyncio.get_running_loop().run_in_executor(None, store)
+        return _json_response({"message": f"{env} stored in ~/.config/hexiel/auth.toml — profiles using it can answer now"})
+    app.router.add_post("/api/auth", api_auth)
+
+    async def api_budget(request):
+        """Write a budget: {account, limit} ($ a cycle) and/or {account, stop_at} (0 removes the hard stop)."""
+        data = await request.json()
+        account = str(data.get("account", "")).strip().lower()
+        if not re.fullmatch(r"[a-z0-9_-]{1,32}", account):
+            return _json_response({"error": f"'{account}' is not an account name (lowercase letters, digits, -)"}, 400)
+        def write():
+            if "limit" in data:
+                limit = max(0.0, float(data.get("limit") or 0))
+                settings_edit._write(f"spend.{account}", "limit", limit or None)
+            if "stop_at" in data:
+                stop = min(10.0, max(0.0, float(data.get("stop_at") or 0)))
+                settings_edit._write(f"spend.{account}", "stop_at", stop or None)
+        try:
+            await asyncio.get_running_loop().run_in_executor(None, write)
+        except (TypeError, ValueError, AssertionError) as exc:
+            return _json_response({"error": str(exc)}, 400)
+        parts = []
+        if "limit" in data:
+            parts.append(f"limit ${float(data.get('limit') or 0):g} a cycle")
+        if "stop_at" in data:
+            parts.append(f"hard stop {'on' if float(data.get('stop_at') or 0) else 'off'}")
+        return _json_response({"message": f"{account}: " + ", ".join(parts) + f" (saved to {settings_edit.config_mod.CONFIG_FILE})"})
+    app.router.add_post("/api/setup/budget", api_budget)
+
+    async def api_import(request):
+        """Discover keys, MCP servers and agents already on this machine; take the sensible defaults."""
+        from . import setup as setup_mod
+        loop = asyncio.get_running_loop()
+        report = await loop.run_in_executor(None, lambda: setup_mod.import_report(session.cwd))
+        return _json_response({"report": report})
+    app.router.add_post("/api/import", api_import)
 
     app.router.add_post("/api/approve", api_approve)
     app.router.add_post("/api/remote/login", api_remote_login)

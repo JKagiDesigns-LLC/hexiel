@@ -14,6 +14,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from . import consult
+from . import explain as explain_mod
 from . import llm
 from . import prompt_edit
 from . import todo as todo_mod
@@ -859,6 +860,12 @@ class Session:
         timeouts = 0
         recovered = False
         while True:
+            stop = self._budget_stop()
+            if stop:
+                if self._switch_to_fallback(stop):
+                    continue
+                self._provider_error = stop
+                return {"role": "assistant", "content": ""}
             try:
                 return self._stream_once(self._provider_override or provider, tool_defs)
             except llm.RateLimitError as exc:
@@ -883,9 +890,9 @@ class Session:
                         if chain_ready and self._switch_to_fallback(str(exc)):
                             attempt, timeouts = 0, 0
                             continue
-                        self._provider_error = str(exc)
+                        self._provider_error = explain_mod.explain(str(exc), self.model_config)
                         return {"role": "assistant", "content": ""}
-                    self.on_event("model_unreachable", wait, str(exc)[:200], attempt + 1, self._retry_at(wait))
+                    self.on_event("model_unreachable", wait, explain_mod.explain(str(exc), self.model_config)[:200], attempt + 1, self._retry_at(wait))
                     if not self._sleep_interruptibly(wait):
                         return {"role": "assistant", "content": ""}
                     attempt += 1
@@ -896,7 +903,7 @@ class Session:
                     if self._switch_to_fallback(str(exc)):
                         attempt = 0
                         continue
-                    self._provider_error = str(exc) + (
+                    self._provider_error = explain_mod.explain(str(exc), self.model_config) + (
                         "" if self.settings.auto_resume else " (auto-resume is off)")
                     return {"role": "assistant", "content": ""}
                 self.on_event("rate_limited", wait, str(exc)[:200], attempt + 1, self._retry_at(wait))
@@ -910,7 +917,7 @@ class Session:
                 # model call could fail the very same way), so _mech_trim_overflow trims by hand when
                 # compaction did not leave the request small enough.
                 if recovered or not llm.is_context_overflow(str(exc)):
-                    self._provider_error = str(exc)
+                    self._provider_error = explain_mod.explain(str(exc), self.model_config)
                     return {"role": "assistant", "content": ""}
                 recovered = True
                 self.on_event("note", "✂ the request exceeds the model's context window — "
@@ -1016,6 +1023,20 @@ class Session:
         self.__dict__.pop("_fallback_tried", None)              # let the chain be walked again next time
         self.on_event("model_unreachable", wait, error[:200], turn["recoveries"], self._retry_at(wait))
         return self._sleep_interruptibly(wait)
+
+    def _budget_stop(self) -> str:
+        """The budget hard stop (spend.over_budget) for the bill the current model is paid from — said once
+        per cycle in the chat, then the fallback chain takes over or the turn ends with the reason."""
+        from . import spend
+        try:
+            account = spend.account_for(self.model_config)
+            reason = spend.over_budget(self.settings, account) if account else ""
+        except Exception:  # noqa: BLE001 - a broken meter must never block a request
+            return ""
+        if reason and self.__dict__.get("_budget_said") != reason:
+            self.__dict__["_budget_said"] = reason
+            self.on_event("note", f"💸 {reason}")
+        return reason
 
     def _switch_to_fallback(self, reason: str) -> bool:
         """Switch to the next profile left in this model's fallback chain ([models.*] `fallbacks`;
@@ -1126,7 +1147,7 @@ class Session:
                                     f"({type(exc).__name__}) — send your message again to retry")
             self._error_recoverable = True
         except llm.ProviderError as exc:
-            self._provider_error = str(exc)
+            self._provider_error = explain_mod.explain(str(exc), self.model_config)
             if llm.is_malformed_tool_call(str(exc)):
                 self._error_recoverable = True       # a different model may write the call properly
         finally:
@@ -1734,6 +1755,17 @@ class Session:
                           and not str(m.get("content", "")).startswith("<auto-compaction>")), None)
             if asked:
                 request = f"\n\nThe user's current request, verbatim:\n{str(asked.get('content', ''))[:4000]}"
+        else:
+            # a manual /compact between turns: the last real user message still sits in the kept tail,
+            # but after many small turns it may be far back — say where the work stands regardless
+            asked = next((m for m in reversed(messages) if m["role"] == "user"
+                          and not str(m.get("content", "")).startswith("<auto-compaction>")), None)
+            if asked:
+                request = f"\n\nThe user's most recent request (it may be shown in full in the kept history):\n" \
+                          f"{str(asked.get('content', ''))[:1500]}"
+        todos = todo_mod.action_list({}, self.cwd)          # the todo list is the ground truth of the task:
+        if not todos.startswith("(no todo list"):           # a weak summarizer can lose it, so pin it verbatim
+            request += f"\n\nThe open todo list, unchanged by the compaction:\n{todos}"
         compacted: list[dict] = [{"role": "user", "content":
                                   f"<auto-compaction>\n\n{summary}{request}\n</auto-compaction>\n\n"
                                   + ON_COMPACTION_NOTE}]

@@ -146,3 +146,19 @@ lands, and is documented on hexiel.tech the same day so the site never goes stal
       answer are shown, never run.
 - [x] "continue" / "go on" / "next" are never answered tool-less by the router's chat model: the main model
       takes them, with its tools.
+
+## Release 0.9.6 — don't hammer a cloud account that can't answer; CI green
+- [x] A cloud account found unusable (rejected key, no credits, monthly limit, budget stop) is skipped for
+      `cloud_cooldown_minutes` (default 60) by every chain — main, router, overflow, planner, vision, tool models —
+      and across processes; checked once when a session starts; the session starts on the next usable model
+      with a notice and returns by itself when the cooldown ends. `/accounts` shows it, `/accounts recheck` retries. A 401/402/403 now fails
+      over to the next model instead of ending the turn.
+- [x] qwen3.5 / qwen3.6 see images (llama-server with an mmproj): no describe detour for gmktec.
+- [x] CI tests pass in the root container runner (sudo, clipboard, ruff, timing assumptions).
+
+## Next — image tools in Python (ticket 878919f4975a)
+- [ ] Deterministic image tools on Pillow, no model needed: inspect (size, mode, EXIF, colours, alpha, DPI),
+      crop/resize/rotate/flip/pad, convert (PNG/JPEG/WebP/ICO/PDF), compress to a size budget, annotate a
+      screenshot (boxes, arrows, labels), side-by-side and pixel diff of two screenshots (changed regions),
+      make simple images (placeholders, app-store icon sizes, favicons, matplotlib charts when present),
+      batch over a folder. Text summary + path back; the image goes to the model only when it can see.

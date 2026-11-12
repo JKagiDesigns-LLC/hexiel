@@ -216,6 +216,9 @@ def describe(session, payload: dict, question: str = "") -> str:
             continue
         if mc.api_key_env and not os.environ.get(mc.api_key_env) and mc.provider != "anthropic":
             continue                                  # not usable right now: next candidate
+        from . import availability
+        if availability.unusable(mc):
+            continue                                  # its cloud account can't answer (availability.py): skip it
         tried.append(mc)
     if not tried:
         return _ocr_or_raise(payload, "no usable vision model (set OLLAMA_API_KEY or an Anthropic key, "

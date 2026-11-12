@@ -54,6 +54,7 @@ compact_threshold = 0.82    # auto-compact when the prompt reaches this share of
 request_timeout = 900       # seconds per provider request
 search_backend = "duckduckgo"   # "duckduckgo" (no key) or "searxng"
 searxng_url = ""            # e.g. http://localhost:8888 when search_backend = "searxng"
+# cloud_cooldown_minutes = 60  # a cloud account that can't answer (rejected key, no credits, monthly limit, budget stop) is skipped this long — /accounts
 
 # compact_profile = "anthropic-sonnet"   # who writes compaction summaries: a fast cloud model takes seconds, a slow local one many minutes
 
@@ -200,6 +201,7 @@ class Settings:
     auto_resume: bool = True          # wait out rate limits and continue automatically
     auto_resume_max_wait: int = 21600 # longest wait (s) before giving up / falling back
     fallback_profile: str = ""        # switch here when a limit won't reset soon (e.g. a local model)
+    cloud_cooldown_minutes: float = 60  # a cloud account found unusable (bad key, no credits, monthly limit, budget) is skipped this long
     notify: bool = True               # desktop notification when approval is needed / long turns finish
     auto_commit: bool = False         # git-commit the files hexiel changed after each finished turn
     subagent_profile: str = ""        # model profile for `task` subagents ("" = the current model)
@@ -342,6 +344,7 @@ def _settings_from(settings_raw: dict) -> "Settings":
         auto_resume=bool(settings_raw.get("auto_resume", True)),
         auto_resume_max_wait=int(settings_raw.get("auto_resume_max_wait", 21600)),
         fallback_profile=str(settings_raw.get("fallback_profile", "")),
+        cloud_cooldown_minutes=max(1.0, float(settings_raw.get("cloud_cooldown_minutes", 60) or 60)),
         notify=bool(settings_raw.get("notify", True)),
         auto_commit=bool(settings_raw.get("auto_commit", False)),
         subagent_profile=str(settings_raw.get("subagent_profile", "")),

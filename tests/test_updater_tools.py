@@ -3,11 +3,21 @@
 import sys
 import subprocess
 
+import pytest
+
 from hexiel import updater
+
+
+@pytest.fixture(autouse=True)
+def _not_root(monkeypatch):
+    """CI runs the suite as root, where no sudo prefix is needed: these tests describe a normal user."""
+    monkeypatch.setattr(updater.os, "geteuid", lambda: 1000, raising=False)
 
 
 def test_noop_when_a_helper_already_exists(monkeypatch):
     calls = []
+    _patch_env(monkeypatch, {"wl-paste": "/usr/bin/wl-paste", "apt-get": "/usr/bin/apt-get"})
+    monkeypatch.setattr(sys, "platform", "linux")
     monkeypatch.setattr(updater, "_sudo_available", lambda: False)
     monkeypatch.setattr(subprocess, "run", lambda *a, **k: calls.append(a) or subprocess.CompletedProcess(a[0] or [], 0))
     # wl-paste/xclip/pngpaste present (the user's real machines) -> nothing happens

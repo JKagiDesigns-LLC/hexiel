@@ -1093,8 +1093,9 @@ def _fingerprint(path: Path) -> tuple:
     try:
         marks.append((str(path), path.stat().st_mtime_ns))
         for e in sorted(path.iterdir()):
-            if e.is_dir():
-                marks.append((e.name, e.stat().st_mtime_ns))
+            # names too: a directory's mtime ticks on the kernel's coarse clock, so a file added within
+            # the same tick as the last change would otherwise look like no change at all
+            marks.append((e.name, e.stat().st_mtime_ns) if e.is_dir() else (e.name,))
     except OSError:
         pass
     return tuple(marks)

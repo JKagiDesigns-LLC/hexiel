@@ -550,6 +550,13 @@ def make_app(session: Session, driver=None) -> web.Application:
         if cmd == "plan":
             session.plan_mode = not session.plan_mode
             return "📝 plan mode ON — investigate and plan, change nothing" if session.plan_mode else "plan mode OFF"
+        if cmd == "accounts":
+            from . import availability
+            if not arg.strip():
+                return availability.command(session)
+            threading.Thread(target=lambda: state.broadcast({"t": "note", "text": availability.command(session, arg)}),
+                             daemon=True).start()
+            return "☁ checking the cloud accounts again…"
         if cmd == "spend":
             from . import spend as spend_mod
             return spend_mod.command(session.settings, arg)

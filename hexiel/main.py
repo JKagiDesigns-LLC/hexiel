@@ -158,6 +158,8 @@ def build_session(cwd: str, model_name: str | None, resumed: dict | None = None,
         settings_edit.restore_auto_mode(session, resumed)
     if readonly_only:                             # late appends (toolsets, consult) are filtered too
         session.tools = [t for t in session.tools if t.readonly]
+    from . import availability
+    availability.start(session)                   # which cloud accounts answer: checked once, in the background
     return session
 
 

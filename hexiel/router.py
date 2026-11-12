@@ -171,8 +171,19 @@ def classify(session, prompt: str, mc: ModelConfig | None = None) -> tuple[str, 
     user = "\n".join(trail) + f"\n\nThe newest message — the one to sort: {prompt[:2000]}"
     from . import modelbusy, planner
     failures = []
+    from . import availability
     for i, m in enumerate(chain):
         more = i < len(chain) - 1
+        dead = availability.unusable(m)
+        if dead is not None:                   # known unusable: no request, and said once per session
+            said = session.__dict__.setdefault("_router_dead_said", set())
+            if m.name not in said:
+                said.add(m.name)
+                session.on_event("note", f"↪ router {m.name} skipped until {availability.until_text(dead)} "
+                                         f"({availability.KIND_TEXT.get(dead.get('kind'), 'unusable')}) — "
+                                         + ("using the next router" if more else "messages go to the main model"))
+            failures.append("unusable")
+            continue
         if m.api_key_env and not os.environ.get(m.api_key_env):
             session.on_event("note", f"↪ router {m.name} is off: {m.api_key_env} is not set — "
                                      + ("trying the next router" if more else "messages go to the main model"))

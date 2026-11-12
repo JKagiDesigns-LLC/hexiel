@@ -2,6 +2,8 @@
 format=false escape hatch, settings toggles, and whitespace-equivalent edit anchors."""
 
 import subprocess
+
+import pytest
 import sys
 from pathlib import Path
 
@@ -70,9 +72,9 @@ def test_exact_match_still_preferred_and_unique(tmp_path):
 
 def test_format_on_write_real_ruff(tmp_path, monkeypatch):
     """ruff IS installed in the dev venv: the write shows the note and the content is normalized."""
-    if not __import__("shutil").which("ruff"):
-        import shutil as sh
-        monkeypatch.setattr("hexiel.formatters.shutil.which", lambda n: "/usr/bin/ruff" if n == "ruff" else None)
+    from hexiel.formatters import _venv_bin
+    if not _venv_bin("ruff"):
+        pytest.skip("ruff is not installed (pip install -e '.[dev]' brings it)")
     tools = {t.name: t for t in build_tools(Toolchain())}
     p = _py(tmp_path, "fmtcheck.py")
     out = tools["write"].run({"path": str(p), "content": "import os,sys\nx=1\n"}, make_ctx(tmp_path))

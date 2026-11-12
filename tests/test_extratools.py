@@ -186,8 +186,8 @@ def test_clipboard_write(tmp_path, monkeypatch):
     r = DT._clipboard({"op": "write", "text": "hello clipboard"}, ctx(tmp_path))
     assert not r.is_error and "copied" in r.text
     import time as T
-    for _ in range(100):                          # wl-copy is a detached background process
-        if dest.exists():
+    for _ in range(100):                          # wl-copy is a detached background process: wait for the text,
+        if dest.exists() and dest.read_text():    # not just the file (the shell creates it before cat writes)
             break
         T.sleep(0.05)
     assert dest.read_text() == "hello clipboard"

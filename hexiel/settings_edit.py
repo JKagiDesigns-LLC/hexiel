@@ -54,6 +54,10 @@ FIELDS = [
      "options": [True, False], "help": "wait out provider rate/usage limits and continue automatically"},
     {"key": "settings.fallback_profile", "label": "Fallback model", "kind": "choice",
      "help": "profile to switch to when a limit won't reset soon (e.g. your local model); empty = none"},
+    {"key": "settings.cloud_cooldown_minutes", "label": "Skip dead cloud", "kind": "number",
+     "options": [15, 30, 60, 120, 240],
+     "help": "minutes a cloud account that can't answer (rejected key, no credits, monthly limit, budget stop) is "
+             "skipped by every model chain before hexiel tries it again; /accounts shows them, /accounts recheck retries now"},
     {"key": "settings.subagent_profile", "label": "Subagent model", "kind": "choice",
      "help": "profile for `task` subagents — e.g. a cheaper or local model; empty = current model"},
     {"key": "settings.planner_profile", "label": "Planner model", "kind": "choice",

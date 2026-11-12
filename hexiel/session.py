@@ -371,12 +371,17 @@ def cool_down(name: str, retry_after: float | None = None) -> None:
 
 
 def cooling_down(name: str) -> bool:
-    """True while a profile is deliberately skipped after its own limit."""
+    """True while a profile is deliberately skipped: after its own limit (this process), or because its cloud
+    account was found unusable — a rejected key, no credits, a monthly limit, the budget stop — by any hexiel
+    process in the last cloud_cooldown_minutes (availability.py)."""
     until = _limited_until.get(name, 0.0)
     if until and until <= time.monotonic():
         _limited_until.pop(name, None)
-        return False
-    return bool(until)
+        until = 0.0
+    if until:
+        return True
+    from . import availability
+    return availability.unusable_name(name) is not None
 
 
 def _left_out(tool, args, exc: KeyError) -> bool:
@@ -815,6 +820,7 @@ class Session:
         self.messages.append(entry)
         self.save()
         self.on_event("turn_start")          # views that join mid-turn (a reconnecting browser) catch up from here
+        self.apply_cloud_check()             # a model on a dead cloud account: start on the next usable one
         from . import router as router_mod
         mc, handled = router_mod.route_turn(self, entry["content"], delegate_mode, cloud_turn)
         if handled:
@@ -1012,6 +1018,8 @@ class Session:
         while True:
             stop = self._budget_stop()
             if stop:
+                from . import availability
+                availability.mark(self.model_config, "budget", stop, self.settings)
                 if self._switch_to_fallback(stop):
                     continue
                 self._provider_error = stop
@@ -1056,6 +1064,8 @@ class Session:
                 wait = self._limit_wait(exc, attempt)
                 if wait is None:
                     cool_down(self.model_config.name, exc.retry_after)
+                    from . import availability
+                    availability.note_failure(self.model_config, exc, self.settings)   # every chain skips the account
                     if self._switch_to_fallback(str(exc)):
                         attempt = 0
                         continue
@@ -1073,6 +1083,13 @@ class Session:
                 # model call could fail the very same way), so _mech_trim_overflow trims by hand when
                 # compaction did not leave the request small enough.
                 if recovered or not llm.is_context_overflow(str(exc)):
+                    from . import availability
+                    if availability.note_failure(self.model_config, exc, self.settings) is not None:
+                        # a rejected key or an empty account: the next model in the chain, not a dead turn
+                        cool_down(self.model_config.name, None)
+                        if self._switch_to_fallback(explain_mod.explain(str(exc), self.model_config)):
+                            attempt, timeouts = 0, 0
+                            continue
                     self._provider_error = explain_mod.explain(str(exc), self.model_config)
                     return {"role": "assistant", "content": ""}
                 recovered = True
@@ -1194,6 +1211,38 @@ class Session:
             self.on_event("note", f"💸 {reason}")
         return reason
 
+    def apply_cloud_check(self) -> None:
+        """Run before each turn. The first time, wait for the session-start account check (availability.start)
+        and say which cloud accounts are being skipped. Every time: when the session's model sits on an
+        account known to be unusable, move to the next usable model of its fallback chain now — no request
+        is wasted on it — and say until when; router.overflow_or_main switches back once the cooldown ends."""
+        from . import availability
+        pending = self.__dict__.pop("_cloud_check", None)
+        if pending is not None:
+            thread, box = pending
+            thread.join(availability.PROBE_TIMEOUT + 6)
+            said = self.__dict__.setdefault("_cloud_said", set())
+            for key, entry in box.get("found") or []:
+                if key not in said:
+                    said.add(key)
+                    self.on_event("note", f"☁ {availability.describe(entry, key)}")
+        if self.internal:
+            return
+        hit = availability.unusable(self.model_config)
+        if hit is None:
+            return
+        original = self.model_config.name
+        self.__dict__["_turn_boot_model"] = original     # it is the session's own model: return to it later
+        self.__dict__.pop("_fallback_tried", None)
+        minutes = int(availability.cooldown_seconds(self.settings) // 60)
+        why = availability.KIND_TEXT.get(hit.get("kind"), "unusable")
+        if self._switch_to_fallback(f"{why} (known — not retried until {availability.until_text(hit)})"):
+            self.on_event("note", f"☁ {original}: {why} — using {self.model_config.name} until "
+                                  f"{availability.until_text(hit)}, then {original} is tried again "
+                                  f"(cloud_cooldown_minutes = {minutes}; /accounts recheck to try now)")
+            self.save()
+        self.__dict__.pop("_fallback_tried", None)
+
     def _switch_to_fallback(self, reason: str) -> bool:
         """Switch to the next profile left in this model's fallback chain ([models.*] `fallbacks`;
         with none set, the old fallback_profile). The tried names pile up for this turn, so a chain
@@ -1202,8 +1251,7 @@ class Session:
         the failing primary, so the session returns to it once its cooldown has run out."""
         from .config import load_config
         boot = self.__dict__.get("_turn_boot_model", self.model_config.name)
-        if self.model_config.name == boot:
-            self.__dict__.setdefault("_failed_over_from", self.model_config.name)
+        failing = self.model_config.name
         chain = list(self.model_config.fallbacks) or (
             [self.settings.fallback_profile] if self.settings.fallback_profile else [])
         tried = self.__dict__.setdefault("_fallback_tried", {self.model_config.name})
@@ -1222,6 +1270,8 @@ class Session:
                 self.on_event("note", f"↪ fallback {name} is unusable ({str(exc).strip()[:100] or 'no API key'}) — trying the next one")
                 continue
             self.on_event("fallback", self.model_config.name, name, reason[:200])
+            if failing == boot:                       # only an actual switch makes it the failed primary
+                self.__dict__.setdefault("_failed_over_from", failing)
             self.model_config = fallback
             self._provider_override = provider
             return True

@@ -9,7 +9,7 @@ import re
 # always wins over this guess.
 _SEES = re.compile(
     r"claude|gpt-4o|gpt-4\.1|gpt-5|o3|o4|gemini|gemma3|gemma-3|gemma4|gemma-4|llava|bakllava|moondream|"
-    r"minicpm-v|qwen.*vl|qwen2\.5vl|qwen3-vl|llama3\.2-vision|llama-3\.2-.*vision|llama4|pixtral|"
+    r"minicpm-v|qwen.*vl|qwen3\.[5-9](?!.*coder)|qwen2\.5vl|qwen3-vl|llama3\.2-vision|llama-3\.2-.*vision|llama4|pixtral|"
     r"mistral-small3\.[12]|mistral-medium|granite3\.2-vision|kimi-k2\.5|glm-4\.5v|glm-4v|internvl|vision")
 
 

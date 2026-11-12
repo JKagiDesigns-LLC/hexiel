@@ -245,6 +245,9 @@ def cloud_fallback(session, failed):
         return None
     if mc.api_key_env and not os.environ.get(mc.api_key_env) and mc.provider != "anthropic":
         return None
+    from . import availability
+    if availability.unusable(mc):
+        return None
     return mc
 
 
@@ -254,8 +257,17 @@ def complete(session, mc, system: str, user: str, max_tokens: int = 4096, budget
     `budget` (seconds) bounds the whole call: a model that has not answered by then raises TimeoutError.
     `cloud=True` marks a cloud task (plan, advice, summary): if `mc` fails or is rate-limited the cloud fallback profile
     answers instead, with a note saying so. `images` attaches image payloads ({media_type, data}) to the message."""
+    from . import availability
     try:
-        text, usage = _complete_once(session, mc, system, user, max_tokens, budget, **({"images": images} if images else {}))
+        dead = availability.unusable(mc)
+        if dead is not None:                  # known unusable (any hexiel process): no request is sent to it
+            raise llm.ProviderError(f"{mc.name} is skipped until {availability.until_text(dead)}: "
+                                    f"{availability.KIND_TEXT.get(dead.get('kind'), 'unusable')}")
+        try:
+            text, usage = _complete_once(session, mc, system, user, max_tokens, budget, **({"images": images} if images else {}))
+        except Exception as exc:  # noqa: BLE001
+            availability.note_failure(mc, exc, session.settings)
+            raise
     except Exception as exc:  # noqa: BLE001
         alt = cloud_fallback(session, mc) if cloud and not session._stop.is_set() else None
         if alt is None:
@@ -265,6 +277,9 @@ def complete(session, mc, system: str, user: str, max_tokens: int = 4096, budget
         session.set_active_model(alt, "cloud fallback")
         try:
             text, usage = _complete_once(session, alt, system, user, max_tokens, budget, **({"images": images} if images else {}))
+        except Exception as alt_exc:  # noqa: BLE001
+            availability.note_failure(alt, alt_exc, session.settings)    # its own account, not mc's
+            raise
         finally:
             session.active_model = ""
             session.on_event("model_active")

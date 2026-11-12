@@ -96,6 +96,7 @@ BUILTIN = [
     ("marketplace", "[search|add|install|update|remove] …", "skills & plugins catalogues: browse, install, update, remove"),
     ("team", "", "the agent team board: who is working, their last step, and their messages"),
     ("usage", "", "tokens used this session (in / cached / out)"),
+    ("accounts", "[recheck]", "cloud accounts being skipped (bad key, no credits, limit, budget) and until when; recheck tries them now"),
     ("spend", "[set ACCOUNT AMOUNT]", "what each paid account cost this cycle; set corrects it to the provider's billing page"),
     ("toolmodels", "[test]", "which tools use a helper model, whether it is ready (test = time each one)"),
     ("permissions", "", "show allow / ask / deny rules (incl. this session's 'always')"),

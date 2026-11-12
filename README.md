@@ -178,6 +178,7 @@ approval prompts, hexiel's todo list as the plan, Ask/Auto modes, its own MCP se
 |---|---|
 | **Model picker** (`Ctrl+P` / `/model`) | Every model reachable *right now* — local Ollama, Ollama Cloud, Anthropic, OpenAI, OpenRouter… queried live each time, searchable |
 | **Auto-resume** | Hit a rate or usage limit? hexiel counts down to the reset and continues the same turn; with `fallback_profile` it switches to e.g. your local model instead |
+| **Dead cloud accounts skipped** | A cloud account that can't answer — rejected key, no credits, monthly limit, budget stop — is checked once when a session starts and skipped by every model chain (main, router, overflow, planner, image descriptions, tool models) for `cloud_cooldown_minutes` (default 60), in every hexiel window: the session starts on the next usable model (often your local one), says until when, and switches back by itself. `/accounts` shows what is skipped, `/accounts recheck` tries again now |
 | **Permission rules** | Claude Code syntax — `Bash(git status:*)`, `Read(./.env)`, `Edit(src/**)`, `WebFetch(domain:…)`; deny > ask > allow; reads `.claude/settings.json`. "Always" answers are scoped to that kind of call |
 | **Plan mode** (`/plan`) | Investigate and propose a plan; nothing is changed until you turn it off |
 | **Undo** (`/undo`) | Reverts the files hexiel changed in its last turn, turn by turn |

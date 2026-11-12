@@ -517,15 +517,26 @@ def fuzzy(query: str, name: str) -> float:
     sm = SequenceMatcher(None, q, n, autojunk=False)
     if sm.real_quick_ratio() * 75.0 > max(score, 40.0) and sm.quick_ratio() * 75.0 > max(score, 40.0):
         score = max(score, sm.ratio() * 75.0)          # the full edit-similarity only when it could matter
-    if score < 74.0 and len(q) >= 4 and all(
-            any(abs(len(a) - len(b)) <= 2 and SequenceMatcher(None, a, b).ratio() >= 0.8 for b in nw) for a in qw):
+    if score < 74.0 and len(q) >= 4 and all(a in nw or any(_typo(a, b) for b in nw) for a in qw):
         score = 74.0                                   # every query word matches a word with a typo
     return score
+
+
+@lru_cache(maxsize=65536)
+def _typo(a: str, b: str) -> bool:
+    """Two words a typo apart. Cached: an index repeats the same word pairs thousands of times."""
+    return abs(len(a) - len(b)) <= 2 and SequenceMatcher(None, a, b).ratio() >= 0.8
 
 
 def lookup(idx: Index, name: str, limit: int = 20, kinds: set | None = None, min_score: float = 60.0) -> list[tuple[float, Symbol]]:
     hits = []
     qual = "." in name
+    want = name.lower().strip()
+    exact = [s for s in idx.all() if (s.qualname if qual else s.name).lower() == want
+             and not (kinds and s.kind not in kinds)]
+    if len(exact) >= limit:            # nothing outscores an exact name: skip fuzzy-scoring the whole index
+        exact.sort(key=lambda s: (len(s.path), s.path, s.line))
+        return [(100.0, s) for s in exact[:limit]]
     for s in idx.all():
         if kinds and s.kind not in kinds:
             continue

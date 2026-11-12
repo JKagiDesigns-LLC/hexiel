@@ -2029,7 +2029,7 @@ class HexielTUI(App):
             "config": self.cmd_config, "update": self.cmd_update, "mcp": self.cmd_mcp,
             "prompt": self.cmd_prompt, "context": self.cmd_context,
             "plan": self.cmd_plan, "permissions": self.cmd_permissions,
-            "undo": self.cmd_undo, "usage": self.cmd_usage, "spend": self.cmd_spend, "toolmodels": self.cmd_toolmodels, "jobs": self.cmd_jobs, "knowledge": self.cmd_knowledge, "doctor": self.cmd_doctor, "import": self.cmd_import, "inbox": self.cmd_inbox, "team": self.cmd_team, "marketplace": self.cmd_marketplace,
+            "undo": self.cmd_undo, "usage": self.cmd_usage, "spend": self.cmd_spend, "accounts": self.cmd_accounts, "toolmodels": self.cmd_toolmodels, "jobs": self.cmd_jobs, "knowledge": self.cmd_knowledge, "doctor": self.cmd_doctor, "import": self.cmd_import, "inbox": self.cmd_inbox, "team": self.cmd_team, "marketplace": self.cmd_marketplace,
             "model": self.cmd_model, "models": self.cmd_models, "auto": self.cmd_auto,
             "memory": self.cmd_memory, "skills": self.cmd_skills,
             "ship": self.cmd_ship, "heal": self.cmd_heal,
@@ -2470,6 +2470,15 @@ class HexielTUI(App):
         self.add_note(spend.command(self.session.settings, arg).replace("[", "\\["))
         self.query_one(Sidebar).refresh_text()
 
+    def cmd_accounts(self, arg: str) -> None:
+        from . import availability
+        if not arg.strip():
+            self.add_note(availability.command(self.session).replace("[", "\\["))
+            return
+        self.add_note("☁ checking the cloud accounts again…")
+        threading.Thread(target=lambda: self._post(self.add_note, availability.command(self.session, arg).replace("[", "\\[")),
+                         daemon=True, name="hexiel-accounts").start()
+
     def cmd_toolmodels(self, arg: str) -> None:
         from . import digest
         probe = arg.strip().lower() == "test"
@@ -2849,6 +2858,8 @@ class HexielTUI(App):
 
     def _flush_stream(self) -> None:
         self._flush_timer = None
+        if not self.chat.is_mounted:       # the window is closing (or not up yet): nothing to paint into
+            return
         self._paint_stream()
 
     def _paint_stream(self) -> None:

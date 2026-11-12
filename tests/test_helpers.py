@@ -63,4 +63,4 @@ def test_csv_stats(tmp_path):
     assert "3 rows × 3 columns" in out
     assert "amount: number, min 10, max 30, mean 20" in out
     assert "region: text, 2 distinct, 0 empty, most common 'north'" in out
-    assert "note: text, 2 distinct, 1 empty" in out
+    assert "note: text, 2 distinct, 1 empty" in out and "most common 'a'" not in out

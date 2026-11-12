@@ -253,6 +253,8 @@ def csv_stats(path: Path, max_rows: int = 2_000_000) -> str:
                          f"median {statistics.median(vals):g}, {empty} empty")
         else:
             top = max(set(filled), key=filled.count) if filled and distinct <= 5000 else ""
+            if top and filled.count(top) < 2:
+                top = ""                          # every value unique: there is no "most common"
             lines.append(f"- {name}: text, {distinct} distinct, {empty} empty"
                          + (f", most common {top[:40]!r}" if top else ""))
     return "\n".join(lines)

@@ -56,5 +56,6 @@ def test_no_vision_model_falls_back_to_ocr_or_says_why(tmp_path, monkeypatch):
     monkeypatch.setattr(vision, "ocr", lambda data, timeout=30.0: "")
     vision.describe_history(s)
     content = s.messages[0]["content"]
-    assert "not visible to this model" in content and "no usable vision model" in content
+    assert "no vision model was usable" in content and "no usable vision model" in content
+    assert "image card" in content                                           # something is always said
     assert "images" not in s.messages[0]

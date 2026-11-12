@@ -29,7 +29,7 @@ SKIP_DIRS = {".git", "node_modules", "__pycache__", ".venv", "venv", ".pixi", "v
 MAX_FILE = 1_000_000
 MAX_FILES = 20_000
 INDEX_BUDGET = 8.0          # seconds for a cold index; past it the index is partial (and says so), never a hang
-VERSION = 2
+VERSION = 3
 
 LANGS = {".py": "python", ".pyi": "python", ".js": "js", ".jsx": "js", ".mjs": "js", ".cjs": "js", ".ts": "js",
          ".tsx": "js", ".go": "go", ".rs": "rust", ".java": "java", ".kt": "java", ".kts": "java", ".cs": "java",
@@ -72,6 +72,7 @@ _RX = {
     "lua": [(r"^\s*(?:local\s+)?function\s+([\w.:]+)", "function"),
             (r"^\s*(?:local\s+)?([\w.]+)\s*=\s*function", "function")],
 }
+ENGINE = "auto"            # resolved below: "tree-sitter" when the extra is installed, else "regex"
 _COMPILED = {lang: [(re.compile(rx), kind) for rx, kind in rules] for lang, rules in _RX.items()}
 _C_NOT_FUNC = {"if", "for", "while", "switch", "return", "sizeof", "else", "do", "case", "catch", "new", "delete"}
 _COMMENT = re.compile(r"^\s*(?:#|//|/\*+|\*|--|;)\s?(.*)$")
@@ -211,11 +212,121 @@ def _leading_comment(lines: list[str], i: int) -> str:
     return " ".join(reversed([g for g in got if g]))[:300]
 
 
+# ---------------------------------------------------------------- tree-sitter (optional extra: pip install 'hexiel[code]')
+
+TS_LANG = {".js": "javascript", ".jsx": "javascript", ".mjs": "javascript", ".cjs": "javascript", ".ts": "typescript",
+           ".tsx": "tsx", ".go": "go", ".rs": "rust", ".java": "java", ".kt": "kotlin", ".kts": "kotlin",
+           ".cs": "csharp", ".scala": "scala", ".swift": "swift", ".c": "c", ".h": "c", ".cc": "cpp", ".cpp": "cpp",
+           ".cxx": "cpp", ".hpp": "cpp", ".hh": "cpp", ".rb": "ruby", ".php": "php", ".sh": "bash", ".bash": "bash",
+           ".lua": "lua", ".ex": "elixir", ".exs": "elixir", ".dart": "dart"}
+# node type -> kind; "class" kinds become the parent of what they contain
+TS_KINDS = {
+    "function_declaration": "function", "generator_function_declaration": "function", "function_definition": "function",
+    "function_item": "function", "method_definition": "method", "method_declaration": "method", "method": "method",
+    "singleton_method": "method", "constructor_declaration": "method", "function_signature": "function",
+    "class_declaration": "class", "class_definition": "class", "class_specifier": "class", "struct_specifier": "class",
+    "struct_item": "class", "enum_item": "class", "union_item": "class", "class": "class", "object_declaration": "class",
+    "record_declaration": "class", "struct_declaration": "class", "enum_declaration": "type",
+    "interface_declaration": "type", "type_alias_declaration": "type", "trait_item": "type", "type_spec": "type",
+    "protocol_declaration": "type", "trait_declaration": "type", "trait_definition": "type", "object_definition": "class",
+    "impl_item": "impl", "module": "module", "mod_item": "module", "namespace_definition": "module",
+    "namespace_declaration": "module",
+}
+_CONTAINERS = {"class", "impl", "module", "type"}
+_NAME_TYPES = ("identifier", "type_identifier", "simple_identifier", "name", "constant", "field_identifier",
+               "property_identifier", "namespace_identifier", "word")
+_PARSERS: dict = {}
+
+
+def treesitter_available() -> bool:
+    try:
+        import tree_sitter_language_pack  # noqa: F401
+        return True
+    except Exception:  # noqa: BLE001 - any import problem means "not installed"
+        return False
+
+
+def _ts_parser(lang: str):
+    if lang not in _PARSERS:
+        try:
+            from tree_sitter_language_pack import get_parser
+            _PARSERS[lang] = get_parser(lang)
+        except Exception:  # noqa: BLE001 - a grammar missing from the pack: regex outline instead
+            _PARSERS[lang] = None
+    return _PARSERS[lang]
+
+
+def _ts_name(node, src: bytes) -> str:
+    field = node.child_by_field_name("name") or (node.child_by_field_name("type") if node.type == "impl_item" else None)
+    if field is None and node.type in ("function_definition", "function_declaration"):     # C/C++: inside the declarator
+        decl = node.child_by_field_name("declarator")
+        while decl is not None and decl.child_by_field_name("declarator") is not None:
+            decl = decl.child_by_field_name("declarator")
+        field = decl
+    if field is None:
+        field = next((c for c in node.children if c.type in _NAME_TYPES), None)
+    if field is None:
+        return ""
+    return src[field.start_byte:field.end_byte].decode("utf-8", "replace").split("(")[0].strip()[:120]
+
+
+def _ts_symbols(text: str, rel: str, lang: str) -> list[Symbol] | None:
+    parser = _ts_parser(lang)
+    if parser is None:
+        return None
+    src = text.encode("utf-8")
+    try:
+        tree = parser.parse(src)
+    except Exception:  # noqa: BLE001
+        return None
+    lines = text.splitlines()
+    out: list[Symbol] = []
+
+    def visit(node, parent: str, depth: int):
+        if depth > 60:
+            return
+        for child in node.children:
+            kind = TS_KINDS.get(child.type)
+            if kind is None and child.type in ("lexical_declaration", "variable_declaration"):
+                for decl in child.children:                 # const f = () => … / function expressions
+                    value = decl.child_by_field_name("value") if decl.type == "variable_declarator" else None
+                    if value is not None and value.type in ("arrow_function", "function", "function_expression"):
+                        name = _ts_name(decl, src)
+                        if name:
+                            out.append(Symbol(name, "method" if parent else "function", rel, child.start_point[0] + 1,
+                                              child.end_point[0] + 1, parent, lines[child.start_point[0]].strip()[:160],
+                                              _leading_comment(lines, child.start_point[0])))
+                continue
+            if kind is None:
+                visit(child, parent, depth + 1)
+                continue
+            name = _ts_name(child, src)
+            if not name:
+                visit(child, parent, depth + 1)
+                continue
+            if kind == "function" and parent:
+                kind = "method"
+            row = child.start_point[0]
+            out.append(Symbol(name, kind, rel, row + 1, child.end_point[0] + 1, parent,
+                              lines[row].strip()[:160] if row < len(lines) else "", _leading_comment(lines, row)))
+            visit(child, (f"{parent}.{name}" if parent else name) if kind in _CONTAINERS else parent, depth + 1)
+
+    visit(tree.root_node, "", 0)
+    return out
+
+
 def parse(text: str, rel: str) -> list[Symbol]:
-    lang = LANGS.get(Path(rel).suffix.lower())
+    suffix = Path(rel).suffix.lower()
+    lang = LANGS.get(suffix)
     if lang is None:
         return []
-    return _py_symbols(text, rel) if lang == "python" else _regex_symbols(text, rel, lang)
+    if lang == "python":
+        return _py_symbols(text, rel)
+    if suffix in TS_LANG and ENGINE == "tree-sitter":
+        got = _ts_symbols(text, rel, TS_LANG[suffix])
+        if got is not None:
+            return got
+    return _regex_symbols(text, rel, lang)
 
 
 # ---------------------------------------------------------------- the index
@@ -231,6 +342,8 @@ class Index:
         self.last_refresh = 0.0
         self.lock = threading.Lock()
         self._loaded = False
+        self.vectors: dict = {}            # symbol key -> float32 array (embedding), when a model is reachable
+        self.vectors_model = None
 
     # persistence ---------------------------------------------------------
     @property
@@ -242,7 +355,7 @@ class Index:
         self._loaded = True
         try:
             data = json.loads(self.store.read_text())
-            if data.get("v") != VERSION or data.get("root") != self.root:
+            if data.get("v") != VERSION or data.get("root") != self.root or data.get("engine") != ENGINE:
                 return
             self.files = {rel: {"m": f["m"], "s": f["s"], "syms": [Symbol(**s) for s in f["syms"]]}
                           for rel, f in data["files"].items()}
@@ -253,7 +366,7 @@ class Index:
         try:
             self.store.parent.mkdir(parents=True, exist_ok=True)
             tmp = self.store.with_suffix(".tmp")
-            tmp.write_text(json.dumps({"v": VERSION, "root": self.root, "files": {
+            tmp.write_text(json.dumps({"v": VERSION, "root": self.root, "engine": ENGINE, "files": {
                 rel: {"m": f["m"], "s": f["s"], "syms": [asdict(s) for s in f["syms"]]} for rel, f in self.files.items()}}))
             os.replace(tmp, self.store)
         except OSError:
@@ -466,9 +579,139 @@ def _tokens(text: str) -> list[str]:
     return [t.lower() for t in _TOKEN.findall(text) if len(t) > 1]
 
 
-def find(idx: Index, query: str, limit: int = 15) -> list[tuple[float, str, str]]:
+# ---------------------------------------------------------------- meaning: embeddings when a model is there
+
+_EMBED = {"at": 0.0, "endpoint": None}
+EMBED_BATCH = 64
+_VEC_LOCK = threading.Lock()
+
+
+def embedder():
+    """(ollama base, embedding model) when a configured Ollama server has one (docqa's discovery), else None.
+    Re-checked every 5 minutes; HEXIEL_EMBED=off disables it."""
+    if os.environ.get("HEXIEL_EMBED", "").lower() == "off":
+        return None
+    now = time.time()
+    if now - _EMBED["at"] < 300:
+        return _EMBED["endpoint"]
+    try:
+        from . import docqa
+        ep = docqa._embed_endpoint(None)
+    except Exception:  # noqa: BLE001 - no config, no server: keyword search
+        ep = None
+    _EMBED.update(at=now, endpoint=ep)
+    return ep
+
+
+def _embed(ep, texts: list[str]):
+    from . import docqa
+    return docqa._embed(ep, texts)
+
+
+def _sym_key(s: Symbol) -> str:
+    return hashlib.sha1(f"{s.path}|{s.qualname}|{s.signature}|{s.doc[:120]}".encode(),  # nosec B324 - a cache key
+                        usedforsecurity=False).hexdigest()[:16]
+
+
+def _sym_text(s: Symbol) -> str:
+    return f"{s.kind} {s.qualname} in {s.path}: {s.doc or s.signature}"[:500]
+
+
+def _vec_store(idx: "Index") -> Path:
+    return idx.store.with_suffix(".vec.json")
+
+
+def _load_vectors(idx: "Index", model: str) -> None:
+    if getattr(idx, "vectors_model", None) == model:
+        return
+    import base64
+    from array import array
+    idx.vectors, idx.vectors_model = {}, model
+    try:
+        data = json.loads(_vec_store(idx).read_text())
+        if data.get("model") == model:
+            for key, b64 in data.get("vecs", {}).items():
+                arr = array("f")
+                arr.frombytes(base64.b64decode(b64))
+                idx.vectors[key] = arr
+    except (OSError, ValueError, KeyError):
+        pass
+
+
+def _save_vectors(idx: "Index") -> None:
+    import base64
+    try:
+        keys = {_sym_key(s) for s in idx.all()}
+        data = {"model": idx.vectors_model, "vecs": {k: base64.b64encode(v.tobytes()).decode()
+                                                     for k, v in idx.vectors.items() if k in keys}}
+        tmp = _vec_store(idx).with_suffix(".tmp")
+        tmp.parent.mkdir(parents=True, exist_ok=True)
+        tmp.write_text(json.dumps(data))
+        os.replace(tmp, _vec_store(idx))
+    except OSError:
+        pass
+
+
+def embed_missing(idx: "Index", ep, limit: int | None = None, symbols: list | None = None) -> int:
+    """Embed definitions that have no vector yet (all of them, or `symbols`), at most `limit`. Returns how many."""
+    from array import array
+    with _VEC_LOCK:
+        _load_vectors(idx, ep[1])
+        todo = [s for s in (symbols if symbols is not None else idx.all()) if _sym_key(s) not in idx.vectors]
+        if limit is not None:
+            todo = todo[:limit]
+        done = 0
+        for i in range(0, len(todo), EMBED_BATCH):
+            chunk = todo[i:i + EMBED_BATCH]
+            vecs = _embed(ep, [_sym_text(s) for s in chunk])
+            if not vecs or len(vecs) != len(chunk):
+                break
+            for sym, vec in zip(chunk, vecs):
+                idx.vectors[_sym_key(sym)] = array("f", vec)
+            done += len(chunk)
+        if done:
+            _save_vectors(idx)
+        return done
+
+
+def _fill_in_background(idx: "Index", ep) -> None:
+    if getattr(idx, "_vec_thread", None) is not None and idx._vec_thread.is_alive():
+        return
+    idx._vec_thread = threading.Thread(target=lambda: embed_missing(idx, ep), name="hexiel-embed", daemon=True)
+    idx._vec_thread.start()
+
+
+def _cos(a, b) -> float:
+    dot = na = nb = 0.0
+    for x, y in zip(a, b):
+        dot += x * y
+        na += x * x
+        nb += y * y
+    return dot / math.sqrt(na * nb) if na and nb else 0.0
+
+
+def by_meaning(idx: "Index", query: str, candidates: list, ep, top: int = 12) -> list[tuple[float, "Symbol"]]:
+    """Cosine ranking: the keyword candidates (embedded now if needed, they are few) plus every definition already
+    embedded; the rest are embedded in the background for next time."""
+    qv = _embed(ep, [query])
+    if not qv:
+        return []
+    embed_missing(idx, ep, limit=48, symbols=candidates)
+    _fill_in_background(idx, ep)
+    q = qv[0]
+    out = []
+    for s in idx.all():
+        v = idx.vectors.get(_sym_key(s))
+        if v is not None:
+            out.append((_cos(q, v), s))
+    out.sort(key=lambda h: -h[0])
+    return out[:top]
+
+
+def find(idx: Index, query: str, limit: int = 15, semantic: bool = True) -> list[tuple[float, str, str]]:
     """One call instead of a grep chain: fuzzy symbol names, fuzzy file paths, and BM25 over each symbol's
-    name words + docstring/leading comment. Returns (score, location, what) best first."""
+    name words + docstring/leading comment — re-ranked by meaning when an embedding model is reachable.
+    Returns (score, location, what) best first."""
     syms = idx.all()
     qtok = _tokens(query) or [query.lower()]
     docs = [(_tokens(s.name) + _tokens(s.parent) + _tokens(s.doc)) for s in syms]
@@ -509,6 +752,24 @@ def find(idx: Index, query: str, limit: int = 15) -> list[tuple[float, str, str]
         sc = max(fuzzy(compact, stem), fuzzy(query, rel) * 0.9)
         if sc >= 70:
             keep(sc - 2, rel, "file")
+    ep = embedder() if semantic else None
+    if ep:
+        by_loc = {s.where(): s for s in syms}
+        cands = [by_loc[loc] for _sc, loc, _w in sorted(scored.values(), key=lambda h: -h[0])[:40] if loc in by_loc]
+        try:
+            ranked = by_meaning(idx, query, cands, ep)
+        except Exception:  # noqa: BLE001 - the embedding server went away: keyword results stand
+            ranked = []
+        if ranked:
+            best = ranked[0][0] or 1.0
+            for cos, s in ranked:
+                rel_score = 55 + 40 * (cos / best)               # the closest by meaning scores like a strong name hit
+                loc = s.where()
+                if loc in scored:
+                    sc, _l, what = scored[loc]
+                    scored[loc] = (max(sc, rel_score) + 5, loc, what)   # both agree: it goes up
+                else:
+                    keep(rel_score, loc, f"{s.kind} {s.qualname} — {s.doc[:100] or s.signature[:100]} (by meaning)")
     return sorted(scored.values(), key=lambda h: -h[0])[:limit]
 
 
@@ -541,3 +802,6 @@ def symbol_range(idx: Index, rel: str, name: str) -> tuple[int, int] | None:
     if best and fuzzy(name, best.qualname) >= 80:
         return best.line, best.end
     return None
+
+
+ENGINE = "tree-sitter" if os.environ.get("HEXIEL_SYMBOLS", "") != "regex" and treesitter_available() else "regex"

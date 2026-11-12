@@ -124,10 +124,17 @@ lands, and is documented on hexiel.tech the same day so the site never goes stal
   rendering when the text layer is empty, render-and-look for HTML. Inventory: catalogued programs only (no version
   calls), no LSP/database probing beyond PATH; definitions left out for powershell and container when absent.
   Performance budgets are asserted for the symbol index, find/lookup, the log condenser and the brief (0.6 s budget).
-- [ ] Follow-ups: tree-sitter (optional extra) for exact ranges in non-Python files; embeddings in `find` when an
-      embedding model is configured; the vision items marked NOT yet above.
+- [x] Follow-ups (0.9.4): tree-sitter as the `code` extra (exact ranges for 30+ languages; the regex outlines stay
+      the no-dependency path, `HEXIEL_SYMBOLS=regex` forces them); `find` blends in embedding similarity when an
+      embedding model answers (vectors cached next to the index, filled in the background, `HEXIEL_EMBED=off`);
+      vision: Pillow image card (size, colours, where the content is, OCR text with positions, QR/barcodes via
+      pyzbar or zbarimg), PDF pages without a text layer rendered and read, `render` tool (headless browser
+      screenshot of HTML/Markdown/URLs, looked at or described).
 
-## Deferred (tickets, not built yet)
-- [ ] ACP server (serve hexiel into Zed/JetBrains)
-- [ ] Agent teams (peer messaging layer on top of the delegate pattern)
-- [ ] Skills/plugin marketplace plumbing
+## Deferred → built in 0.9.4
+- [x] ACP server (serve hexiel into Zed/JetBrains): `hexiel --acp [-m PROFILE]`; new/load/prompt/cancel/set_mode,
+      editor MCP servers, permission requests, tool cards with diffs, the todo list as the plan.
+- [x] Agent teams (peer messaging layer on top of the delegate pattern): `team` tool, 2-6 named members in
+      parallel, `team_msg` send/broadcast/wait delivered mid-turn, /team board.
+- [x] Skills/plugin marketplace plumbing: `/marketplace` + `hexiel marketplace`; sources (URL, folder, git),
+      hexiel and Claude Code marketplace.json indexes, sha256 pins, update/remove by install record.

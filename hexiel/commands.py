@@ -93,6 +93,8 @@ BUILTIN = [
     ("import", "", "find keys, MCP servers and agents already on this machine and set hexiel up from them"),
     ("jobs", "", "scheduled jobs (ask hexiel to schedule something to create one)"),
     ("inbox", "", "results from scheduled jobs"),
+    ("marketplace", "[search|add|install|update|remove] …", "skills & plugins catalogues: browse, install, update, remove"),
+    ("team", "", "the agent team board: who is working, their last step, and their messages"),
     ("usage", "", "tokens used this session (in / cached / out)"),
     ("spend", "[set ACCOUNT AMOUNT]", "what each paid account cost this cycle; set corrects it to the provider's billing page"),
     ("toolmodels", "[test]", "which tools use a helper model, whether it is ready (test = time each one)"),

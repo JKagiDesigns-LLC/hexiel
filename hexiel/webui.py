@@ -572,6 +572,14 @@ def make_app(session: Session, driver=None) -> web.Application:
             return "\n".join(f"{k}: " + (", ".join(getattr(r, k)) or "—") for k in ("deny", "ask", "allow"))
         if cmd == "jobs":
             return "\n".join(jobs_mod.describe(j) for j in jobs_mod.load()) or "no scheduled jobs"
+        if cmd == "marketplace":
+            from . import marketplace
+            threading.Thread(target=lambda: state.broadcast(
+                {"t": "note", "text": "🧩 marketplace\n" + marketplace.command(arg)}), daemon=True).start()
+            return "🧩 marketplace: working…"
+        if cmd == "team":
+            board = getattr(session, "team_board", None)
+            return board.render() if board else "no team yet — ask for one, e.g. \"have a backend and a reviewer agent work on this together\""
         if cmd == "inbox":
             box = jobs_mod.inbox_dir()
             files = sorted(box.glob("*.md"), reverse=True)[:3] if box.exists() else []

@@ -2029,7 +2029,7 @@ class HexielTUI(App):
             "config": self.cmd_config, "update": self.cmd_update, "mcp": self.cmd_mcp,
             "prompt": self.cmd_prompt, "context": self.cmd_context,
             "plan": self.cmd_plan, "permissions": self.cmd_permissions,
-            "undo": self.cmd_undo, "usage": self.cmd_usage, "spend": self.cmd_spend, "toolmodels": self.cmd_toolmodels, "jobs": self.cmd_jobs, "knowledge": self.cmd_knowledge, "doctor": self.cmd_doctor, "import": self.cmd_import, "inbox": self.cmd_inbox,
+            "undo": self.cmd_undo, "usage": self.cmd_usage, "spend": self.cmd_spend, "toolmodels": self.cmd_toolmodels, "jobs": self.cmd_jobs, "knowledge": self.cmd_knowledge, "doctor": self.cmd_doctor, "import": self.cmd_import, "inbox": self.cmd_inbox, "team": self.cmd_team, "marketplace": self.cmd_marketplace,
             "model": self.cmd_model, "models": self.cmd_models, "auto": self.cmd_auto,
             "memory": self.cmd_memory, "skills": self.cmd_skills,
             "ship": self.cmd_ship, "heal": self.cmd_heal,
@@ -2332,6 +2332,22 @@ class HexielTUI(App):
         chat = self.chat
         for f in files:
             chat.mount(Markdown(f.read_text()[:4000]))
+
+    def cmd_marketplace(self, arg: str) -> None:
+        from . import marketplace
+        slow = arg.split()[:1] in (["add"], ["install"], ["update"], ["upgrade"])
+
+        def work() -> None:
+            text = marketplace.command(arg)
+            self.call_from_thread(self.add_note, "🧩 marketplace\n" + text.replace("[", "\\["))
+        if slow:
+            self.add_note("🧩 marketplace: working…")
+        self.run_worker(work, thread=True, exclusive=False)
+
+    def cmd_team(self, arg: str) -> None:
+        board = getattr(self.session, "team_board", None)
+        self.add_note(board.render().replace("[", "\\[") if board else
+                      "no team yet — ask for one, e.g. \"have a backend and a reviewer agent work on this together\"")
 
     def cmd_undo(self, arg: str) -> None:
         if self._thread and self._thread.is_alive():

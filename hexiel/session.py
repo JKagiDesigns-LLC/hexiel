@@ -1417,7 +1417,7 @@ class Session:
 
     # ---------------------------------------------------------------- subagents
 
-    def run_subagent(self, args: dict) -> "ToolResult":
+    def run_subagent(self, args: dict, extra_tools=(), on_helper=None) -> "ToolResult":
         """The `task` tool: a helper with its own context does the work and only its final
         answer comes back into this conversation. Research mode (the default) is read-only;
         write mode gets the full toolkit inside a mandatory git worktree (created on the spot
@@ -1437,8 +1437,10 @@ class Session:
                 model = load_config().model(name)
             except (KeyError, SystemExit):
                 pass
-        tools = [t for t in self.tools if t.name != "task"] if mode == "write" \
-            else [t for t in self.tools if t.readonly and t.name != "task"]
+        nested = ("task", "team")                       # helpers never start helpers of their own
+        tools = [t for t in self.tools if t.name not in nested] if mode == "write" \
+            else [t for t in self.tools if t.readonly and t.name not in nested]
+        tools = tools + list(extra_tools)
         helper = Session(model, self.settings, self.cwd, tools,
                          SUBAGENT_WRITE if mode == "write" else SUBAGENT_SYSTEM)
         helper.bind_tool_ctx(self.tool_ctx)
@@ -1475,7 +1477,7 @@ class Session:
                     # loose on the real tree because its worktree failed to materialise
                     self.on_event("note", f"↳ {label}: worktree unavailable ({exc}) — "
                                           "downgraded to a read-only subagent")
-                    tools = [t for t in self.tools if t.readonly and t.name != "task"]
+                    tools = [t for t in self.tools if t.readonly and t.name not in nested] + list(extra_tools)
                     helper.tools = tools
                     helper.system_prompt = SUBAGENT_SYSTEM
                     mode = "research"
@@ -1506,6 +1508,8 @@ class Session:
         helper.save = lambda: None                  # helpers don't create saved sessions
         from .planner import _link_stop
         link = _link_stop(self, helper)             # Stop on this chat stops the subagent too
+        if on_helper is not None:
+            on_helper(helper)                       # agent teams: register for messages, watch its steps
         try:
             helper.run_turn(prompt + SUBAGENT_LIMIT)
         finally:

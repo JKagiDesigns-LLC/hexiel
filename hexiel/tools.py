@@ -637,6 +637,8 @@ def _read(args: dict, ctx: ToolContext) -> ToolResult:
         return text_result("error: path is a directory; use `list`", True)
     if not path.exists():
         return text_result("error: file not found", True)
+    if path.suffix.lower() == ".pdf":
+        return _read_pdf(path, args, ctx)
     if path.stat().st_size > MAX_BINARY:
         return text_result("error: file too large (>256KB); read it with bash head/tail ranges", True)
     try:
@@ -757,6 +759,46 @@ def _symbols(args: dict, ctx: ToolContext) -> ToolResult:
     more = f"\n... {len(pool) - limit} more (narrow with query/kind/path)" if len(pool) > limit else ""
     return text_result(f"{len(pool)} definitions:\n" + "\n".join(sm.fmt(s) for s in pool[:limit]) + more
                        + _partial_note(idx))
+
+
+def _read_pdf(path: Path, args: dict, ctx: ToolContext) -> ToolResult:
+    """A PDF's text by page; pages without a text layer (scans) are rendered and read by a vision model, OCR or
+    the image card (vision.pdf_text). offset/limit count pages here."""
+    from . import vision
+    try:
+        pages = vision.pdf_text(path, getattr(ctx, "session", None))
+    except Exception as exc:  # noqa: BLE001 - a damaged PDF
+        return text_result(f"error: could not read the PDF: {exc}", True)
+    offset = int(args.get("offset") or 0)
+    limit = int(args.get("limit") or 50)
+    chosen = pages[offset:offset + limit]
+    how = {"vision": " (no text layer — read by a vision model)", "ocr": " (no text layer — read by OCR)",
+           "card": " (no text layer — image card)", "empty": "", "text": ""}
+    body = "\n\n".join(f"--- page {n}{how.get(kind, '')} ---\n{text.strip()}" for n, kind, text in chosen)
+    more = f"\n... ({len(pages) - offset - limit} more pages; use offset/limit, counted in pages)" \
+        if offset + limit < len(pages) else ""
+    ctx.note_file(str(path))
+    return text_result(f"{path} — {len(pages)} page(s)\n{body}"[:MAX_OUTPUT] + more)
+
+
+def _render(args: dict, ctx: ToolContext) -> ToolResult:
+    """Draw an HTML/Markdown/SVG file or a URL in a headless browser and look at it: the picture for a model that
+    sees images, a description (or the image card) for one that doesn't."""
+    from . import vision
+    target = str(args.get("target") or args.get("path") or args.get("url") or "").strip()
+    if not target:
+        return text_result("error: render needs target=<file.html|file.md|http://…>", True)
+    try:
+        data = vision.render(target, ctx.cwd, int(args.get("width") or 1280), int(args.get("height") or 900))
+    except RuntimeError as exc:
+        return text_result(f"error: {exc}", True)
+    payload = image_payload(data)
+    session = getattr(ctx, "session", None)
+    if payload and (session is None or vision.sees_images(session.model_config)):
+        return ToolResult(text=f"rendered {target} ({payload[1]})", images=[payload[0]])
+    how, text = vision.read_picture(data, session, str(args.get("question") or
+                                                       "Describe this rendered page: layout, visible text, anything broken."))
+    return text_result(f"rendered {target}; you can't see images, so here it is described ({how}):\n{text}")
 
 
 def _resolve_path(rel: str, ctx: ToolContext) -> Path:
@@ -1731,7 +1773,8 @@ def build_tools(chain: Toolchain) -> list[ToolDef]:
                 obj(op={"type": "string", "enum": ["list", "output", "wait", "kill"]},
                     id={"type": "string"}, seconds={"type": "number"}),
                 readonly=True, always_ok=True, run=_tasks_tool),
-        ToolDef("read", "Read a text file with line numbers; supports offset/limit for long files. "
+        ToolDef("read", "Read a text file with line numbers; supports offset/limit for long files. PDFs come "
+                "back as text by page (scanned pages are read as images). "
                 "symbol=NAME (or Class.method) reads just that definition; around=LINE reads ±context "
                 "lines (default 20) — both far cheaper than the whole file.",
                 obj(path={"type": "string"}, offset={"type": "integer"}, limit={"type": "integer"},
@@ -1803,6 +1846,12 @@ def build_tools(chain: Toolchain) -> list[ToolDef]:
         ToolDef("view_image", "Attach a local image (png/jpeg/gif/webp) to the conversation "
                 "so a vision-capable model can see it.",
                 obj(path={"type": "string"}), readonly=True, run=_view_image),
+        ToolDef("render", "Look at what a page really looks like: draws a local .html/.md/.svg file or an "
+                "http(s) URL (e.g. your dev server) in a headless browser and shows you the screenshot — "
+                "described in words if you can't see images. Use it to check UI work.",
+                obj(target={"type": "string"}, width={"type": "integer"}, height={"type": "integer"},
+                    question={"type": "string"}),
+                readonly=True, run=_render),
         ToolDef("describe_image", "What an image (png/jpeg/gif/webp) shows, as text — for a "
                 "text-only model, or to read text in a screenshot. A vision model answers; "
                 "the roster comes from [tool_models] describe_image in config.toml.",

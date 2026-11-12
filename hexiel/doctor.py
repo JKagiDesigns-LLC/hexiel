@@ -90,7 +90,9 @@ def _runtime_checks(cfg) -> list[Check]:
                      sys.executable, () if v >= (3, 11) else ("hexiel is tested on Python 3.11+; older versions may break",)))
     for mod, needs, spec, level in (("textual", "the terminal UI", "textual", ERROR), ("httpx", "every provider", "httpx", ERROR),
                                     ("aiohttp", "the browser UI (hexiel --serve)", "'hexiel[serve]'", WARNING),
-                                    ("textual_image", "inline image thumbnails in the terminal", "'hexiel[view]'", INFO)):
+                                    ("textual_image", "inline image thumbnails in the terminal", "'hexiel[view]'", INFO),
+                                    ("tree_sitter_language_pack", "exact symbol ranges in non-Python code (find, where_is)",
+                                     "'hexiel[code]'", INFO)):
         try:
             __import__(mod)
             out.append(Check("Runtime", f"dep:{mod}", OK, mod, f"for {needs}"))

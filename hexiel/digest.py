@@ -254,14 +254,16 @@ def describe(session, payload: dict, question: str = "") -> str:
 
 
 def _ocr_or_raise(payload: dict, why: str) -> str:
-    """Last resort when no vision model answers: the image's text through tesseract, said as such."""
+    """Last resort when no vision model answers: the image's text through tesseract, else the no-model image
+    card (size, colours, layout, codes) — always something, and always said as such."""
     import base64
     from . import vision
-    text = vision.ocr(base64.b64decode(payload["data"]))
+    data = base64.b64decode(payload["data"])
+    short = why.split(" — ")[0]
+    text = vision.ocr(data)
     if text:
-        return f"[no vision model was usable ({why.split(' — ')[0]}); this is the text tesseract read in the image]\n{text}"
-    raise RuntimeError(why + ("" if __import__("shutil").which("tesseract") else
-                              " — install tesseract for a text-only fallback"))
+        return f"[no vision model was usable ({short}); this is the text tesseract read in the image]\n{text}"
+    return f"[no vision model was usable: {why}]\n" + vision.image_card(data)
 
 
 def status_text(session, probe: bool = False) -> str:

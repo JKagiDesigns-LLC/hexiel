@@ -65,6 +65,18 @@ func (s *Store) Load() error {
 '''
 
 
+import pytest
+
+
+@pytest.fixture(params=["tree-sitter", "regex"], autouse=True)
+def engine(request, monkeypatch):
+    """Every symbol test runs on both engines: tree-sitter (the 'code' extra) and the regex outlines."""
+    if request.param == "tree-sitter" and not sm.treesitter_available():
+        pytest.skip("tree-sitter extra not installed")
+    monkeypatch.setattr(sm, "ENGINE", request.param)
+    return request.param
+
+
 def project(tmp_path):
     (tmp_path / ".git").mkdir()
     (tmp_path / "app").mkdir()
@@ -219,3 +231,42 @@ def test_tree_search_cache_goes_stale_after_a_write(tmp_path):
     (tmp_path / "a.txt").write_text("needle two\n")
     out = run(s, 3, "grep", pattern="needle")
     assert "needle two" in out and "cached" not in out
+
+
+# ---------------------------------------------------------------- find by meaning (embeddings)
+
+CONCEPTS = [("money", "spend", "budget", "cost", "dollars"), ("picture", "image", "screenshot", "photo"),
+            ("server", "http", "serve", "listen")]
+
+
+def fake_embed(ep, texts):
+    """A toy embedding: one dimension per concept, so 'dollars' and 'budget' are close without sharing a word."""
+    out = []
+    for t in texts:
+        low = t.lower()
+        out.append([float(sum(low.count(w) for w in words)) + 0.01 for words in CONCEPTS])
+    return out
+
+
+def test_find_ranks_by_meaning_when_an_embedder_is_there(tmp_path, monkeypatch):
+    monkeypatch.delenv("HEXIEL_EMBED")
+    idx = project(tmp_path)
+    monkeypatch.setattr(sm, "embedder", lambda: ("http://x", "toy-embed"))
+    monkeypatch.setattr(sm, "_embed", fake_embed)
+    sm.embed_missing(idx, ("http://x", "toy-embed"))
+    hits = sm.find(idx, "how many dollars may I use")          # no word in common with "spend limit"
+    assert hits and "budget_limit" in hits[0][2]
+    plain = sm.find(idx, "how many dollars may I use", semantic=False)
+    assert not plain or "budget_limit" not in plain[0][2]
+    # vectors persist next to the index and are reused
+    fresh = sm.Index(str(tmp_path))
+    sm._load_vectors(fresh, "toy-embed")
+    assert len(fresh.vectors) == len(idx.all())
+
+
+def test_find_without_an_embedder_is_keyword_only(tmp_path, monkeypatch):
+    idx = project(tmp_path)
+    monkeypatch.setattr(sm, "embedder", lambda: None)
+    called = []
+    monkeypatch.setattr(sm, "_embed", lambda ep, t: called.append(t))
+    assert sm.find(idx, "spend limit") and not called

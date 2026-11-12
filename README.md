@@ -117,7 +117,19 @@ hexiel -m sonnet          # pick a model profile for this run
 hexiel --setup            # (again) find keys and agents on this machine, pick a model that answers
 hexiel --doctor           # health report: Runtime · Models · Tools · Integrations · Project, with fixes
 hexiel auth set anthropic # store a key (hidden input) in ~/.config/hexiel/auth.toml, 0600
+hexiel --acp              # be the agent inside Zed / JetBrains (Agent Client Protocol on stdio)
+hexiel marketplace search # browse the skills & plugins catalogues you added
 ```
+
+**In your editor (ACP).** Zed — add to `settings.json`, then pick *hexiel* in the agent panel:
+
+```json
+"agent_servers": { "hexiel": { "command": "hexiel", "args": ["--acp"] } }
+```
+
+JetBrains IDEs (AI Assistant → Agents → add a custom agent, or `~/.jetbrains/acp.json`): command `hexiel`, arguments
+`--acp`. Add `-m PROFILE` to pin a model. The editor gets streamed answers, tool cards (with diffs for edits),
+approval prompts, hexiel's todo list as the plan, Ask/Auto modes, its own MCP servers, and past sessions to reopen.
 
 ## Using it
 
@@ -326,6 +338,43 @@ base_url = "http://127.0.0.1:11434/v1"
 describe_image = { models = ["laptop-vision", "anthropic-sonnet"] }
 ```
 
+Without any vision model, an image still turns into a **card**: size, brightness, main colours, which regions hold
+content, the text (with positions, when tesseract is installed) and any QR codes or barcodes (pyzbar or `zbarimg`).
+Scanned PDFs — pages with no text layer — are rendered (poppler's `pdftoppm`) and read the same way. The `render`
+tool opens an HTML file, Markdown file or URL in headless Chromium/Firefox and looks at the result (or describes it
+for text-only models), so "does the page look right?" has an answer.
+
+### Teams of agents
+
+`task` hands a job to a helper that works alone. A **team** is 2-6 named helpers working at the same time that talk
+to each other: an implementer and a reviewer who asks it questions, a researcher feeding a writer, frontend and
+backend agreeing on an API. Ask for one in plain words ("have a backend agent and a reviewer work on this
+together"). Each member sends with `team_msg` (to a name, or `all`, optionally waiting for a reply); the message
+reaches the other member before its next step. Write-mode members each get their own git worktree. You see the
+traffic live, `/team` shows the board, and the answer brings back every member's result and the message log.
+
+### Skills & plugins marketplace
+
+```
+/marketplace add https://example.com/hexiel-marketplace.json   # or a folder, or a git repo
+/marketplace search pdf          # ○ available  ● installed  ↑ update
+/marketplace install pdf-tables
+/marketplace update              # newer versions only; a changed file with the same version is flagged, not taken
+/marketplace remove pdf-tables
+```
+
+(`hexiel marketplace …` does the same from a shell.) A catalogue lists skills (a SKILL.md or a zip of a skill
+folder), plugins (Python), MCP servers and bundles. Claude Code `marketplace.json` catalogues work too: each
+plugin's `skills/`, `commands/` and `.mcp.json` are installed. Items with a `sha256` are refused when the download
+does not match; plugins and MCP servers run code, so the install says so — review the source first.
+
+```json
+{"name": "team-picks", "items": [
+  {"name": "pdf-tables", "kind": "skill", "version": "1.0.0", "url": "pdf-tables.md", "sha256": "…",
+   "description": "Pull tables out of PDFs into CSV"},
+  {"name": "sqlite", "kind": "mcp", "version": "1.0", "mcp": {"command": "uvx", "args": ["mcp-server-sqlite"]}}]}
+```
+
 ### Hexiel Remote (optional, paid)
 
 Drive the hexiel on your own machine from any browser or phone, and run cloud-triggered automations
@@ -409,12 +458,14 @@ an Intel iGPU at ~12 tokens/s. Hybrid "thinking" models should run with
 `powershell` · `test` (your detected runner) · `container` (docker/podman +
 compose) · `view_image` / `image_edit` · `web_search` / `web_fetch` (no API key
 needed) · `memory` · `todo` · `gitlab_mr` · `skill` · `knowledge_search` / `knowledge_find_docs` / `knowledge_add`
-· `notebook` (Jupyter .ipynb cell edits) · desktop toolset: `screenshot` · `clipboard` · `ocr` (auto-loaded when a display is present;
+· `notebook` (Jupyter .ipynb cell edits) · `render` (look at an HTML/Markdown page or URL) · `team` / `team_msg` · desktop toolset: `screenshot` · `clipboard` · `ocr` (auto-loaded when a display is present;
 screenshots attach to the conversation and OCR uses tesseract) — plus any MCP server's tools and any OpenWebUI plugin in `plugins/`.
 
 Code navigation from a local symbol index (Python via `ast`, regex outlines for JS/TS, Go, Rust, Java/Kotlin/C#, C/C++,
-Ruby, PHP, shell, Lua; persisted between sessions): `find` (typo-tolerant names plus a ranked search over docstrings
-and comments, one call instead of a grep chain) · `where_is` · `callers` · `outline` · `symbols`. And exact answers
+Ruby, PHP, shell, Lua — or exact tree-sitter ranges for 30+ languages with the `code` extra,
+`pipx install 'hexiel[code]'`; persisted between sessions): `find` (typo-tolerant names plus a ranked search over
+docstrings and comments, and by meaning when an embedding model such as `nomic-embed-text` answers — one call
+instead of a grep chain) · `where_is` · `callers` · `outline` · `symbols`. And exact answers
 with no model in the loop: `util` (date math, units, regex test, JSON paths, CSV column stats, hashes, base64,
 semver, arithmetic) · `have` (is a program or Python package installed, and the install command for this OS when not).
 

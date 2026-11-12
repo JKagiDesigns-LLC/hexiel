@@ -49,6 +49,8 @@ def parse_args() -> argparse.Namespace:
                     help="with --serve: also connect to Hexiel Remote (paid; `hexiel remote login` first)")
     ap.add_argument("--host", default="127.0.0.1", help="web UI bind host (default: 127.0.0.1)")
     ap.add_argument("--port", type=int, default=8777, help="web UI port (default: 8777)")
+    ap.add_argument("--acp", action="store_true",
+                    help="speak the Agent Client Protocol on stdio (Zed, JetBrains and other ACP editors)")
     ap.add_argument("--presets", action="store_true",
                     help="list ready-made model profiles for the major providers")
     ap.add_argument("--doctor", action="store_true",
@@ -126,8 +128,12 @@ def build_session(cwd: str, model_name: str | None, resumed: dict | None = None,
     if settings.consult_mode != "off" and (settings.planner_profile or settings.fallback_profile):
         from . import consult
         session.tools.append(consult.tool_def(session))       # the working model can ask the strong model for advice
-    from . import timers
+    from . import timers, teams
     session.tools.append(timers.tool_def(session))            # countdowns the user sees for long waits
+    session.tools.append(teams.tool_def(session))             # parallel teammates that message each other
+    from . import marketplace
+    if marketplace.sources():
+        session.tools.append(marketplace.tool_def())          # browse the catalogues the user added
     session.bind_tool_ctx(tool_ctx)
     # gitlab propose steps share the standard approval gate; "no" declines the step
     tool_ctx.on_step = (lambda kind, desc: session.on_approve(f"gitlab:{kind}",
@@ -365,6 +371,9 @@ def main() -> None:
     if len(sys.argv) > 1 and sys.argv[1] in ("instructions", "import-agents"):
         from .instructions import cli as instructions_cli
         raise SystemExit(instructions_cli(sys.argv[2:]))
+    if len(sys.argv) > 1 and sys.argv[1] == "marketplace":
+        from .marketplace import cli as market_cli
+        raise SystemExit(market_cli(sys.argv[2:]))
     if len(sys.argv) > 1 and sys.argv[1] == "remote":
         from .remote import remote_cli
         raise SystemExit(remote_cli(sys.argv[2:]))
@@ -398,6 +407,9 @@ def main() -> None:
         from .openwebui_compat import trust_project
         print(f"hexiel: trusted {trust_project(cwd)} — its plugins/ folder will load from now on")
         return
+    if args.acp:
+        from .acp import main as acp_main
+        raise SystemExit(acp_main(args.model))
     if args.doctor:
         from .doctor import doctor_main
         raise SystemExit(doctor_main(cwd, fix=args.fix, as_json_out=args.json))

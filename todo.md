@@ -186,13 +186,16 @@ first and writes an undo record. Tests use generated fixtures, no network.
   Still open here: charts/diagrams as images, the optional rembg/upscale/generator extras, the Outputs list.
 
 ### 0.9.8 — video and audio: let text-only models work with media
-- [ ] `video` tool on ffmpeg (inventory already finds it) + PyAV: info, trim/cut, concat, convert, compress to a
-      size, resize/crop/rotate, speed, mute/extract audio, GIF from a clip, title/text/watermark overlay,
-      burn-in subtitles, slideshow from images + music, screen recording to a file
+- [x] `video` tool on ffmpeg (system one, else the bundled imageio-ffmpeg — works on every OS, no admin): info, trim,
+      join, convert, compress to a size, resize/crop/rotate/flip, speed, fade, mute/volume, text overlay,
+      burn-in subtitles, GIF, slideshow from images + music, audio extract/normalise/replace, poster frames and
+      contact sheets. (Still open: watermark image, screen recording to a file.)
 - [ ] "see" a video without a vision model: frames at scene changes → contact sheet + OCR + describe_image
 - [ ] audio: info, trim/join/convert/normalise, silence removal; transcription with faster-whisper (local)
       → text/SRT subtitles; speech from text with piper (local) — optional extras
-- [ ] viewer: video/audio players in the web UI, a poster frame + duration card in the TUI
+- [x] viewer: video/audio players in the web UI, a poster frame + duration card in the TUI
+- [x] installers: Pillow, segno, pillow-heif and a bundled ffmpeg are core dependencies (the 0.9.7 image tool had
+      Pillow missing from them — that is what failed CI); installers check them and add tesseract when unattended
 
 ### 0.9.9 — Office documents and PDFs (the most-asked automation after Excel)
 - [ ] Word (python-docx): read with structure (headings, tables, comments), create from Markdown, fill a

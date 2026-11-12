@@ -756,7 +756,8 @@ def thumbnail_for(info: dict):
     except Exception:  # noqa: BLE001 - optional extra, and some terminals break its probe
         return None
     from . import media
-    source = info["path"] if info["kind"] == "image" else media.pdf_preview(info["path"])
+    source = (info["path"] if info["kind"] == "image" else info.get("poster_path") if info["kind"] in ("video", "audio")
+              else media.pdf_preview(info["path"]))
     if not source:
         return None
     try:
@@ -1476,7 +1477,7 @@ class ActivityLine(Static):
              "bash": "Running", "powershell": "Running",
              "test": "Testing", "container": "Running containers",
              "web_search": "Searching the web", "web_fetch": "Fetching the web",
-             "view_image": "Looking at an image", "image": "Working on an image",
+             "view_image": "Looking at an image", "image": "Working on an image", "video": "Working on a video",
              "memory": "Remembering", "todo": "Updating the plan", "timer": "Setting a timer",
              "gitlab_mr": "Preparing the merge request", "skill": "Loading a skill"}
 

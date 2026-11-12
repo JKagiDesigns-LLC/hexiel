@@ -1827,6 +1827,7 @@ def build_tools(chain: Toolchain) -> list[ToolDef]:
                 obj(path={"type": "string"}, question={"type": "string"}),
                 readonly=True, run=_describe_image),
         __import__("hexiel.imagetools", fromlist=["tool_def"]).tool_def(),
+        __import__("hexiel.videotools", fromlist=["tool_def"]).tool_def(),
         ToolDef("web_fetch", "Fetch a URL and return its text content (HTML stripped).",
                 obj(url={"type": "string"}, max_chars={"type": "integer"}),
                 readonly=True, run=_web_fetch),

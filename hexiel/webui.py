@@ -56,7 +56,7 @@ def media_items(paths) -> list[dict]:
     for path in paths:
         info = media_mod.describe(path)
         if info:
-            out.append({k: info[k] for k in ("kind", "name", "id", "w", "h", "pages") if k in info})
+            out.append({k: info[k] for k in ("kind", "name", "id", "w", "h", "pages", "duration", "poster") if k in info})
     return out
 
 
@@ -805,14 +805,14 @@ def make_app(session: Session, driver=None) -> web.Application:
             return _json_response({"error": "not a PDF"}, status=400)
         path = save_image(data, mime, session.cwd, request.headers.get("x-filename", ""))
         info = media_mod.describe(path) or {}
-        return _json_response({"path": path, **{k: info[k] for k in ("kind", "name", "id", "w", "h", "pages") if k in info}})
+        return _json_response({"path": path, **{k: info[k] for k in ("kind", "name", "id", "w", "h", "pages", "duration", "poster") if k in info}})
 
     async def api_media(request):
         """Serve a file that surfaced in the conversation (see media.py) — nothing else."""
         path = media_mod.resolve(request.match_info["id"])
         if path is None:
             raise web.HTTPNotFound()
-        return web.FileResponse(path, headers={"Content-Type": media_mod.MIME[path.suffix.lower()],
+        return web.FileResponse(path, headers={"Content-Type": media_mod.MIME.get(path.suffix.lower(), "application/octet-stream"),
                                                "Content-Disposition": f'inline; filename="{path.name}"',
                                                "X-Content-Type-Options": "nosniff",
                                                "Cache-Control": "private, max-age=3600"})

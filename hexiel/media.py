@@ -17,14 +17,21 @@ from .tools import IMAGE_EXTS, MAX_ATTACH_BYTES, parse_image_size
 
 VIEW_EXTS = IMAGE_EXTS + (".pdf",)
 MIME = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif",
-        ".webp": "image/webp", ".pdf": "application/pdf"}
+        ".webp": "image/webp", ".pdf": "application/pdf",
+        ".mp4": "video/mp4", ".m4v": "video/mp4", ".mov": "video/quicktime", ".webm": "video/webm", ".mkv": "video/x-matroska",
+        ".mp3": "audio/mpeg", ".wav": "audio/wav", ".m4a": "audio/mp4", ".aac": "audio/aac", ".flac": "audio/flac",
+        ".ogg": "audio/ogg", ".opus": "audio/ogg"}
+VIDEO_EXTS = (".mp4", ".m4v", ".mov", ".webm", ".mkv")
+AUDIO_EXTS = (".mp3", ".wav", ".m4a", ".aac", ".flac", ".ogg", ".opus")
+MAX_PLAY_BYTES = 1024 * 1024 * 1024          # a video is played from disk, not read into memory
 _PATH_TOKEN = re.compile(r"""@?(?:"([^"]+)"|'([^']+)'|(\S+))""")
 _registry: dict[str, Path] = {}
 
 
 def kind_of(path: Path | str) -> str | None:
     ext = Path(path).suffix.lower()
-    return "pdf" if ext == ".pdf" else "image" if ext in IMAGE_EXTS else None
+    return ("pdf" if ext == ".pdf" else "image" if ext in IMAGE_EXTS else "video" if ext in VIDEO_EXTS
+            else "audio" if ext in AUDIO_EXTS else None)
 
 
 def pdf_pages(path: Path) -> int | None:
@@ -39,7 +46,8 @@ def register(path: Path | str) -> str | None:
     """Make a file servable and return its id (stable for the same file); None if it is not a viewable file."""
     path = Path(path).expanduser()
     try:
-        if kind_of(path) is None or not path.is_file() or path.stat().st_size > MAX_ATTACH_BYTES:
+        kind = kind_of(path)
+        if kind is None or not path.is_file() or path.stat().st_size > (MAX_PLAY_BYTES if kind in ("video", "audio") else MAX_ATTACH_BYTES):
             return None
         key = f"{path.resolve()}:{path.stat().st_mtime_ns}"
     except OSError:
@@ -69,9 +77,45 @@ def describe(path: Path | str) -> dict | None:
             probe = None
         if probe:
             info["w"], info["h"] = probe[0], probe[1]
+    elif info["kind"] in ("video", "audio"):
+        info.update(_play_facts(path, info["kind"]))
     else:
         info["pages"] = pdf_pages(path)
     return info
+
+
+def _play_facts(path: Path, kind: str) -> dict:
+    """Length, size and (for video) a poster frame the views can show before anyone presses play."""
+    facts: dict = {}
+    try:
+        from . import videotools
+        i = videotools.probe(path)
+        facts["duration"] = i["duration"]
+        if kind == "video":
+            facts["w"], facts["h"] = i["width"], i["height"]
+            poster = _poster(path, i["duration"])
+            if poster:
+                facts["poster_path"] = str(poster)
+                facts["poster"] = register(poster)
+    except Exception:  # noqa: BLE001 - no ffmpeg or an odd file: the player still works without the extras
+        pass
+    return facts
+
+
+def _poster(path: Path, duration) -> Path | None:
+    import tempfile
+    cache = Path(tempfile.gettempdir()) / "hexiel-posters"
+    cache.mkdir(exist_ok=True)
+    out = cache / (hashlib.sha1(f"{path.resolve()}:{path.stat().st_mtime_ns}".encode(), usedforsecurity=False).hexdigest()[:16] + ".jpg")
+    if out.exists():
+        return out
+    from . import videotools
+    try:
+        videotools._run(["-ss", f"{min((duration or 2) / 3, 5.0)}", "-i", str(path), "-frames:v", "1", "-vf", "scale='min(640,iw)':-2",
+                         "-q:v", "3", str(out)], "take a poster frame")
+    except videotools.VideoError:
+        return None
+    return out if out.exists() else None
 
 
 def attachments_in(text: str, cwd: str) -> list[dict]:
@@ -97,6 +141,11 @@ def label(info: dict) -> str:
     if info["kind"] == "pdf":
         pages = f" · {info['pages']} page{'s' if info['pages'] != 1 else ''}" if info.get("pages") else ""
         return f"📄 {info['name']}{pages}"
+    if info["kind"] in ("video", "audio"):
+        from .videotools import _clock
+        icon = "🎬" if info["kind"] == "video" else "🎵"
+        bits = ([_clock(info["duration"])] if info.get("duration") else []) + ([f"{info['w']}×{info['h']}"] if info.get("w") else [])
+        return f"{icon} {info['name']}" + (" · " + " · ".join(bits) if bits else "")
     dims = f" · {info['w']}×{info['h']}" if info.get("w") else ""
     return f"🖼 {info['name']}{dims}"
 

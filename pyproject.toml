@@ -1,6 +1,6 @@
 [project]
 name = "hexiel"
-version = "0.9.7"
+version = "0.9.8"
 description = "Open-source AI coding agent for the terminal and browser — runs on local Ollama models (even on modest hardware) or any cloud LLM. A self-hostable alternative to Claude Code and opencode."
 readme = "README.md"
 license = "LicenseRef-GPL-3.0-with-Commons-Clause"
@@ -25,6 +25,10 @@ dependencies = [
     "duckdb>=1.1",      # data tool: SQL over CSV/Excel/Parquet
     "openpyxl>=3.1",    # Excel read/write (pure Python)
     "pypdf>=4.0",       # PDF text for document Q&A (pure Python)
+    "Pillow>=10.0",     # image tool: edit, create, combine, diff, convert (wheels for every OS)
+    "segno>=1.6",       # QR codes (pure Python)
+    "pillow-heif>=0.18",        # iPhone HEIC photos
+    "imageio-ffmpeg>=0.5",      # a bundled ffmpeg binary (every OS, no admin rights) for the video/audio tool
 ]
 
 [project.urls]
@@ -39,8 +43,8 @@ hexiel = "hexiel.main:main"
 [project.optional-dependencies]
 serve = ["aiohttp>=3.9"]
 code = ["tree-sitter>=0.23", "tree-sitter-language-pack>=0.7"]   # exact symbol ranges for non-Python files (symbols.py)
-view = ["textual-image>=0.8"]
-images = ["segno>=1.6", "pillow-heif>=0.18"]   # QR codes and HEIC photos for the image tool     # inline image thumbnails in the terminal (Kitty, Sixel, or block fallback)
+view = ["textual-image>=0.8"]   # inline image thumbnails in the terminal (Kitty, Sixel, or block fallback)
+images = []   # kept so older install commands still work: these are core dependencies now
 dev = ["pytest", "bandit", "detect-secrets", "ruff"]
 
 [tool.setuptools.packages.find]

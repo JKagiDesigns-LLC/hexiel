@@ -76,7 +76,7 @@ def _matches(matcher: str, tool: str) -> bool:
 def _claude_input(tool: str, args: dict) -> dict:
     """Claude Code names file paths file_path; mirror that so hooks port over."""
     out = dict(args)
-    if "path" in out and tool in ("read", "write", "edit", "view_image", "image"):
+    if "path" in out and tool in ("read", "write", "edit", "view_image", "image", "video"):
         out.setdefault("file_path", out["path"])
     return out
 

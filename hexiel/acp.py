@@ -25,7 +25,7 @@ from urllib.parse import unquote, urlparse
 PROTOCOL_VERSION = 1
 
 TOOL_KINDS = {"read": "read", "file_info": "read", "outline": "read", "view_image": "read", "describe_image": "read",
-              "write": "edit", "edit": "edit", "image": "edit", "notebook": "edit",
+              "write": "edit", "edit": "edit", "image": "edit", "video": "edit", "notebook": "edit",
               "grep": "search", "glob": "search", "list": "search", "map": "search", "find": "search",
               "where_is": "search", "callers": "search", "symbols": "search", "knowledge_search": "search",
               "bash": "execute", "python": "execute", "powershell": "execute", "test": "execute",

@@ -78,6 +78,19 @@ function mediaCard(m) {
     cap.className = "cap";
     cap.textContent = m.name + (m.w ? ` · ${m.w}×${m.h}` : "");
     card.append(cap);
+  } else if (m.kind === "video" || m.kind === "audio") {
+    const player = document.createElement(m.kind);
+    player.controls = true;
+    player.preload = "metadata";
+    player.src = mediaUrl(m);
+    if (m.poster) player.poster = mediaUrl({ id: m.poster });
+    card.append(player);
+    const cap = document.createElement("div");
+    cap.className = "cap";
+    const mins = m.duration ? `${Math.floor(m.duration / 60)}:${String(Math.round(m.duration % 60)).padStart(2, "0")}` : "";
+    cap.textContent = [m.name, mins, m.w ? `${m.w}×${m.h}` : ""].filter(Boolean).join(" · ");
+    card.append(cap);
+    card.style.cursor = "default";
   } else {
     card.innerHTML = `<div class="pdfcard"><span class="ico">📄</span><span><b></b><br><small></small></span></div>`;
     card.querySelector("b").textContent = m.name;

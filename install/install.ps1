@@ -9,7 +9,9 @@ What it does, in this order, and nothing else:
   2. installs hexiel with `uv tool install` (uv brings its own Python when Windows has none)
   3. adds %USERPROFILE%\.local\bin to the user PATH for new terminals
   4. recommends PowerShell 7 (winget install Microsoft.PowerShell) when only Windows PowerShell 5.1 is present
-  5. runs `hexiel --setup`: finds the keys and agents already on this machine and ends in a working chat
+  5. checks the built-in tools' dependencies (Pillow, ffmpeg … come with the install, no admin rights) and adds tesseract
+     (screen OCR) with winget when winget is there ($env:HEXIEL_NO_SYSTEM_DEPS = "1" skips)
+  6. runs `hexiel --setup`: finds the keys and agents already on this machine and ends in a working chat
 
 Variables: $env:HEXIEL_VERSION = "0.9.3" (default latest) · $env:HEXIEL_SPEC = ".[serve]" (this checkout) · $env:HEXIEL_NO_SETUP = "1" · $env:UV_VERSION
 #>
@@ -72,6 +74,21 @@ Say ("✓ " + (& hexiel --version) + " installed at " + $hexiel.Source)
 
 if ($PSVersionTable.PSVersion.Major -lt 7 -and -not (Get-Command pwsh -ErrorAction SilentlyContinue)) {
   Say "tip: hexiel's shell tools work best with PowerShell 7 —  winget install Microsoft.PowerShell"
+}
+
+# ---------------------------------------------------------------- tools the built-ins use
+# Pillow, segno, pillow-heif and a bundled ffmpeg are ordinary dependencies of hexiel, so they are already in.
+$toolPy = Join-Path $env:APPDATA "uv\tools\hexiel\Scripts\python.exe"
+if (-not (Test-Path $toolPy)) { $toolPy = Join-Path $env:USERPROFILE ".local\share\uv\tools\hexiel\Scripts\python.exe" }
+if (Test-Path $toolPy) {
+  & $toolPy -c "import PIL, segno, imageio_ffmpeg" 2>$null
+  if ($LASTEXITCODE -ne 0) { Say "note: some built-in tool libraries are missing — run: hexiel --doctor" }
+}
+if (-not $env:HEXIEL_NO_SYSTEM_DEPS -and -not (Get-Command tesseract -ErrorAction SilentlyContinue)) {
+  if (Get-Command winget -ErrorAction SilentlyContinue) {
+    winget install --id UB-Mannheim.TesseractOCR -e --silent --accept-package-agreements --accept-source-agreements 2>$null | Out-Null
+    if ($LASTEXITCODE -eq 0) { Say "installed tesseract (screen OCR)" } else { Say "optional: winget install UB-Mannheim.TesseractOCR (screen OCR)" }
+  } else { Say "optional: install tesseract for screen OCR (https://github.com/UB-Mannheim/tesseract/wiki)" }
 }
 
 # ---------------------------------------------------------------- first run

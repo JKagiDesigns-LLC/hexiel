@@ -395,6 +395,9 @@ body {
 .media-strip { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
 .media { cursor: pointer; border: 1px solid var(--border); border-radius: 10px; overflow: hidden; background: var(--bg-panel); max-width: 260px; }
 .media img { display: block; max-width: 260px; max-height: 200px; object-fit: contain; background: #0003; }
+.media video { display: block; max-width: 420px; max-height: 300px; width: 100%; background: #000; }
+.media audio { display: block; width: 320px; max-width: 100%; margin: 8px; }
+.media.video, .media.audio { max-width: 420px; }
 .media .cap { font-size: 11px; padding: 3px 8px; opacity: .7; }
 .pdfcard { display: flex; gap: 10px; align-items: center; padding: 10px 14px; }
 .pdfcard .ico { font-size: 26px; }

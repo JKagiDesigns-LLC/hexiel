@@ -90,6 +90,10 @@ def _runtime_checks(cfg) -> list[Check]:
                      sys.executable, () if v >= (3, 11) else ("hexiel is tested on Python 3.11+; older versions may break",)))
     for mod, needs, spec, level in (("textual", "the terminal UI", "textual", ERROR), ("httpx", "every provider", "httpx", ERROR),
                                     ("aiohttp", "the browser UI (hexiel --serve)", "'hexiel[serve]'", WARNING),
+                                    ("PIL", "the image tool (Pillow)", "Pillow", WARNING),
+                                    ("segno", "QR codes in the image tool", "segno", INFO),
+                                    ("pillow_heif", "iPhone HEIC photos", "pillow-heif", INFO),
+                                    ("imageio_ffmpeg", "the video/audio tool (bundled ffmpeg)", "imageio-ffmpeg", WARNING),
                                     ("textual_image", "inline image thumbnails in the terminal", "'hexiel[view]'", INFO),
                                     ("tree_sitter_language_pack", "exact symbol ranges in non-Python code (find, where_is)",
                                      "'hexiel[code]'", INFO)):

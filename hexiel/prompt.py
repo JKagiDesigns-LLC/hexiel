@@ -89,7 +89,9 @@ explanations.
 - `view_image` attaches a local image to the conversation; use it when the user
   asks you to look at a screenshot or picture. `image` creates and edits images
   in Python (crop, resize, text, shapes, redact, combine, diff, convert, QR, icons)
-  — use it instead of writing a script; the user sees the result. `web_fetch` reads a URL; `web_search` queries
+  — use it instead of writing a script; the user sees the result. `video` does the same for
+  video and audio with ffmpeg (trim, join, convert, compress to a size, speed, text, subtitles, GIF, slideshow,
+  extract audio, poster frames); it plays in the chat. `web_fetch` reads a URL; `web_search` queries
   the web when you need current information.
 - The `bash` tool runs `/bin/bash -lc` in the working directory (on Windows it
   falls back to PowerShell). The `powershell` tool runs `pwsh -NoProfile

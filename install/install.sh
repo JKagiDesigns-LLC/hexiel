@@ -10,10 +10,12 @@
 #   3. installs hexiel with `uv tool install` (uv brings its own Python when the system has none),
 #      or with pipx / a virtualenv when you ask for that (HEXIEL_INSTALL_METHOD=pipx|venv)
 #   4. makes sure ~/.local/bin is on your PATH for new terminals
-#   5. runs `hexiel --setup`: finds the keys and agents already on this machine and ends in a working chat
+#   5. checks the built-in tools' dependencies (Pillow, ffmpeg … all come with the install; no admin rights needed)
+#      and, only when it can do so without a password prompt, adds tesseract for screen OCR (HEXIEL_NO_SYSTEM_DEPS=1 skips)
+#   6. runs `hexiel --setup`: finds the keys and agents already on this machine and ends in a working chat
 #
 # Variables: HEXIEL_INSTALL_METHOD=uv|pipx|venv (default uv) · HEXIEL_VERSION=0.9.3 (default: latest)
-#            HEXIEL_SPEC='.[serve]' (install this checkout instead of PyPI) · HEXIEL_NO_SETUP=1 (skip step 5)
+#            HEXIEL_SPEC='.[serve]' (install this checkout instead of PyPI) · HEXIEL_NO_SETUP=1 (skip step 6)
 #            UV_VERSION (default pinned below)
 set -eu
 
@@ -117,6 +119,33 @@ HEXIEL=$(command -v hexiel 2>/dev/null || echo "$BIN/hexiel")
 [ -x "$HEXIEL" ] || fail "hexiel was installed but not found on PATH — open a new terminal and run: hexiel --doctor"
 say ""
 say "✓ $("$HEXIEL" --version) installed at $HEXIEL"
+
+# ---------------------------------------------------------------- tools the built-ins use
+# Pillow, segno, pillow-heif and a bundled ffmpeg are ordinary dependencies of hexiel, so they are already in.
+# tesseract (screen OCR) is the one system program: installed only when a package manager can do it unattended.
+tool_python() {
+  for d in "$HOME/.local/share/uv/tools/hexiel" "$HOME/.hexiel-venv"; do
+    [ -x "$d/bin/python" ] && { echo "$d/bin/python"; return; }
+  done
+  command -v python3 || true
+}
+TP=$(tool_python)
+if [ -n "$TP" ] && ! "$TP" -c 'import PIL, segno, imageio_ffmpeg' 2>/dev/null; then
+  say "note: some built-in tool libraries are missing — run: hexiel --doctor"
+fi
+if [ -z "${HEXIEL_NO_SYSTEM_DEPS:-}" ] && ! have tesseract; then
+  SUDO=""; [ "$(id -u)" != "0" ] && have sudo && sudo -n true 2>/dev/null && SUDO="sudo -n"
+  if have brew; then brew install tesseract >/dev/null 2>&1 && say "installed tesseract (screen OCR)" || true
+  elif [ -n "$SUDO" ] || [ "$(id -u)" = "0" ]; then
+    if have apt-get; then $SUDO apt-get install -y tesseract-ocr >/dev/null 2>&1
+    elif have dnf; then $SUDO dnf install -y tesseract >/dev/null 2>&1
+    elif have pacman; then $SUDO pacman -S --noconfirm tesseract tesseract-data-eng >/dev/null 2>&1
+    elif have zypper; then $SUDO zypper -n install tesseract-ocr >/dev/null 2>&1
+    elif have apk; then $SUDO apk add tesseract-ocr >/dev/null 2>&1
+    fi && have tesseract && say "installed tesseract (screen OCR)" || true
+  fi
+  have tesseract || say "optional: install tesseract for screen OCR (brew install tesseract / sudo apt install tesseract-ocr)"
+fi
 
 # ---------------------------------------------------------------- first run
 if [ -z "${HEXIEL_NO_SETUP:-}" ]; then

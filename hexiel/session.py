@@ -208,7 +208,7 @@ SUBAGENT_WRITE = (
     "then reply with a concise summary: what changed and why, test evidence (commands + results), "
     "and anything uncertain or left undone. Do not ask questions back; nobody can answer them.")
 
-FILE_TOOLS = {"write", "edit", "image"}      # snapshotted before they run (/undo)
+FILE_TOOLS = {"write", "edit", "image", "video"}      # snapshotted before they run (/undo)
 
 
 def strip_env_note(content: str) -> str:
@@ -1694,7 +1694,7 @@ class Session:
         if tool_name not in FILE_TOOLS or not self.checkpoints or self.tool_ctx is None:
             return
         from .tools import _resolve_path
-        raw = args.get("out") if tool_name == "image" and args.get("out") else args.get("path")
+        raw = args.get("out") if tool_name in ("image", "video") and args.get("out") else args.get("path")
         if not raw:
             return
         try:

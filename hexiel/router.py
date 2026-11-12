@@ -33,6 +33,7 @@ from __future__ import annotations
 import datetime
 import json
 import os
+import re
 import threading
 import time
 from pathlib import Path
@@ -58,6 +59,10 @@ ROUTE_SYSTEM = (
     '"work" = real work a capable model should do directly in the project: debugging, editing code, '
     "running and fixing things.\n"
     '"big" = a design, several files, or a list of steps: plan it first and work through the plan.')
+
+CONTINUATION_WORDS = r"(?:continue|carry on|keep going|go on|keep working|resume|proceed|go ahead|next|next steps?)"
+_CONTINUATION_RE = re.compile(rf"^[\s\"'`.,!~-]*(?:ok(?:ay)?[,. ]+)?(?:please[,. ]+)?{CONTINUATION_WORDS}\b[\s.,!~-]*$",
+                              re.I)
 
 CHAT_NOTE = (
     "\n\nThe router handed the user's newest message to you for a direct answer, without tools: you "
@@ -122,6 +127,11 @@ def route_turn(session, prompt: str, delegate_mode: str | None, cloud_turn: bool
         return overflow_or_main(session, prompt), False
 
     route, why = classify(session, prompt)
+    if route == "chat" and _CONTINUATION_RE.match((prompt or "").strip()):
+        # "continue", "go on", "next" — a nudge to keep working, never a chat answer: the
+        # router has no tools, so answering one tool-less loses the thread every time
+        session.on_event("note", "🧭 continuation — the main model takes it")
+        return overflow_or_main(session, prompt), False
     if route == "chat":
         session.on_event("note", f"🧭 {why} — {route_or_router_name(session)} answers this directly")
         if answer_chat(session, _chain(session)) == "done":
@@ -230,8 +240,12 @@ def _answer_once(session, mc) -> str:
                 session.messages.pop()
         if _empty(assistant):
             return "fail"
-        if ESCALATE_KEY in (assistant.get("content") or "") or _wants_tools(assistant.get("content") or ""):
-            # the chat model knew better than the router: this needs tools — the full turn runs next
+        content = assistant.get("content") or ""
+        from .session import _text_tool_call
+        if ESCALATE_KEY in content or _wants_tools(content) \
+                or (not assistant.get("tool_calls") and _text_tool_call(content, session.tools) is not None):
+            # the chat model knew better than the router (or wrote a tool call of its own as
+            # text): this needs tools — the full turn runs next
             session.on_event("note", "⏫ needs tools — handing it to the main model, no resend needed")
             return "escalate"
         session.messages.append(assistant)

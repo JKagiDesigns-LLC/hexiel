@@ -138,3 +138,11 @@ lands, and is documented on hexiel.tech the same day so the site never goes stal
       parallel, `team_msg` send/broadcast/wait delivered mid-turn, /team board.
 - [x] Skills/plugin marketplace plumbing: `/marketplace` + `hexiel marketplace`; sources (URL, folder, git),
       hexiel and Claude Code marketplace.json indexes, sha256 pins, update/remove by install record.
+
+## Release 0.9.5 — local models that misuse the tool channel
+- [x] A tool call written into the reply text (gpt-oss's `{"cmd": [...]}` shell format, `{"name", "arguments"}`
+      wrappers, the OpenAI wire format, or bare keys that fit exactly one tool) is turned back into a real call,
+      so the turn keeps working. Only when the JSON comes last and sits outside a ``` block: examples in an
+      answer are shown, never run.
+- [x] "continue" / "go on" / "next" are never answered tool-less by the router's chat model: the main model
+      takes them, with its tools.

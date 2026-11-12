@@ -210,6 +210,18 @@ def test_a_chat_answer_falls_back_to_the_next_router(env, monkeypatch):
     assert any("can't answer chats" in e for e in notes(events))
 
 
+def test_a_continuation_prompt_is_never_answered_tool_less(env, monkeypatch):
+    s, events = env
+    served = []
+    serve_with(monkeypatch, served)
+    for prompt in ("continue", "go on", "keep going", "resume", "next", "please continue"):
+        classify_script(monkeypatch, "chat")       # even when the router says chat
+        mc, handled = router.route_turn(s, prompt, None, False)
+        assert not handled and mc is GMK, prompt   # the main model takes it, with tools
+    assert not served                              # no chat answer was produced
+    assert any("continuation" in e for e in notes(events))
+
+
 # ---------------------------------------------------------------- overflow
 
 def test_a_small_request_overflows_while_the_main_model_is_busy(env, monkeypatch):

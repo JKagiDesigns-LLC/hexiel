@@ -100,6 +100,100 @@ def _degenerate(tail: str) -> bool:
     return bool(_re.search(r"(.{1,8}?)\1{39,}$", tail, _re.S)) and len(set(tail[-200:])) <= 8
 
 
+# ---------------------------------------------------------------- tool calls written as plain text
+# A model (gpt-oss on Ollama above all) sometimes writes its next tool call into the reply TEXT
+# instead of the tool-call channel — the server passes the raw JSON through as content, and the
+# turn would simply end with nothing run. Recognize the common shapes and turn the text back
+# into a real call, so the work still happens.
+
+_TEXT_CALL_SCAN = 4000              # never look for call JSON in more than this much reply text
+_WRAPPER_KEYS = (("name", "arguments"), ("name", "args"), ("name", "parameters"),
+                 ("tool", "arguments"), ("tool", "args"), ("tool", "parameters"),
+                 ("function", "arguments"))
+
+
+def _json_objects(text: str) -> list[tuple[dict, tuple[int, int]]]:
+    """Every JSON object in the text, in order, with its (start, end) span. Deduplicated."""
+    out, seen = [], set()
+    decoder = json.JSONDecoder()
+    for m in re.finditer(r"\{", text[:_TEXT_CALL_SCAN]):
+        try:
+            obj, end = decoder.raw_decode(text, m.start())
+        except ValueError:
+            continue
+        if isinstance(obj, dict) and obj:
+            key = json.dumps(obj, sort_keys=True)[:400]
+            if key not in seen:
+                seen.add(key)
+                out.append((obj, (m.start(), end)))
+    return out
+
+
+def _match_text_call(obj: dict, tools) -> tuple[str, dict] | None:
+    """(tool_name, arguments) when this JSON object is plausibly a call to one of `tools`."""
+    for name_key, args_key in _WRAPPER_KEYS:
+        name, args = obj.get(name_key), obj.get(args_key)
+        if isinstance(name, str) and args is not None:
+            if isinstance(args, str):
+                try:
+                    args = json.loads(args)
+                except ValueError:
+                    args = None
+            if isinstance(args, dict) and any(t.name == name for t in tools):
+                return name, args
+    fn = obj.get("function")                      # the OpenAI wire format echoed back whole
+    if isinstance(fn, dict) and isinstance(fn.get("name"), str):
+        args = fn.get("arguments")
+        if isinstance(args, str):
+            try:
+                args = json.loads(args)
+            except ValueError:
+                args = None
+        if isinstance(args, dict) and any(t.name == fn["name"] for t in tools):
+            return fn["name"], args
+    # gpt-oss's built-in shell format: {"cmd": ["bash", "-lc", "ls -R"]}
+    for key in ("cmd", "command"):
+        val = obj.get(key)
+        if isinstance(val, list) and val and all(isinstance(p, str) for p in val):
+            if val[:2] == ["bash", "-lc"] and len(val) >= 3:
+                return "bash", {"command": val[2]}
+            import shlex
+            return "bash", {"command": shlex.join(val)}
+    # otherwise: keys that are exactly one tool's parameter names (required ones filled in);
+    # several tools share keys ("command" is bash and powershell alike) — the registry's order
+    # is the priority, so the first that fits wins
+    for t in tools:
+        schema = t.parameters or {}
+        props = schema.get("properties") or {}
+        if not props or set(obj) - set(props):
+            continue
+        if [k for k in schema.get("required", []) if k not in obj]:
+            continue
+        return t.name, dict(obj)
+    return None
+
+
+def _text_tool_call(text: str, tools) -> tuple[str, dict] | None:
+    """A tool call the model wrote into its reply text, or None. Only when the call is the
+    point of the message: a JSON answer that happens to reuse a tool's keys but sits inside
+    a long prose reply is left alone."""
+    if not text or len(text) > _TEXT_CALL_SCAN * 4:
+        return None
+    fences = [m.start() for m in re.finditer(r"```", text)]
+    for obj, (start, end) in _json_objects(text):
+        hit = _match_text_call(obj, tools)
+        if hit is None:
+            continue
+        if sum(1 for f in fences if f < start) % 2:
+            return None                           # inside a ``` block: an example being shown, never run
+        if text[end:].strip(" \t\r\n.,;:!`"):
+            return None                           # more reply after it: the JSON is part of an answer
+        if len(text[:start].strip()) > 2000:
+            return None                           # a data dump inside real prose: not a call
+        return hit
+    return None
+
+
 SUBAGENT_SYSTEM = (
     "You are a focused research subagent working for a coding agent. Investigate the task with "
     "the read-only tools available (search, read, map, web), then reply with a concise, factual "
@@ -793,6 +887,14 @@ class Session:
                         self.on_event("turn_end", aborted=True)
                     return
                 assistant.setdefault("ts", time.time())
+                if not assistant.get("tool_calls"):
+                    rescued = _text_tool_call(assistant.get("content") or "", self.tools)
+                    if rescued:
+                        name, args = rescued
+                        assistant["tool_calls"] = [{"id": f"call_text_{uuid.uuid4().hex[:8]}",
+                                                    "name": name, "arguments": args}]
+                        self.on_event("note", f"🔧 the model wrote its {name} call into the reply "
+                                              "text — running it anyway")
                 self.messages.append(assistant)
                 self.save()
                 calls = assistant.get("tool_calls") or []

@@ -58,6 +58,8 @@ class ToolContext:
     file_state: dict = field(default_factory=dict)     # path -> (mtime_ns, size) seen by a read/write, for the stale guard
     test_commands: tuple = ()                      # extra regexes that mark a command as a test run (testrun.py)
     tools: list | None = None                      # the live tool list (shared with the session): make_tool hot-registers into it
+    generation: int = 0                            # bumped after every tool that may change files: cached tree lookups go stale
+    session: object = None                         # the bound session, for tools that need a model (describe_image)
 
     # ---------------------------------------------------------------- stale-file guard
 
@@ -93,7 +95,25 @@ class ToolContext:
 
 
 # pure read tools whose identical calls can be answered from cache (token economy)
-CACHEABLE_TOOLS = {"read", "grep", "glob", "list", "map", "file_info", "web_fetch", "view_image"}
+CACHEABLE_TOOLS = {"read", "grep", "glob", "list", "map", "file_info", "web_fetch", "view_image",
+                   "symbols", "outline", "where_is", "callers", "find"}
+_FILE_TOOLS = {"read", "file_info", "view_image", "outline"}
+
+
+def cache_stamp(name: str, args: dict, ctx: "ToolContext"):
+    """What a cached result depends on: the file's mtime+size for one-file tools (an edit elsewhere doesn't
+    matter), the write generation plus a cheap tree fingerprint for tree searches, a 10-minute bucket for
+    the web. A stamp that differs means the cached answer is stale and the tool runs again."""
+    try:
+        if name in _FILE_TOOLS:
+            st = _resolve_path(str(args.get("path", "")), ctx).stat()
+            return (st.st_mtime_ns, st.st_size)
+        if name == "web_fetch":
+            return int(time.time() // 600)
+        base = _resolve_path(os.path.expanduser(str(args.get("path") or ctx.cwd)), ctx)
+        return (ctx.generation, _fingerprint(base) if base.is_dir() else ())
+    except (OSError, ValueError):
+        return (ctx.generation, None)
 
 
 def text_result(text: str, is_error: bool = False) -> ToolResult:
@@ -488,11 +508,14 @@ def _run_shell(args: dict, ctx: ToolContext, argv: list[str], shell_label: str) 
                 f"{task.id}'), kill it with op='kill', or let it finish (you will be told)"
                 + (f"\noutput so far:\n{head_tail(preview)}" if preview else ""))
         return text_result(body)
+    from . import condense
     out = []
     if proc.stdout:
-        out.append(head_tail(_clean(proc.stdout)))
+        stdout = _clean(proc.stdout)
+        digest = condense.structure(cmd, stdout) if proc.returncode == 0 else None
+        out.append(digest or head_tail(condense.condense(stdout, 14_000)))
     if proc.stderr.strip():
-        out.append(f"stderr:\n{head_tail(_clean(proc.stderr.strip()), 4000, 2000)}")
+        out.append(f"stderr:\n{head_tail(condense.condense(_clean(proc.stderr.strip()), 6_000), 4000, 2000)}")
     summary = "\n".join(out) or "(no output)"
     if sandbox_note:                                   # the box was asked for and not available
         summary += f"\n⚠ sandbox: {sandbox_note}"
@@ -627,6 +650,19 @@ def _read(args: dict, ctx: ToolContext) -> ToolResult:
     offset = int(args.get("offset") or 0)
     limit = int(args.get("limit") or 2000)
     lines = text.splitlines()
+    if args.get("symbol"):
+        from . import symbols as symbols_mod
+        idx = symbols_mod.Index(ctx.cwd)
+        span = symbols_mod.symbol_range(idx, idx.rel(str(path)), str(args["symbol"]))
+        if span is None:
+            names = ", ".join(s.qualname for s in idx.outline(idx.rel(str(path)))[:40])
+            return text_result(f"error: no symbol {args['symbol']!r} in {path}"
+                               + (f"; it defines: {names}" if names else ""), True)
+        offset, limit = span[0] - 1, span[1] - span[0] + 1
+    elif args.get("around"):
+        around = max(1, int(args["around"]))
+        ctx_lines = int(args.get("context") or 20)
+        offset, limit = max(0, around - 1 - ctx_lines), 2 * ctx_lines + 1
     window = lines[offset:offset + limit]
     numbered = "\n".join(f"{n + offset + 1:>6}  {line}" for n, line in enumerate(window))
     tail_note = ""
@@ -637,6 +673,90 @@ def _read(args: dict, ctx: ToolContext) -> ToolResult:
         out = out[:MAX_OUTPUT]
     ctx.note_file(str(path))
     return text_result(out)
+
+
+# ---------------------------------------------------------------- symbol tools (symbols.py)
+
+def _index(ctx: ToolContext):
+    from . import symbols as symbols_mod
+    return symbols_mod, symbols_mod.index_for(ctx.cwd)
+
+
+def _partial_note(idx) -> str:
+    return "\n(index is partial: a very large tree — narrow with path=…)" if idx.partial else ""
+
+
+def _find(args: dict, ctx: ToolContext) -> ToolResult:
+    sm, idx = _index(ctx)
+    query = str(args.get("query", "")).strip()
+    if not query:
+        return text_result("error: find needs a query", True)
+    hits = sm.find(idx, query, int(args.get("limit") or 15))
+    if not hits:
+        return text_result(f"nothing matched {query!r} in symbol names, file names or docs — try grep for "
+                           f"exact text" + _partial_note(idx))
+    return text_result("\n".join(f"{loc:44} {what}" for _score, loc, what in hits) + _partial_note(idx))
+
+
+def _util(args: dict, ctx: ToolContext) -> ToolResult:
+    from . import helpers
+    try:
+        return text_result(helpers.run(str(args.get("op", "")), args, ctx.cwd))
+    except (helpers.HelperError, OSError, ZeroDivisionError, OverflowError, TypeError) as exc:
+        return text_result(f"error: {exc}", True)
+
+
+def _have(args: dict, ctx: ToolContext) -> ToolResult:
+    from . import inventory
+    names = [n.strip() for n in re.split(r"[,\s]+", str(args.get("names") or args.get("name") or "")) if n.strip()]
+    if not names:
+        return text_result("error: have needs names, e.g. names='ffmpeg,jq'", True)
+    return text_result("\n".join(inventory.have(n) for n in names[:20]))
+
+
+def _where_is(args: dict, ctx: ToolContext) -> ToolResult:
+    sm, idx = _index(ctx)
+    name = str(args.get("name", "")).strip()
+    hits = sm.lookup(idx, name, limit=12)
+    if not hits:
+        return text_result(f"no definition named like {name!r}; try find query={name!r}" + _partial_note(idx))
+    exact = [h for h in hits if h[0] >= 100]
+    shown = exact or hits
+    head = "" if exact else f"no exact match for {name!r}; closest:\n"
+    return text_result(head + "\n".join(sm.fmt(s) for _sc, s in shown) + _partial_note(idx))
+
+
+def _callers(args: dict, ctx: ToolContext) -> ToolResult:
+    sm, idx = _index(ctx)
+    name = str(args.get("name", "")).strip()
+    lines = sm.callers(idx, name)
+    return text_result("\n".join(lines) if lines else f"no references to {name!r} outside its definition")
+
+
+def _outline(args: dict, ctx: ToolContext) -> ToolResult:
+    sm, idx = _index(ctx)
+    path = _resolve_path(str(args.get("path", "")), ctx)
+    if not path.is_file():
+        return text_result("error: file not found", True)
+    return text_result(sm.outline_text(idx, idx.rel(str(path))))
+
+
+def _symbols(args: dict, ctx: ToolContext) -> ToolResult:
+    sm, idx = _index(ctx)
+    kind = str(args.get("kind") or "").strip()
+    prefix = str(args.get("path") or "").strip().lstrip("./")
+    limit = min(int(args.get("limit") or 80), 400)
+    query = str(args.get("query") or "").strip()
+    if query:
+        pool = [s for _sc, s in sm.lookup(idx, query, limit=10 ** 6, kinds={kind} if kind else None)]
+    else:
+        pool = sorted((s for s in idx.all() if not kind or s.kind == kind), key=lambda s: (s.path, s.line))
+    pool = [s for s in pool if not prefix or s.path.startswith(prefix)]
+    if not pool:
+        return text_result("no matching definitions" + _partial_note(idx))
+    more = f"\n... {len(pool) - limit} more (narrow with query/kind/path)" if len(pool) > limit else ""
+    return text_result(f"{len(pool)} definitions:\n" + "\n".join(sm.fmt(s) for s in pool[:limit]) + more
+                       + _partial_note(idx))
 
 
 def _resolve_path(rel: str, ctx: ToolContext) -> Path:
@@ -1067,6 +1187,26 @@ def _view_image(args: dict, ctx: ToolContext) -> ToolResult:
     return ToolResult(text="\n".join(lines) +
                       "\n  (unsupported format; only png/jpeg/gif/webp attach to the conversation)",
                       is_error=True)
+
+
+def _describe_image(args: dict, ctx: ToolContext) -> ToolResult:
+    from . import digest as digest_mod
+    path = _resolve_path(args["path"], ctx)
+    try:
+        data = path.read_bytes()
+    except OSError as exc:
+        return text_result(f"error: {exc}", True)
+    payload = image_payload(data)
+    if not payload:
+        return text_result("error: unsupported format; only png/jpeg/gif/webp can be described", True)
+    session = getattr(ctx, "session", None)
+    if session is None:
+        return text_result("error: describe_image needs a running session (none bound)", True)
+    try:
+        text = digest_mod.describe(session, payload[0], str(args.get("question", "") or ""))
+    except Exception as exc:  # noqa: BLE001 - a helper failing must not fail the turn
+        return text_result(f"error: {exc}", True)
+    return text_result(f"{path} — described by a vision model:\n{text}")
 
 
 def _image_edit(args: dict, ctx: ToolContext) -> ToolResult:
@@ -1591,9 +1731,47 @@ def build_tools(chain: Toolchain) -> list[ToolDef]:
                 obj(op={"type": "string", "enum": ["list", "output", "wait", "kill"]},
                     id={"type": "string"}, seconds={"type": "number"}),
                 readonly=True, always_ok=True, run=_tasks_tool),
-        ToolDef("read", "Read a text file with line numbers; supports offset/limit for long files.",
-                obj(path={"type": "string"}, offset={"type": "integer"}, limit={"type": "integer"}),
+        ToolDef("read", "Read a text file with line numbers; supports offset/limit for long files. "
+                "symbol=NAME (or Class.method) reads just that definition; around=LINE reads ±context "
+                "lines (default 20) — both far cheaper than the whole file.",
+                obj(path={"type": "string"}, offset={"type": "integer"}, limit={"type": "integer"},
+                    symbol={"type": "string"}, around={"type": "integer"}, context={"type": "integer"}),
                 readonly=True, run=_read),
+        ToolDef("find", "Find code by meaning or by an approximate name in ONE call instead of a grep "
+                "chain: typo-tolerant symbol and file names plus a ranked word search over docstrings "
+                "and comments. e.g. find query='where is the config loaded' or 'parse_confg'.",
+                obj(query={"type": "string"}, limit={"type": "integer"}),
+                readonly=True, run=_find),
+        ToolDef("util", "Exact answers instead of mental arithmetic (local, instant). op=calc expr='(17*3.2)**2/7'; "
+                "op=date expr='2026-11-11 + 45 days' | 'today - 3 weeks' | '2026-01-01 to 2026-11-11' | "
+                "'weekday 2027-02-14' | '1767225600'; op=units expr='5 mi to km' | '72 F to C' | '3.5 GiB to MB'; "
+                "op=regex pattern=… text=… (or path=…) flags='im'; op=json expr='items[*].name' text=… (or path=…); "
+                "op=csv path=… (rows, columns, per-column stats); op=hash algo=sha256 text=… (or path=…); "
+                "op=base64 mode=encode|decode text=…; op=semver expr='1.2.3 < 1.10.0' | 'sort …' | 'bump minor 1.4.2' "
+                "| '1.5.0 satisfies ^1.2'.",
+                obj(op={"type": "string", "enum": ["calc", "date", "units", "regex", "json", "csv", "hash", "base64",
+                                                   "semver"]},
+                    expr={"type": "string"}, pattern={"type": "string"}, text={"type": "string"},
+                    path={"type": "string"}, flags={"type": "string"}, algo={"type": "string"},
+                    mode={"type": "string"}),
+                readonly=True, run=_util),
+        ToolDef("have", "Is a program or Python package installed here? Its path, or the exact install "
+                "command for this OS — instead of probing with `which`/`--version` in bash. "
+                "Several names at once: names='ffmpeg,tesseract,PIL'.",
+                obj(names={"type": "string"}), readonly=True, run=_have),
+        ToolDef("where_is", "Where a function/class/method/type is defined (fuzzy, all languages): "
+                "file:start-end, kind and the docstring. Then read path=… symbol=NAME.",
+                obj(name={"type": "string"}), readonly=True, run=_where_is),
+        ToolDef("callers", "Every line that calls or references a name, with the function each one is in.",
+                obj(name={"type": "string"}), readonly=True, run=_callers),
+        ToolDef("outline", "A file's definitions with line ranges and one-line docs — the shape of a "
+                "file without reading it.",
+                obj(path={"type": "string"}), readonly=True, run=_outline),
+        ToolDef("symbols", "List the project's definitions, optionally filtered by a fuzzy name, a "
+                "kind (function/method/class/type/module) or a path prefix.",
+                obj(query={"type": "string"}, kind={"type": "string"}, path={"type": "string"},
+                    limit={"type": "integer"}),
+                readonly=True, run=_symbols),
         ToolDef("write", "Create or overwrite a file with content. The file is formatted with the "
                 "project's formatter (ruff/prettier/gofmt/rustfmt) when set to auto — pass "
                 "format=false to leave it exactly as written.",
@@ -1625,6 +1803,11 @@ def build_tools(chain: Toolchain) -> list[ToolDef]:
         ToolDef("view_image", "Attach a local image (png/jpeg/gif/webp) to the conversation "
                 "so a vision-capable model can see it.",
                 obj(path={"type": "string"}), readonly=True, run=_view_image),
+        ToolDef("describe_image", "What an image (png/jpeg/gif/webp) shows, as text — for a "
+                "text-only model, or to read text in a screenshot. A vision model answers; "
+                "the roster comes from [tool_models] describe_image in config.toml.",
+                obj(path={"type": "string"}, question={"type": "string"}),
+                readonly=True, run=_describe_image),
         ToolDef("image_edit", "Resize / rotate / convert an image via ImageMagick.",
                 obj(path={"type": "string"},
                     action={"type": "string", "enum": ["resize", "rotate", "convert"]},

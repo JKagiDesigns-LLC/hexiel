@@ -12,7 +12,7 @@
 #   4. makes sure ~/.local/bin is on your PATH for new terminals
 #   5. runs `hexiel --setup`: finds the keys and agents already on this machine and ends in a working chat
 #
-# Variables: HEXIEL_INSTALL_METHOD=uv|pipx|venv (default uv) · HEXIEL_VERSION=0.9.2 (default: latest)
+# Variables: HEXIEL_INSTALL_METHOD=uv|pipx|venv (default uv) · HEXIEL_VERSION=0.9.3 (default: latest)
 #            HEXIEL_SPEC='.[serve]' (install this checkout instead of PyPI) · HEXIEL_NO_SETUP=1 (skip step 5)
 #            UV_VERSION (default pinned below)
 set -eu

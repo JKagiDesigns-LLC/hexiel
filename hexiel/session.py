@@ -122,8 +122,16 @@ def strip_env_note(content: str) -> str:
     (and turn-detection) want just what the person actually said. A legacy standalone note
     has no user words at all — it comes back empty."""
     if content.startswith(ENV_MARK):
-        return content.partition("\n\n")[2]
+        content = content.partition("\n\n")[2]
+    for mark in AUTO_NOTE_MARKS:                  # notes hexiel attached after the person's words
+        cut = content.find("\n\n" + mark)
+        if cut >= 0:
+            content = content[:cut]
     return content
+
+
+AUTO_NOTE_MARKS = ("[knowledge — reference passages", "[project brief, gathered locally",
+                   "[installed on this machine, for this request]")
 
 
 def real_turn_starts(messages: list[dict]) -> list[int]:
@@ -287,6 +295,23 @@ def _left_out(tool, args, exc: KeyError) -> bool:
 WAKE_PROMPT = ("[system] {notes}\nRead the result and carry on with the task you were doing "
                "(fix failures, or report that it passed).")
 
+
+
+def _read_delta(old: str, new: str):
+    """A re-read of a file that changed since the model last read it (usually its own edits): the unified diff
+    against that earlier read instead of the whole file again, when the diff is clearly smaller. None = send all."""
+    import difflib
+    old_lines, new_lines = old.splitlines(), new.splitlines()
+    if not old_lines or not new_lines or old_lines[0] != new_lines[0]:      # first line is the path
+        return None
+    strip = lambda ls: [re.sub(r"^ *\d+  ", "", ln, count=1) for ln in ls[1:]]
+    diff = list(difflib.unified_diff(strip(old_lines), strip(new_lines), "earlier read", "now", n=2, lineterm=""))
+    body = "\n".join(diff)
+    if not diff or len(body) > len(new) * 0.5:
+        return None
+    return ToolResult(text=f"{new_lines[0]}\nchanged since your earlier read of it (still above); only the "
+                           f"changes are shown — line numbers are in the @@ headers. Read with a different offset "
+                           f"for a fresh full copy.\n{body}")
 
 class Session:
     def __init__(self, model_config: ModelConfig, settings: Settings, cwd: str,
@@ -546,6 +571,27 @@ class Session:
             entry["content"] += "\n\n" + note
             self.save()
 
+    def _context_note(self, entry: dict, user_text: str) -> None:
+        """Local facts that save the model its opening probes: the project brief on the session's first message
+        (brief.py) and, on any message, what is installed for what was asked (inventory.relevant). Both are built
+        without a model call and ride in the message, so the cached prompt prefix stays untouched."""
+        if str(getattr(self.settings, "auto_context", "auto")).lower() == "off":
+            return
+        notes = []
+        try:
+            if len(real_turn_starts(self.messages)) <= 1 and not self.__dict__.get("_brief_sent"):
+                from . import brief
+                self.__dict__["_brief_sent"] = True
+                notes.append(brief.build(self.cwd, getattr(self.tool_ctx, "chain", None)))
+            from . import inventory
+            notes.append(inventory.relevant(user_text))
+        except Exception:      # noqa: BLE001 - context is a bonus, never a blocker
+            pass
+        notes = [n for n in notes if n]
+        if notes:
+            entry["content"] += "\n\n" + "\n\n".join(notes)
+            self.save()
+
     def _restore_weather_note(self) -> None:
         prev = getattr(self, "_weather_prev_system", None)
         if prev is not None:
@@ -681,6 +727,7 @@ class Session:
             return
         self._weather_card(user_text)
         self._knowledge_note(entry, user_text)
+        self._context_note(entry, user_text)
         prev_mc = self.model_config      # an overflow model for this one request only (router.py)
         self.__dict__["_turn_boot_model"] = prev_mc.name
         self.__dict__.pop("_idle_token", None)   # any pending idle compaction is no longer wanted
@@ -868,6 +915,11 @@ class Session:
                 self._provider_error = stop
                 self.__dict__["_error_kind"] = "budget"       # the 💸 note already said why: views don't repeat it
                 return {"role": "assistant", "content": ""}
+            try:
+                from . import vision
+                vision.describe_history(self)          # a text-only model gets images as text, never silently dropped
+            except Exception:  # noqa: BLE001 - describing is a bonus, never a blocker
+                pass
             try:
                 return self._stream_once(self._provider_override or provider, tool_defs)
             except llm.RateLimitError as exc:
@@ -1075,8 +1127,24 @@ class Session:
 
     def _tool_defs(self) -> list:
         from . import digest
+        absent = self._absent_tools()
         return digest.add_full_param([{"name": t.name, "description": t.description, "parameters": t.parameters}
-                                      for t in self.tools], self.settings)
+                                      for t in self.tools if t.name not in absent], self.settings)
+
+    def _absent_tools(self) -> set:
+        """Tools whose program isn't on this machine: their definitions are not sent (fewer tokens, and the model
+        never reaches for something that can only fail). The `have` tool still says how to install them."""
+        absent = set()
+        try:
+            from .tools import _pwsh_argv
+            if not _pwsh_argv():
+                absent.add("powershell")
+            chain = getattr(self._tool_ctx, "chain", None)
+            if chain is not None and getattr(chain, "tools", None) and chain.container is None:
+                absent.add("container")
+        except Exception:  # noqa: BLE001
+            pass
+        return absent
 
     def _stream_once(self, provider, tool_defs) -> dict:
         """Stream one assistant response; returns the finalized message dict."""
@@ -1243,13 +1311,17 @@ class Session:
             if out.blocked:
                 reason = out.stderr or f"blocked by hook: {out.command}"
                 return self._tool_message(call, f"A PreToolUse hook blocked this call: {reason}", True), 0.0
-        cache_key = None
+        cache_key = stamp = prior = None
         if tool.name in CACHEABLE_TOOLS:
+            from .tools import cache_stamp
             cache_key = (tool.name, json.dumps(call["arguments"], sort_keys=True))
-            hit = self.tool_ctx.result_cache.get(cache_key)
-            if hit is not None:
+            stamp = cache_stamp(tool.name, call["arguments"], self.tool_ctx)
+            prior = self.tool_ctx.result_cache.get(cache_key)
+            if prior is not None and prior[0] == stamp and self._still_in_history(prior[2]):
                 return self._tool_message(
-                    call, hit.text + "\n(cached — identical earlier call this session)"), 0.0
+                    call, "(unchanged since the identical earlier call — see that result above)"
+                    if tool.name in ("read", "outline") else
+                    prior[1].text + "\n(cached — identical earlier call this session, nothing changed since)"), 0.0
         self._snapshot(tool.name, call["arguments"])
         started = time.time()
         try:
@@ -1282,10 +1354,23 @@ class Session:
             result.text = redact_mod.scrub(result.text)   # secrets never reach a model, not even the digest tool's
         shown = digest.maybe_digest(self, call, result)           # a tool's own model may condense a big output
         consult.record_result(self, call, bool(result.is_error), result.text)
+        if not tool.readonly:
+            self.tool_ctx.generation += 1                 # files may have changed: cached tree searches go stale
         if cache_key is not None and not result.is_error:
-            self.tool_ctx.result_cache[cache_key] = result
+            if tool.name == "read" and prior is not None and self._still_in_history(prior[2]):
+                shown = _read_delta(prior[1].text, result.text) or shown     # a re-read after edits: just the changes
+            self.tool_ctx.result_cache[cache_key] = (stamp, result, call.get("id"))
         return self._tool_message(call, shown.text, result.is_error,
                                   getattr(result, "images", None)), time.time() - started
+
+    def _still_in_history(self, call_id) -> bool:
+        """The earlier result is still in the context, whole (not cleared or elided by compaction), so the
+        model can be pointed at it instead of being sent it again."""
+        for m in reversed(self.messages):
+            if m.get("role") == "tool" and m.get("tool_call_id") == call_id:
+                text = m.get("content") or ""
+                return isinstance(text, str) and not text.startswith(("[cleared", "[prior tool output elided"))
+        return False
 
     def _execute_tool(self, call: dict) -> None:
         """One call, sequential: checks → approval (main thread, the UI) → run → history + events."""
@@ -1499,6 +1584,12 @@ class Session:
 
     def bind_tool_ctx(self, tool_ctx) -> None:
         self._tool_ctx = tool_ctx
+        tool_ctx.session = self                  # tools that need the session (describe_image) can use it
+        try:
+            from . import symbols
+            symbols.warm(self.cwd)                # the symbol index builds in the background: where_is/find are instant
+        except Exception:  # noqa: BLE001 - an index is a bonus, never a blocker
+            pass
         if tool_ctx.stop_event is None:       # lets Ctrl+C kill a command that is running (first binder wins)
             tool_ctx.stop_event = self._stop
 

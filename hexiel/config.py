@@ -174,6 +174,7 @@ class ModelConfig:
     keep_alive: str = "1h"           # local Ollama only: keep the model resident this long after the last use ("-1" forever); a reload after idle costs 30–120s on modest hardware
     num_ctx: int = 0                 # local Ollama only: pin the context size (Ollama's default is small and a changed context throws its prefix cache away); 0 = leave the server default
     billing: str = ""                # the bill it is paid from, for spend tracking: "" = worked out (spend.py), "none" = free
+    vision: str = ""                 # "" = guessed from the model id (vision.py), "yes"/"no" to say; a text-only model gets images described
 
     def compact_share(self, default: float) -> float:
         """Share of the window that triggers compaction: the profile's own value, else the global default."""
@@ -231,6 +232,7 @@ class Settings:
     delegate_review: str = "auto"     # after a delegated run the planner model reviews the diff: "auto" (when it is a different model than the worker) | "always" | "off"
     knowledge_auto: str = "auto"      # attach matching passages from the knowledge library to each message, for the topics the project uses: "auto" | "off"
     knowledge_auto_chars: int = 1500  # at most this many characters of passages per message (~350 tokens)
+    auto_context: str = "auto"        # a local project brief on a session's first message, and the matching slice of installed programs per message: "auto" | "off"
 
 
 @dataclass
@@ -371,4 +373,5 @@ def _settings_from(settings_raw: dict) -> "Settings":
                          if str(settings_raw.get("delegate_review", "auto")).lower() in ("off", "auto", "always") else "auto"),
         knowledge_auto="off" if str(settings_raw.get("knowledge_auto", "auto")).lower() in ("off", "false", "0") else "auto",
         knowledge_auto_chars=max(300, int(settings_raw.get("knowledge_auto_chars", 1500))),
+        auto_context="off" if str(settings_raw.get("auto_context", "auto")).lower() in ("off", "false", "0") else "auto",
     )

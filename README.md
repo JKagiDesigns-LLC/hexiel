@@ -310,6 +310,22 @@ first page) also draw inline in terminals that support it, with a block-characte
 images directly; for PDFs it reads the text. Only files that came up in the conversation are ever served to the
 browser.
 
+**Text-only models see images too.** When the active model can't take images (qwen3-coder, gpt-oss, deepseek, glm…),
+each attached image is described once by a vision model and the description goes in its place — nothing is silently
+dropped. The describer comes from `[tool_models] describe_image` (a small local vision model first is the cheap
+choice); with none usable, tesseract reads the text in the image. A profile's `vision = "yes"` or `"no"` overrides
+the guess from the model name. The model can also ask itself: `describe_image path=… question=…`.
+
+```toml
+[models.laptop-vision]
+provider = "openai"
+model = "gemma4:12b"
+base_url = "http://127.0.0.1:11434/v1"
+
+[tool_models]
+describe_image = { models = ["laptop-vision", "anthropic-sonnet"] }
+```
+
 ### Hexiel Remote (optional, paid)
 
 Drive the hexiel on your own machine from any browser or phone, and run cloud-triggered automations
@@ -387,13 +403,20 @@ an Intel iGPU at ~12 tokens/s. Hybrid "thinking" models should run with
 ## What hexiel does
 
 ### Tools
-`bash` · `python` (batch many steps into one local script) · `read` · `write` ·
+`bash` · `python` (batch many steps into one local script) · `read` (also `symbol=` for one definition,
+`around=` for a few lines) · `write` ·
 `edit` · `glob` · `grep` · `list` · `map` (cached project tree) · `file_info` ·
 `powershell` · `test` (your detected runner) · `container` (docker/podman +
 compose) · `view_image` / `image_edit` · `web_search` / `web_fetch` (no API key
 needed) · `memory` · `todo` · `gitlab_mr` · `skill` · `knowledge_search` / `knowledge_find_docs` / `knowledge_add`
 · `notebook` (Jupyter .ipynb cell edits) · desktop toolset: `screenshot` · `clipboard` · `ocr` (auto-loaded when a display is present;
 screenshots attach to the conversation and OCR uses tesseract) — plus any MCP server's tools and any OpenWebUI plugin in `plugins/`.
+
+Code navigation from a local symbol index (Python via `ast`, regex outlines for JS/TS, Go, Rust, Java/Kotlin/C#, C/C++,
+Ruby, PHP, shell, Lua; persisted between sessions): `find` (typo-tolerant names plus a ranked search over docstrings
+and comments, one call instead of a grep chain) · `where_is` · `callers` · `outline` · `symbols`. And exact answers
+with no model in the loop: `util` (date math, units, regex test, JSON paths, CSV column stats, hashes, base64,
+semver, arithmetic) · `have` (is a program or Python package installed, and the install command for this OS when not).
 
 ### Context discipline
 - **Auto-compaction, Claude-Code style:** at 82% of the context window, older
@@ -406,9 +429,14 @@ screenshots attach to the conversation and OCR uses tesseract) — plus any MCP 
 |---|---|
 | Toolchain discovery, project map, file indexing | local (Python) |
 | Multi-step reads/searches/parsing | one `python` script instead of many model round-trips |
-| Long command output | head + tail kept, middle elided |
+| Long command output | repeated lines collapsed with a count, every error/warning line kept, head + tail |
+| `git status`, `pip list`, `ls -l` | a compact digest when the output is long |
 | Waiting for tests / containers / builds | local; only the verdict + failures reach the model |
-| Duplicate tool calls in a turn | answered from cache |
+| Duplicate tool calls | answered from cache until the file (or, for searches, the tree) changes |
+| Re-reading a file after edits | just the diff against the earlier read, while that read is still in context |
+| The first message of a session | a project brief rides along: type, entry points, test command, recent commits, open todos |
+| "Convert this video", "OCR this" | the matching slice of what's installed (ffmpeg, tesseract, …) or how to get it |
+| Tools for programs that aren't installed | their definitions aren't sent at all |
 | Web pages | distilled to text; full text parked on disk for follow-up reads |
 | Old tool output and images in long sessions | dropped locally before any summarization call |
 | Skills | one-line index; full instructions load only when used |

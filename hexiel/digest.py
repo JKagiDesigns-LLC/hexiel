@@ -25,8 +25,8 @@ import time
 
 from . import modelbusy, planner
 
-DIGESTIBLE = ("read", "grep", "glob", "list", "map", "web_fetch", "web_search")
-ALIASES = {"search": "web_search", "fetch": "web_fetch", "files": "glob"}
+DIGESTIBLE = ("read", "grep", "glob", "list", "map", "web_fetch", "web_search", "describe_image")
+ALIASES = {"search": "web_search", "fetch": "web_fetch", "files": "glob", "vision": "describe_image"}
 MAX_INPUT = 60000
 MAX_OUTPUT_TOKENS = 500       # a slow helper spends most of its time writing: a shorter digest is a faster one
 SYSTEM = ("You condense tool output for a coding agent that is working on a request. Keep everything the agent needs: exact "
@@ -102,7 +102,7 @@ def add_full_param(tool_defs: list, settings) -> list:
         return tool_defs
     out = []
     for d in tool_defs:
-        if d["name"] in mapped:
+        if d["name"] in mapped and d["name"] != "describe_image":     # its roster is the describer, not a digester
             params = dict(d["parameters"])
             props = dict(params.get("properties", {}))
             props["full"] = {"type": "boolean", "description": "true = the raw output, not a summary by a helper model"}
@@ -130,7 +130,8 @@ def summary_line(session) -> str:
 def maybe_digest(session, call: dict, result):
     """The tool result the main model should see (possibly condensed by the tool's model). With several candidate models a
     failure or timeout moves on to the next one (Pi down -> a cloud model, say); the raw output is the last resort."""
-    if result.is_error or getattr(result, "images", None) or (call.get("arguments") or {}).get("full") is True:
+    if result.is_error or getattr(result, "images", None) or (call.get("arguments") or {}).get("full") is True \
+            or call.get("name") == "describe_image":         # its roster describes images; the text is never re-digested
         return result
     tried = candidates(session, call["name"])
     rule = rules(session.settings).get(call["name"]) or {}
@@ -187,6 +188,80 @@ def maybe_digest(session, call: dict, result):
     session.on_event("note", f"🔎 {call['name']} output ({len(raw):,} chars) summarised by {who}")
     return ToolResult(text=f"[summary by {who} of {len(raw):,} characters — call {call['name']} again with full=true "
                            f"for the raw output]\n{text}", is_error=False)
+
+
+DESCRIBE_SYSTEM = ("You look at an image for a coding agent that cannot see images itself. Describe exactly what matters "
+                   "about the request: for screenshots, every visible text string, error message, window title, button "
+                   "label, number and UI state, with layout in words; for diagrams and photos, the relevant structure, "
+                   "labels and anything anomalous. Be factual and complete; never invent. Under {words} words.")
+
+
+def describe(session, payload: dict, question: str = "") -> str:
+    """What a vision-capable model sees in one image payload ({media_type, data}), as text — so a text-only
+    model can work from screenshots. The model roster comes from [tool_models] describe_image (or "vision"):
+    a local vision model first, cloud vision models after. Raises when every candidate fails."""
+    import base64
+    import os
+    import time as _time
+
+    rule = rules(session.settings).get("describe_image") or {}
+    models = list(rule.get("models") or [])
+    if not models:
+        models = ["gemma4", "anthropic-sonnet"]      # a sensible default: cheap cloud vision, then Claude
+    tried = []
+    for profile in models:
+        mc = planner._config_profile(session, profile)
+        if mc is None:
+            session.on_event("note", f"↩ no model profile named '{profile}' — skipped in the describe_image roster")
+            continue
+        if mc.api_key_env and not os.environ.get(mc.api_key_env) and mc.provider != "anthropic":
+            continue                                  # not usable right now: next candidate
+        tried.append(mc)
+    if not tried:
+        return _ocr_or_raise(payload, "no usable vision model (set OLLAMA_API_KEY or an Anthropic key, "
+                             "or name a local one under [tool_models] describe_image)")
+    words = max(120, int(int(rule.get("max_tokens") or 400) * 0.7))
+    data = base64.b64decode(payload["data"])
+    ask = (f"{question}\n\n(Describe the image per your instructions.)" if question.strip()
+           else "Describe this image for me per your instructions.")
+    failures = []
+    for mc in tried:
+        slot = modelbusy.enter(mc, lambda t: session.on_event("note", t), "describe_image")
+        session.set_active_model(mc, "describing")
+        began = _time.time()
+        try:
+            text, usage = planner.complete(
+                session, mc, DESCRIBE_SYSTEM.format(words=words), ask,
+                # thinking vision models (gemma4, qwen3-vl) spend tokens reasoning first: a tight cap left them
+                # with an empty answer, so the cap leaves room for that; the prompt's word limit keeps it short
+                max_tokens=int(rule.get("max_tokens") or 400) + 3000,
+                budget=float(rule.get("timeout") or 120), images=[payload])
+            if text:
+                return text
+            failures.append(f"{mc.name}: empty reply")
+        except Exception as exc:  # noqa: BLE001 - the next candidate, then a real error
+            why = "took too long" if isinstance(exc, TimeoutError) else str(exc).strip().splitlines()[0][:90] if str(exc).strip() else type(exc).__name__
+            failures.append(f"{mc.name}: {why}")
+            if mc is not tried[-1]:
+                session.on_event("note", f"↩ {mc.name} could not describe the image ({why}) — trying the next model")
+        finally:
+            slot.release()
+            session.active_model = ""
+            session.on_event("model_active")
+            st = stats(session)
+            st["seconds"] += _time.time() - began
+    return _ocr_or_raise(payload, "no vision model could describe the image — " + "; ".join(failures))
+
+
+def _ocr_or_raise(payload: dict, why: str) -> str:
+    """Last resort when no vision model answers: the image's text through tesseract, said as such."""
+    import base64
+    from . import vision
+    text = vision.ocr(base64.b64decode(payload["data"]))
+    if text:
+        return f"[no vision model was usable ({why.split(' — ')[0]}); this is the text tesseract read in the image]\n{text}"
+    raise RuntimeError(why + ("" if __import__("shutil").which("tesseract") else
+                              " — install tesseract for a text-only fallback"))
 
 
 def status_text(session, probe: bool = False) -> str:

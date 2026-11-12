@@ -18,4 +18,9 @@ def isolated_dirs(tmp_path_factory, monkeypatch):
     monkeypatch.setattr(tools_mod, "WAKE_ENABLED", False)   # wake watchers left over from other tests must not reap tasks
     monkeypatch.setattr(config, "CONFIG_FILE", home / "config.toml")   # resolved at import time
     import hexiel.session as session_mod
+    import hexiel.symbols as symbols_mod
+    import hexiel.inventory as inventory_mod
     session_mod._limited_until.clear()                 # a cooldown left by another test must not skip this one's model
+    symbols_mod._INDEXES.clear()
+    monkeypatch.setattr(symbols_mod, "WARM_ENABLED", False)  # no background indexer outliving the test's HEXIEL_DATA
+    monkeypatch.setattr(inventory_mod, "_CACHE", None)

@@ -97,25 +97,35 @@ lands, and is documented on hexiel.tech the same day so the site never goes stal
       openpyxl, pypdf already in the box); 60-second bug-fix demo.
 
 ## Release 0.9.3 — Python does the looking: more visibility, fewer tokens (local models first)
-- [ ] Symbol index: tree-sitter over the project at startup (refreshed on change, persisted in .hexiel/);
+- [x] Symbol index: tree-sitter over the project at startup (refreshed on change, persisted in .hexiel/);
       tools `symbols`/`outline`/`where_is`/`callers`; `read(path, symbol=…)` and `read(path, around=line)`.
-- [ ] One `find` tool merging rapidfuzz (typo-tolerant names), BM25 over docstrings/comments, and the
+- [x] One `find` tool merging rapidfuzz (typo-tolerant names), BM25 over docstrings/comments, and the
       embedding model when present — one call instead of a grep chain.
-- [ ] Vision for non-vision models: `[tool_models] vision = <small ollama vision model>` describes any
+- [x] Vision for non-vision models: `[tool_models] vision = <small ollama vision model>` describes any
       image a non-vision chat model receives (structured card: text with positions, widgets, errors
       verbatim); no-model path = Pillow + tesseract layout + pyzbar; PDF pages rendered only when the text
       layer is empty; render-and-look for HTML/Markdown via a headless browser.
-- [ ] Capability inventory: PATH walk cached by PATH hash (formatters, linters, LSPs, tesseract, ImageMagick,
+- [x] Capability inventory: PATH walk cached by PATH hash (formatters, linters, LSPs, tesseract, ImageMagick,
       ffmpeg, pandoc, jq, rg, gh/glab, cloud CLIs, databases, browsers, importable Python packages, OS/GPU/RAM);
       only the relevant slice in the prompt; `have(name)` + the doctor's install line when a tool is
       missing; tool definitions for absent binaries are not sent at all.
-- [ ] Structured command output (git status, test results, pip list, ls as data) and a no-model log
+- [x] Structured command output (git status, test results, pip list, ls as data) and a no-model log
       condenser (dedupe, keep errors + tail, "N similar lines removed").
-- [ ] Auto-context on the first message (project type, entry points, how to test, recent commits, open
+- [x] Auto-context on the first message (project type, entry points, how to test, recent commits, open
       todos) built locally; diff-aware reads after edits; tool-result cache keyed by args + file mtimes.
-- [ ] Deterministic helper tools: date math, units, regex test, JSON path, CSV stats, hash/base64, semver.
-- [ ] Performance budget for every item above: measured in tests (ms per call on a 100k-line repo and a
+- [x] Deterministic helper tools: date math, units, regex test, JSON path, CSV stats, hash/base64, semver.
+- [x] Performance budget for every item above: measured in tests (ms per call on a 100k-line repo and a
       20k-passage library); anything over budget degrades to "nothing attached", never to a slow turn.
+- As built (differences from the plan above): the index is pure Python (`ast` + regex outlines with brace/indent
+  scoping) rather than tree-sitter — no new dependency, 0.25 s cold on this repo, 32k definitions in the perf test;
+  `find` uses its own fuzzy scorer and BM25, no rapidfuzz and no embeddings yet; `read(path, symbol=…)` and
+  `read(path, around=…)` are on the existing `read`. Vision: describe-once for known text-only families (unknown
+  models keep their images), `describe_image` tool, tesseract fallback; NOT yet: Pillow layout card, pyzbar, PDF page
+  rendering when the text layer is empty, render-and-look for HTML. Inventory: catalogued programs only (no version
+  calls), no LSP/database probing beyond PATH; definitions left out for powershell and container when absent.
+  Performance budgets are asserted for the symbol index, find/lookup, the log condenser and the brief (0.6 s budget).
+- [ ] Follow-ups: tree-sitter (optional extra) for exact ranges in non-Python files; embeddings in `find` when an
+      embedding model is configured; the vision items marked NOT yet above.
 
 ## Deferred (tickets, not built yet)
 - [ ] ACP server (serve hexiel into Zed/JetBrains)

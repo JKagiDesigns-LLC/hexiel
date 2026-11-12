@@ -45,6 +45,9 @@ FIELDS = [
     {"key": "settings.knowledge_auto", "label": "Docs auto-attach", "kind": "choice", "options": ["auto", "off"],
      "help": "attach passages from your knowledge library that match each message, for the technologies this "
              "project uses (detected from its files); off = only when the model calls knowledge_search"},
+    {"key": "settings.auto_context", "label": "Project brief", "kind": "choice", "options": ["auto", "off"],
+     "help": "attach a locally built project brief (type, entry points, tests, recent commits, open todos) to a "
+             "session's first message, and what's installed for what you ask; off = neither"},
     {"key": "settings.request_timeout", "label": "Request timeout", "kind": "number",
      "options": [300, 600, 900, 1800, 3600], "help": "seconds per model request"},
     {"key": "settings.auto_resume", "label": "Auto-resume", "kind": "bool",

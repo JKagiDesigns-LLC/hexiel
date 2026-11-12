@@ -210,14 +210,18 @@ def planner_model(session):
             or session.model_config)
 
 
-def _complete_once(session, mc, system: str, user: str, max_tokens: int, budget: float | None) -> tuple[str, dict]:
+def _complete_once(session, mc, system: str, user: str, max_tokens: int, budget: float | None,
+                   images: list | None = None) -> tuple[str, dict]:
     import time
     try:
         provider = llm.make_provider(mc, session.settings)
     except SystemExit as exc:                          # a missing API key: a failure like any other, not the end of hexiel
         raise RuntimeError(str(exc) or f"{mc.name} is not usable") from None
     deadline = time.time() + budget if budget else None
-    stream = provider.stream([{"role": "user", "content": user}], system, [], model=mc.model,
+    message = {"role": "user", "content": user}
+    if images:
+        message["images"] = list(images)
+    stream = provider.stream([message], system, [], model=mc.model,
                              max_output_tokens=max_tokens, extra_body=mc.extra_body,
                              timeout=min(session.settings.request_timeout, budget) if budget else session.settings.request_timeout)
     parts, usage = [], {}
@@ -245,13 +249,13 @@ def cloud_fallback(session, failed):
 
 
 def complete(session, mc, system: str, user: str, max_tokens: int = 4096, budget: float | None = None,
-             cloud: bool = False) -> tuple[str, dict]:
+             cloud: bool = False, images: list | None = None) -> tuple[str, dict]:
     """One tool-less model call. Returns (text, usage); usage["_model"] names the model that answered. Stays responsive to Ctrl+C.
     `budget` (seconds) bounds the whole call: a model that has not answered by then raises TimeoutError.
     `cloud=True` marks a cloud task (plan, advice, summary): if `mc` fails or is rate-limited the cloud fallback profile
-    answers instead, with a note saying so."""
+    answers instead, with a note saying so. `images` attaches image payloads ({media_type, data}) to the message."""
     try:
-        text, usage = _complete_once(session, mc, system, user, max_tokens, budget)
+        text, usage = _complete_once(session, mc, system, user, max_tokens, budget, **({"images": images} if images else {}))
     except Exception as exc:  # noqa: BLE001
         alt = cloud_fallback(session, mc) if cloud and not session._stop.is_set() else None
         if alt is None:
@@ -260,7 +264,7 @@ def complete(session, mc, system: str, user: str, max_tokens: int = 4096, budget
         say(session, f"↪ {mc.name} couldn't be used ({why}) — using {alt.name} for this cloud task")
         session.set_active_model(alt, "cloud fallback")
         try:
-            text, usage = _complete_once(session, alt, system, user, max_tokens, budget)
+            text, usage = _complete_once(session, alt, system, user, max_tokens, budget, **({"images": images} if images else {}))
         finally:
             session.active_model = ""
             session.on_event("model_active")

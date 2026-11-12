@@ -24,7 +24,7 @@ def session_with(tmp_path, monkeypatch, mapping, summary="the file defines foo()
     s.__dict__["_turn_request"] = "where is foo defined?"
     calls = []
     monkeypatch.setattr(planner, "_config_profile", lambda session, name: SMALL if name == "small" else None)
-    monkeypatch.setattr(planner, "complete", lambda session, mc, system, user, max_tokens=0, budget=None: (calls.append((mc.name, user)) or (summary, {})))
+    monkeypatch.setattr(planner, "complete", lambda session, mc, system, user, max_tokens=0, budget=None, images=None: (calls.append((mc.name, user)) or (summary, {})))
     events = []
     s.on_event = lambda e, *p, **k: events.append((e, *p))
     return s, calls, events
@@ -321,3 +321,45 @@ def test_a_cached_digest_remembers_who_wrote_it(tmp_path, monkeypatch):
     first = digest.maybe_digest(s, CALL, ToolResult(text="x" * 9000))
     second = digest.maybe_digest(s, {**CALL, "id": "c2"}, ToolResult(text="x" * 9000))
     assert first.text == second.text and second.text.startswith("[summary by pi") and calls == ["pi"]
+
+
+# ---------------------------------------------------------------- describe_image (a vision model for a text-only one)
+
+def _png(tmp_path):
+    import base64, zlib, struct
+    def chunk(tag, body):
+        return struct.pack(">I", len(body)) + tag + body + struct.pack(">I", zlib.crc32(tag + body) & 0xFFFFFFFF)
+    ihdr = struct.pack(">IIBBBBB", 2, 2, 8, 2, 0, 0, 0)
+    raw = b"".join(b"\x00" + bytes([255, 0, 0] * 2) for _ in range(2))     # a 2x2 red PNG
+    path = tmp_path / "red.png"
+    png = b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", ihdr) + chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b"")
+    path.write_bytes(png)
+    return path, png
+
+
+def test_describe_image_asks_a_vision_model_and_returns_text(tmp_path, monkeypatch):
+    s, calls, events = session_with(tmp_path, monkeypatch, {"describe_image": {"models": ["small"], "max_tokens": 300}},
+                                   summary="a 2x2 red rectangle")
+    path, _bytes = _png(tmp_path)
+    from hexiel.tools import ToolContext
+    tool = next(t for t in s.tools if t.name == "describe_image")
+    out = tool.run({"path": str(path)}, s.tool_ctx)
+    assert not out.is_error, out.text
+    assert "2x2 red rectangle" in out.text
+    assert calls and calls[0][0] == "small"
+    # the vision roster can also be named with the "vision" alias, and errors are reported, not raised
+    st = Settings(tool_models={"vision": {"models": ["missing"]}})   # the "vision" alias maps to describe_image
+    assert digest.rules(st)["describe_image"]["models"] == ["missing"]
+
+
+def test_describe_image_falls_through_the_roster(tmp_path, monkeypatch):
+    import pytest as _pytest
+    s, calls, events = session_with(tmp_path, monkeypatch, {"describe_image": {"models": ["missing", "small"]}},
+                                   summary="second model answered")
+    path, _bytes = _png(tmp_path)
+    tool = next(t for t in s.tools if t.name == "describe_image")
+    out = tool.run({"path": str(path)}, s.tool_ctx)
+    assert not out.is_error, out.text
+    assert "second model answered" in out.text
+    assert any(e[0] == "note" and "missing" in e[1] for e in events)
+    assert calls[0][0] == "small"                                          # only the usable one was asked

@@ -273,13 +273,18 @@ class WebState:
                             "messages": self.trim(self.render_history())})
         elif event == "tool_call":
             self.broadcast({"t": "tool", **short_call(payload[0])})
+        elif event == "outputs":
+            self.__dict__.setdefault("_outputs", {})[payload[0].get("id", "")] = list(payload[1])
         elif event == "tool_result":
             call, text, is_error = payload[0], payload[1], payload[2]
             elapsed = payload[3] if len(payload) > 3 else 0.0
             done = {"t": "tool_done", "id": call.get("id", ""), "ok": not is_error,
                     "elapsed": round(elapsed, 1), "preview": _shorten(text)}
+            made = self.__dict__.setdefault("_outputs", {}).pop(call.get("id", ""), [])
             if call.get("name") == "view_image" and not is_error:
                 done["media"] = media_items([self._media_path(call)])
+            elif made:
+                done["media"] = media_items(made)           # what the tool made, right under its line
             self.broadcast(done)
         elif event == "compact_start":
             self.broadcast({"t": "note", "text": "Compacting context (summarizing history)…"})
@@ -362,6 +367,8 @@ class WebState:
                     entry["preview"] = _shorten(msg.get("content", ""))
                     if entry["name"] == "view_image" and not msg.get("is_error"):
                         entry["media"] = media_items([entry.get("path", "")])
+                    elif msg.get("outputs"):
+                        entry["media"] = media_items(msg["outputs"])
         for item in items:
             item.pop("path", None)             # a local path is only for finding the file, not for the page
         return items

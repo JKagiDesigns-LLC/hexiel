@@ -159,7 +159,8 @@ def test_index_updates_only_changed_files_and_persists(tmp_path):
 
 def test_index_performance_budget(tmp_path):
     """~100k lines across 400 files: a cold index stays within a few seconds, lookups and find within the
-    budget, and a no-change refresh is a stat walk."""
+    budget, and a no-change refresh is a stat walk (budgets are multiplied on a slow CI runner)."""
+    from tests.conftest import SLOW
     (tmp_path / ".git").mkdir()
     body = "\n".join(f'def func_{i}(x):\n    """Does thing {i}."""\n    return x + {i}\n' for i in range(80))
     for n in range(400):
@@ -169,16 +170,16 @@ def test_index_performance_budget(tmp_path):
     idx = sm.index_for(str(tmp_path))
     cold = time.time() - t
     assert len(idx.all()) == 32000 and not idx.partial
-    assert cold < 8.0
+    assert cold < 8.0 * SLOW
     t = time.time()
     idx.refresh(min_interval=0)
-    assert time.time() - t < 0.5
+    assert time.time() - t < 0.5 * SLOW
     t = time.time()
     assert sm.lookup(idx, "m399_func_79", 1)[0][1].name == "m399_func_79"
-    assert time.time() - t < 1.5
+    assert time.time() - t < 1.5 * SLOW
     t = time.time()
     sm.find(idx, "does thing 42")
-    assert time.time() - t < 2.0
+    assert time.time() - t < 2.0 * SLOW
 
 
 # ---------------------------------------------------------------- the stamped cache and diff-aware re-reads

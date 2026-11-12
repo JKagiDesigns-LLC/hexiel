@@ -561,3 +561,22 @@ def test_prompt_modal_saves_and_resets(tmp_path):
             assert app.session.system_prompt == "sys" and app.session.prompt_override is None
             assert not prompt_edit.dir_path(str(tmp_path)).exists()
     run(go())
+
+
+def test_a_stream_repaint_after_the_window_is_gone_is_dropped(tmp_path):
+    """The flush timer can fire while the window is closing — the chat still says it is mounted but is no longer
+    attached (a slow CI runner hits this): painting then raised MountError("Can't mount widget(s) before
+    ChatScroll is mounted"). It is dropped instead."""
+    from unittest import mock
+
+    async def go():
+        app = make_app(tmp_path)
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            app._stream_text = "late reply text"
+            app._stream_wid = None
+            with mock.patch.object(type(app.chat), "is_attached", new_callable=mock.PropertyMock, return_value=False):
+                app._paint_stream()               # closing: must not raise
+                app._flush_stream()
+            assert app._stream_wid is None        # nothing was mounted
+    asyncio.run(go())

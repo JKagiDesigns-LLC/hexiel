@@ -36,7 +36,8 @@ def test_condense_is_fast_on_megabytes():
     text = "\n".join(f"{i} some log line with id {i * 7919} at 12:00:{i % 60:02d}" for i in range(200_000))
     t = time.time()
     condense.condense(text)
-    assert time.time() - t < 3.0
+    from tests.conftest import SLOW
+    assert time.time() - t < 3.0 * SLOW
 
 
 def test_git_status_digest():

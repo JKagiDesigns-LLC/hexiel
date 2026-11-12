@@ -323,9 +323,8 @@ def _tool_checks(cwd: str) -> list[Check]:
         found = shutil.which(name) or (shutil.which("npx") and name in ("prettier", "tsc"))
         out.append(Check("Tools", f"helper:{name}", OK if found else INFO, name, why if found else f"not found — {why} is off",
                          () if found else (how,)))
-    for name, why, how in (("tesseract", "the ocr tool (text out of screenshots)", _pkg_manager_install("tesseract")),
-                           ("magick", "the image_edit tool", _pkg_manager_install("imagemagick"))):
-        found = shutil.which(name) or (name == "magick" and shutil.which("convert"))
+    for name, why, how in (("tesseract", "the ocr tool (text out of screenshots)", _pkg_manager_install("tesseract")),):
+        found = shutil.which(name)
         out.append(Check("Tools", f"helper:{name}", OK if found else INFO, name, why if found else f"not found — {why} is off",
                          () if found else (how,)))
     pwsh = shutil.which("pwsh") or shutil.which("powershell.exe") or shutil.which("powershell")

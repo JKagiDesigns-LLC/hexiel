@@ -41,6 +41,7 @@ class ToolResult:
     text: str
     images: list[dict] = field(default_factory=list)  # {media_type, data(b64), approx_tokens}
     is_error: bool = False
+    outputs: list = field(default_factory=list)       # files the tool created or changed: the views show them
 
 
 @dataclass
@@ -1252,39 +1253,6 @@ def _describe_image(args: dict, ctx: ToolContext) -> ToolResult:
     return text_result(f"{path} — described by a vision model:\n{text}")
 
 
-def _image_edit(args: dict, ctx: ToolContext) -> ToolResult:
-    action = args.get("action", "resize")
-    magick = shutil.which("magick") or shutil.which("convert")
-    if not magick:
-        return text_result("error: ImageMagick not installed (e.g. `sudo pacman -S imagemagick`)", True)
-    path = _resolve_path(args["path"], ctx)
-    out = _resolve_path(args["out"], ctx) if args.get("out") else path
-    if action == "convert" and not args.get("out"):
-        return text_result("error: convert needs an `out` path", True)
-    cmd = [magick, str(path)]
-    if action == "resize":
-        cmd += ["-resize", args.get("size", "50%")]
-    elif action == "rotate":
-        cmd += ["-rotate", str(args.get("degrees", 90))]
-    elif action != "convert":
-        return text_result("error: action must be resize|rotate|convert", True)
-    cmd += [str(out)]
-    try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, cwd=ctx.cwd, timeout=120)
-    except subprocess.TimeoutExpired:
-        return text_result("error: magick timed out", True)
-    if proc.returncode != 0:
-        return text_result(f"error: magick failed: {proc.stderr[:300]}", True)
-    dims = ""
-    try:
-        probe = parse_image_size(out.read_bytes())
-        if probe:
-            dims = f" ({probe[2]}, {probe[0]}x{probe[1]})"
-    except OSError:
-        pass
-    return text_result(f"image written to {out}{dims}")
-
-
 # ---------------------------------------------------------------- web
 
 class _TextExtract(HTMLParser):
@@ -1858,12 +1826,7 @@ def build_tools(chain: Toolchain) -> list[ToolDef]:
                 "the roster comes from [tool_models] describe_image in config.toml.",
                 obj(path={"type": "string"}, question={"type": "string"}),
                 readonly=True, run=_describe_image),
-        ToolDef("image_edit", "Resize / rotate / convert an image via ImageMagick.",
-                obj(path={"type": "string"},
-                    action={"type": "string", "enum": ["resize", "rotate", "convert"]},
-                    size={"type": "string"}, degrees={"type": "number"},
-                    out={"type": "string"}),
-                run=_image_edit),
+        __import__("hexiel.imagetools", fromlist=["tool_def"]).tool_def(),
         ToolDef("web_fetch", "Fetch a URL and return its text content (HTML stripped).",
                 obj(url={"type": "string"}, max_chars={"type": "integer"}),
                 readonly=True, run=_web_fetch),

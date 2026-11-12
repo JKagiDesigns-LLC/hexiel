@@ -208,7 +208,7 @@ SUBAGENT_WRITE = (
     "then reply with a concise summary: what changed and why, test evidence (commands + results), "
     "and anything uncertain or left undone. Do not ask questions back; nobody can answer them.")
 
-FILE_TOOLS = {"write", "edit", "image_edit"}      # snapshotted before they run (/undo)
+FILE_TOOLS = {"write", "edit", "image"}      # snapshotted before they run (/undo)
 
 
 def strip_env_note(content: str) -> str:
@@ -928,6 +928,8 @@ class Session:
                         entry = results.get(call["id"])
                         if entry is not None:
                             self.messages.append(entry)
+                            if entry.get("outputs"):
+                                self.on_event("outputs", call, entry["outputs"])
                             self.on_event("tool_result", call, entry["content"], entry.get("is_error", False))
                         self._auto_todo_step(user_text, call, assistant, turn)
                 else:
@@ -1499,7 +1501,8 @@ class Session:
                                  tool_input=call["arguments"], tool_response=result.text):
             if out.blocked and out.stderr:          # feedback for the model (e.g. lint errors)
                 result = ToolResult(text=f"{result.text}\n\n[PostToolUse hook]\n{out.stderr[:4000]}",
-                                    images=result.images, is_error=result.is_error)
+                                    images=result.images, is_error=result.is_error,
+                                    outputs=getattr(result, "outputs", []))
         from . import digest
         from . import redact as redact_mod
         if getattr(self.settings, "redact_secrets", "full") != "off":
@@ -1512,8 +1515,11 @@ class Session:
             if tool.name == "read" and prior is not None and self._still_in_history(prior[2]):
                 shown = _read_delta(prior[1].text, result.text) or shown     # a re-read after edits: just the changes
             self.tool_ctx.result_cache[cache_key] = (stamp, result, call.get("id"))
-        return self._tool_message(call, shown.text, result.is_error,
-                                  getattr(result, "images", None)), time.time() - started
+        entry = self._tool_message(call, shown.text, result.is_error, getattr(result, "images", None))
+        outputs = [str(p) for p in (getattr(result, "outputs", None) or []) if p]
+        if outputs:
+            entry["outputs"] = outputs                    # the views show these files (never sent to a model)
+        return entry, time.time() - started
 
     def _still_in_history(self, call_id) -> bool:
         """The earlier result is still in the context, whole (not cleared or elided by compaction), so the
@@ -1547,6 +1553,8 @@ class Session:
         self.on_event("tool_call", call)
         entry, elapsed = self._run_tool(call, tool)
         self.messages.append(entry)
+        if entry.get("outputs"):
+            self.on_event("outputs", call, entry["outputs"])     # before tool_result: views attach them to its line
         self.on_event("tool_result", call, entry["content"], entry.get("is_error", False), elapsed)
 
     def _run_parallel(self, calls: list[dict]) -> dict:
@@ -1686,7 +1694,7 @@ class Session:
         if tool_name not in FILE_TOOLS or not self.checkpoints or self.tool_ctx is None:
             return
         from .tools import _resolve_path
-        raw = args.get("out") if tool_name == "image_edit" and args.get("out") else args.get("path")
+        raw = args.get("out") if tool_name == "image" and args.get("out") else args.get("path")
         if not raw:
             return
         try:

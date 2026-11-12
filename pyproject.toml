@@ -1,6 +1,6 @@
 [project]
 name = "hexiel"
-version = "0.9.6"
+version = "0.9.7"
 description = "Open-source AI coding agent for the terminal and browser — runs on local Ollama models (even on modest hardware) or any cloud LLM. A self-hostable alternative to Claude Code and opencode."
 readme = "README.md"
 license = "LicenseRef-GPL-3.0-with-Commons-Clause"
@@ -39,7 +39,8 @@ hexiel = "hexiel.main:main"
 [project.optional-dependencies]
 serve = ["aiohttp>=3.9"]
 code = ["tree-sitter>=0.23", "tree-sitter-language-pack>=0.7"]   # exact symbol ranges for non-Python files (symbols.py)
-view = ["textual-image>=0.8"]     # inline image thumbnails in the terminal (Kitty, Sixel, or block fallback)
+view = ["textual-image>=0.8"]
+images = ["segno>=1.6", "pillow-heif>=0.18"]   # QR codes and HEIC photos for the image tool     # inline image thumbnails in the terminal (Kitty, Sixel, or block fallback)
 dev = ["pytest", "bandit", "detect-secrets", "ruff"]
 
 [tool.setuptools.packages.find]

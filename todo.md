@@ -147,7 +147,7 @@ lands, and is documented on hexiel.tech the same day so the site never goes stal
 - [x] "continue" / "go on" / "next" are never answered tool-less by the router's chat model: the main model
       takes them, with its tools.
 
-## Release 0.9.6 — don't hammer a cloud account that can't answer; CI green
+## Release 0.9.6 — don't hammer a cloud account that can't answer; CI green (the CI fixes finished in 0.9.7)
 - [x] A cloud account found unusable (rejected key, no credits, monthly limit, budget stop) is skipped for
       `cloud_cooldown_minutes` (default 60) by every chain — main, router, overflow, planner, vision, tool models —
       and across processes; checked once when a session starts; the session starts on the next usable model
@@ -156,9 +156,89 @@ lands, and is documented on hexiel.tech the same day so the site never goes stal
 - [x] qwen3.5 / qwen3.6 see images (llama-server with an mmproj): no describe detour for gmktec.
 - [x] CI tests pass in the root container runner (sudo, clipboard, ruff, timing assumptions).
 
-## Next — image tools in Python (ticket 878919f4975a)
-- [ ] Deterministic image tools on Pillow, no model needed: inspect (size, mode, EXIF, colours, alpha, DPI),
-      crop/resize/rotate/flip/pad, convert (PNG/JPEG/WebP/ICO/PDF), compress to a size budget, annotate a
-      screenshot (boxes, arrows, labels), side-by-side and pixel diff of two screenshots (changed regions),
-      make simple images (placeholders, app-store icon sizes, favicons, matplotlib charts when present),
-      batch over a folder. Text summary + path back; the image goes to the model only when it can see.
+## Next — Python does the work: files, media and documents without model walls (researched 2026-11-12)
+Principle: every tool is deterministic Python that returns a short text summary plus the output path, so ANY
+model (text-only, small, local) can create and change images, video, documents and data. The model only sees
+pixels when it can (and wants to). One tool per domain with an `op` argument (few tool definitions, loaded as
+a group by load_tools); heavy libraries are optional extras (hexiel[media], [office], [pdf], [audio], [db])
+offered by `have` and installed with approval into hexiel's own environment; every destructive op previews
+first and writes an undo record. Tests use generated fixtures, no network.
+
+### 0.9.7 — images: view, create, edit anything (ticket 878919f4975a)
+- [x] `image` tool on Pillow (already a dependency): inspect (size, mode, EXIF, DPI, alpha, palette, histogram,
+      the image card), view (terminal thumbnail; text description for blind models via the card + OCR)
+- [x] edit: crop (box, auto-trim, aspect), resize/fit/pad/thumbnail, rotate/flip, brightness/contrast/
+      saturation/gamma, blur/sharpen/filters, grayscale/sepia/invert, replace a colour, transparency,
+      rounded corners, border/shadow, watermark (text or logo), text and shapes on top, redact a region
+- [x] create: canvas with shapes/text/gradients, placeholders, banners, social cards, collage/grid/contact
+      sheet, side-by-side, GIF from frames, QR codes (segno), favicons + app-store icon sets, sprite sheets
+- [x] compare: pixel diff of two screenshots with the changed regions as boxes (visual regression)
+- [x] convert/compress: PNG/JPEG/WebP/AVIF/ICO/TIFF/PDF, HEIC in (pillow-heif), SVG out→PNG (resvg/cairosvg),
+      compress to a size budget, strip metadata (privacy), batch over a folder or glob
+- [ ] charts and diagrams as images: matplotlib (when installed), graphviz / mermaid through `render`
+- [ ] optional extras: background removal (rembg), upscaling, local image generation (ComfyUI / SD API)
+      when one is configured — never required
+- [x] see it where you work: every image/video/document a tool creates appears in the chat — inline image in the
+      TUI (textual-image, block fallback), real <img>/<video>/<audio>/PDF viewer in the web UI — plus an
+      "Outputs" list of this session's files (open, reveal, copy path)
+- Shipped in 0.9.7: the `image` tool (info, edit with 22 steps, create, combine, diff, convert, gif, qr, icons) replaces the
+  ImageMagick `image_edit`; files a tool reports (ToolResult.outputs) show under its line in the TUI and web UI.
+  Still open here: charts/diagrams as images, the optional rembg/upscale/generator extras, the Outputs list.
+
+### 0.9.8 — video and audio: let text-only models work with media
+- [ ] `video` tool on ffmpeg (inventory already finds it) + PyAV: info, trim/cut, concat, convert, compress to a
+      size, resize/crop/rotate, speed, mute/extract audio, GIF from a clip, title/text/watermark overlay,
+      burn-in subtitles, slideshow from images + music, screen recording to a file
+- [ ] "see" a video without a vision model: frames at scene changes → contact sheet + OCR + describe_image
+- [ ] audio: info, trim/join/convert/normalise, silence removal; transcription with faster-whisper (local)
+      → text/SRT subtitles; speech from text with piper (local) — optional extras
+- [ ] viewer: video/audio players in the web UI, a poster frame + duration card in the TUI
+
+### 0.9.9 — Office documents and PDFs (the most-asked automation after Excel)
+- [ ] Word (python-docx): read with structure (headings, tables, comments), create from Markdown, fill a
+      template's {{placeholders}}, edit text/tables in place keeping styles, docx→PDF (LibreOffice headless
+      when installed), compare two versions
+- [ ] PowerPoint (python-pptx): deck from an outline (title/bullets/images/charts/notes), read slides and
+      notes, replace text, insert images, export slides as images (LibreOffice) so blind models get a card
+- [ ] Excel beyond reading: formatting, formulas, charts, conditional formatting, pivots via DuckDB,
+      merge/split workbooks, one sheet per group
+- [ ] mail merge: template (docx/md/email) × CSV/Excel rows → many documents / PDFs / .eml drafts
+- [ ] PDF (pypdf; pymupdf/pdfplumber/ocrmypdf optional): merge/split/reorder/rotate/extract pages, fill and
+      read forms, stamp/watermark/number pages, real redaction, compress, tables → CSV, OCR scans, Markdown/
+      HTML → PDF (the browser `render` path)
+- [ ] conversions through pandoc when installed: md ↔ docx ↔ html ↔ epub ↔ odt
+- [ ] viewer: PDF pages, Word/PowerPoint/Excel previews (rendered pages or HTML) in the web UI, page thumbnails
+      and a text preview in the TUI
+
+### 0.10.0 — files, OS and system work in Python (works the same on Windows, no bash needed)
+- [ ] `files` tool: bulk rename with preview + undo, organise by type/date (photos by EXIF date), duplicates
+      by hash, large/old files, folder size tree, checksums, zip/tar/7z create and extract, copy/sync with
+      progress — every destructive op previews first and logs an undo record
+- [ ] `system` tool (psutil + stdlib): processes (find, kill with approval), ports in use, disk/memory/CPU,
+      services, env vars, network checks (DNS, ping, port open, TLS certificate expiry), installed programs
+- [ ] email and calendar files: read .eml/.msg/mbox (extract-msg), write .eml drafts, send via SMTP only with
+      approval; .ics events and vCards create/read
+- [ ] `serve` tool: a local web server for a folder, a built site or a generated report — live reload, LAN URL
+      and a QR code for the phone, stops with the session; the web UI previews it in a panel
+
+### 0.10.1 — databases, notebooks, APIs
+- [ ] `sql` beyond DuckDB/SQLite: Postgres/MySQL/SQL Server/Oracle through SQLAlchemy, read-only by default,
+      schema explorer, ER diagram, query → CSV/Excel/chart, explain plans; connections from the secrets store
+- [ ] notebooks: run a notebook (nbclient / papermill with parameters), summarise outputs, clear outputs,
+      convert to HTML/PDF/script (nbconvert)
+- [ ] `http` tool: call an API with auth from secrets, explore an OpenAPI spec, HTML tables → CSV, RSS
+- [ ] data formats: JSON/YAML/TOML/XML/CSV convert and validate (jsonschema), pretty-print, diff
+
+### Later — everyday and engineering helpers (things people pay for or a model can't do)
+- [ ] receipts/invoices: OCR → structured fields → spreadsheet; budgets and expense summaries
+- [ ] maps: geocode (geopy), distances, folium HTML maps; timezones and meeting-time finder
+- [ ] exact maths and units: sympy (algebra, calculus), pint (units), statistics with scipy when installed
+- [ ] engineering: dependency audit (pip-audit / npm audit), licence scan, SBOM, code metrics (radon),
+      profiling (cProfile / py-spy), JWT decode, cron explain, load test smoke (httpx)
+- [ ] offline translation of text and documents (argos-translate) — no tokens, no cloud
+- [ ] study aids: flashcards and quizzes → Anki decks (genanki), printable worksheets
+- [ ] publish from Markdown: static website, e-book (EPUB), printable booklet — then `serve` it
+- [ ] dashboards: an interactive HTML dashboard (plotly offline) from a spreadsheet, served locally
+- [ ] printables: barcodes, QR codes, labels, name badges, certificates from a CSV
+- [ ] protect a file: encrypt/decrypt with a password (cryptography), secure delete
+- [ ] website: "built in — no model needed" section on hexiel.tech showing what hexiel does in Python itself

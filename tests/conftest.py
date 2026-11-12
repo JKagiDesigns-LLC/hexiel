@@ -1,7 +1,12 @@
 """Shared fixtures: every test gets throwaway HEXIEL_DATA and HEXIEL_HOME dirs so
 sessions, memory, incidents, jobs and config never touch the user's real files."""
 
+import os
+
 import pytest
+
+# Timing budgets are written for a developer machine; a shared CI runner is several times slower.
+SLOW = 4.0 if os.environ.get("CI") else 1.0
 
 
 @pytest.fixture(autouse=True)

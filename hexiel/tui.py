@@ -1476,7 +1476,7 @@ class ActivityLine(Static):
              "bash": "Running", "powershell": "Running",
              "test": "Testing", "container": "Running containers",
              "web_search": "Searching the web", "web_fetch": "Fetching the web",
-             "view_image": "Looking at an image", "image_edit": "Editing an image",
+             "view_image": "Looking at an image", "image": "Working on an image",
              "memory": "Remembering", "todo": "Updating the plan", "timer": "Setting a timer",
              "gitlab_mr": "Preparing the merge request", "skill": "Loading a skill"}
 
@@ -2825,13 +2825,22 @@ class HexielTUI(App):
             wid = self._tool_widgets.pop(call["id"], None)
             if wid:
                 wid.complete(call_short(call), text, is_error, elapsed)
+            made = self.__dict__.setdefault("_outputs", {}).pop(call.get("id", ""), [])
             if call.get("name") == "view_image" and not is_error:
                 from . import media
                 path = Path(os.path.expanduser(str(call.get("arguments", {}).get("path", ""))))
                 info = media.describe(path if path.is_absolute() else Path(self.session.cwd) / path)
                 if info:
                     self.mount_attachment(info)
+            elif made:
+                from . import media
+                for p in made[:8]:                     # what the tool made, right under its line
+                    info = media.describe(p)
+                    if info:
+                        self.mount_attachment(info)
             self._refresh_status()
+        elif event == "outputs":
+            self.__dict__.setdefault("_outputs", {})[payload[0].get("id", "")] = list(payload[1])
         elif event == "compact_start":
             self.finalize_stream()
             chat.mount(Static("… compacting context (summarizing history) …", classes="note"))
@@ -2858,8 +2867,6 @@ class HexielTUI(App):
 
     def _flush_stream(self) -> None:
         self._flush_timer = None
-        if not self.chat.is_mounted:       # the window is closing (or not up yet): nothing to paint into
-            return
         self._paint_stream()
 
     def _paint_stream(self) -> None:
@@ -2870,6 +2877,8 @@ class HexielTUI(App):
         loop for ~hundreds of ms each time — that was the typing lag. Live paints therefore show
         only the tail once the text passes LIVE_STREAM_CHARS; the full reply renders once when
         the step finishes."""
+        if not self.chat.is_attached or self.chat._closing:
+            return                         # the window is closing (or not up yet): nothing to paint into
         display = self._display_text()
         if self._stream_wid is None:
             if not self._stream_text:

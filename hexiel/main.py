@@ -58,6 +58,8 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--fix", action="store_true", help="with --doctor: apply the safe generic fixes")
     ap.add_argument("--json", action="store_true", help="with --doctor: print the report as JSON")
     ap.add_argument("--setup", action="store_true", help="first-run guided wizard")
+    ap.add_argument("--get-vision", action="store_true",
+                    help="download the local vision model (Florence-2, ~265 MB) so image cards say what a picture shows")
     ap.add_argument("--trust-project", action="store_true",
                     help="trust this project's plugins/ folder (its Python files then load at startup) and exit")
     ap.add_argument("-V", "--version", action="version", version=f"hexiel {__version__}")
@@ -412,6 +414,21 @@ def main() -> None:
     if args.acp:
         from .acp import main as acp_main
         raise SystemExit(acp_main(args.model))
+    if args.get_vision:
+        from . import looker
+        why = looker.runtime_missing()
+        if why:
+            print(why)
+            raise SystemExit(1)
+        last = {"n": ""}
+
+        def progress(name, done, total):
+            if name != last["n"]:
+                last["n"] = name
+                print(f"downloading {name} …", flush=True)
+        looker.download(progress)
+        print(f"local vision model ready in {looker.model_dir()}")
+        return
     if args.doctor:
         from .doctor import doctor_main
         raise SystemExit(doctor_main(cwd, fix=args.fix, as_json_out=args.json))

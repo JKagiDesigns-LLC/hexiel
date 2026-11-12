@@ -426,12 +426,48 @@ def _local_host(base_url: str) -> bool:
             or "://[::1]" in host or "://[::ffff" in host)
 
 
+_reach: dict[str, tuple[float, bool]] = {}
+
+
+def _reachable(url: str, timeout: float = 1.5) -> bool:
+    """Does something answer a TCP connect at this URL's host:port? Cached 30 s (yes) / 10 s (no)."""
+    import socket
+    import time
+    from urllib.parse import urlparse
+    hit = _reach.get(url)
+    if hit and time.monotonic() - hit[0] < (30 if hit[1] else 10):
+        return hit[1]
+    u = urlparse(url)
+    port = u.port or (443 if u.scheme == "https" else 80)
+    try:
+        with socket.create_connection((u.hostname or "", port), timeout=timeout):
+            ok = True
+    except OSError:
+        ok = False
+    _reach[url] = (time.monotonic(), ok)
+    return ok
+
+
+def pick_base_url(base_url: str, alts=()) -> str:
+    """The first of base_url and its alternates that answers (home LAN first, then e.g. Tailscale); the main one
+    when none does, so the error names the address the profile is written with."""
+    urls = [base_url.rstrip("/"), *[a.rstrip("/") for a in alts or ()]]
+    if len(urls) == 1:
+        return urls[0]
+    for u in urls:
+        if _reachable(u):
+            return u
+    return urls[0]
+
+
 class OpenAICompatProvider(AbortableHTTP):
     """Any /chat/completions endpoint: Ollama, vLLM, OpenRouter, OpenAI itself."""
 
-    def __init__(self, api_key: str, base_url: str) -> None:
+    def __init__(self, api_key: str, base_url: str, alts=()) -> None:
         self.api_key = api_key
-        self.base_url = base_url.rstrip("/")
+        self.alts = tuple(alts or ())
+        self.main_url = base_url.rstrip("/")
+        self.base_url = pick_base_url(base_url, self.alts)
 
     def _local(self) -> bool:
         return _local_host(self.base_url)
@@ -551,6 +587,8 @@ class OpenAICompatProvider(AbortableHTTP):
         if self.api_key:
             headers["authorization"] = f"Bearer {self.api_key}"
         buf = AssistantBuffer()
+        if self.alts:
+            self.base_url = pick_base_url(self.main_url, self.alts)      # at home or away: whichever answers now
         with self.client(timeout) as client:
             response = None
             # try include_usage first; servers that reject stream_options get one retry
@@ -647,13 +685,13 @@ def _is_local_url(url: str) -> bool:
     import ipaddress
     from urllib.parse import urlparse
     host = (urlparse(url).hostname or "").lower()
-    if host in ("localhost", "host.docker.internal") or host.endswith(".local"):
+    if host in ("localhost", "host.docker.internal") or host.endswith(".local") or host.endswith(".ts.net"):
         return True
     try:
         ip = ipaddress.ip_address(host)
     except ValueError:
         return False
-    return ip.is_private or ip.is_loopback or ip.is_link_local
+    return ip.is_private or ip.is_loopback or ip.is_link_local or ip in ipaddress.ip_network("100.64.0.0/10")   # Tailscale
 
 
 def make_provider(model_config, settings) -> tuple[object, str]:
@@ -671,7 +709,7 @@ def make_provider(model_config, settings) -> tuple[object, str]:
         if model_config.api_key_env and not api_key and not _is_local_url(model_config.base_url):
             # an unset key variable used to send an empty key and surface only as an opaque "provider 401"
             raise SystemExit(f"model '{model_config.name}': set {model_config.api_key_env} (the API key variable is empty)")
-        provider = OpenAICompatProvider(api_key, base_url=model_config.base_url)
+        provider = OpenAICompatProvider(api_key, base_url=model_config.base_url, alts=getattr(model_config, "alt_base_urls", ()))
     from . import spend
     provider.billing = spend.account_for(model_config)
     return provider

@@ -74,8 +74,16 @@ def _save(name: str, data) -> None:
     tmp.replace(_root() / name)
 
 
+BUILTIN = {"name": "hexiel", "url": str(Path(__file__).resolve().parent / "starter"), "builtin": True}
+
+
+def user_sources() -> list[dict]:
+    return [s for s in _load("sources.json", []) if s.get("name") != BUILTIN["name"]]
+
+
 def sources() -> list[dict]:
-    return _load("sources.json", [])
+    """hexiel's own starter catalogue (shipped inside the package, works offline) plus the ones you added."""
+    return [dict(BUILTIN)] + user_sources()
 
 
 def installed() -> dict:
@@ -203,7 +211,9 @@ def add_source(url: str, name: str = "") -> str:
     data = json.loads(raw)
     name = re.sub(r"[^A-Za-z0-9._-]+", "-", name or data.get("name") or Path(url.rstrip("/")).stem)[:40] or "source"
     count = len(parse_index(name, base, data))
-    srcs = [s for s in sources() if s["url"] != url and s["name"] != name]
+    if name == BUILTIN["name"]:
+        raise MarketError("'hexiel' is the built-in catalogue's name — pick another name for your source")
+    srcs = [s for s in user_sources() if s["url"] != url and s["name"] != name]
     srcs.append({"name": name, "url": url})
     _save("sources.json", srcs)
     cache = _load("cache.json", {})
@@ -213,7 +223,9 @@ def add_source(url: str, name: str = "") -> str:
 
 
 def remove_source(name: str) -> str:
-    srcs = sources()
+    if name == BUILTIN["name"]:
+        return "the built-in 'hexiel' catalogue ships with hexiel and cannot be removed"
+    srcs = user_sources()
     keep = [s for s in srcs if s["name"] != name]
     if len(keep) == len(srcs):
         return f"no source called {name}"

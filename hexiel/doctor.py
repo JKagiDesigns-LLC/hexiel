@@ -93,6 +93,7 @@ def _runtime_checks(cfg) -> list[Check]:
                                     ("PIL", "the image tool (Pillow)", "Pillow", WARNING),
                                     ("segno", "QR codes in the image tool", "segno", INFO),
                                     ("pillow_heif", "iPhone HEIC photos", "pillow-heif", INFO),
+                                    ("onnxruntime", "the local vision model for image descriptions", "'hexiel[see]'", INFO),
                                     ("imageio_ffmpeg", "the video/audio tool (bundled ffmpeg)", "imageio-ffmpeg", WARNING),
                                     ("textual_image", "inline image thumbnails in the terminal", "'hexiel[view]'", INFO),
                                     ("tree_sitter_language_pack", "exact symbol ranges in non-Python code (find, where_is)",

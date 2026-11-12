@@ -15,13 +15,14 @@
 #   6. runs `hexiel --setup`: finds the keys and agents already on this machine and ends in a working chat
 #
 # Variables: HEXIEL_INSTALL_METHOD=uv|pipx|venv (default uv) · HEXIEL_VERSION=0.9.3 (default: latest)
-#            HEXIEL_SPEC='.[serve]' (install this checkout instead of PyPI) · HEXIEL_NO_SETUP=1 (skip step 6)
+#            HEXIEL_NO_VISION_MODEL=1 (skip the one-time 265 MB local vision model download)
+#            HEXIEL_SPEC='.[serve,see]' (install this checkout instead of PyPI) · HEXIEL_NO_SETUP=1 (skip step 6)
 #            UV_VERSION (default pinned below)
 set -eu
 
 UV_VERSION="${UV_VERSION:-0.13.7}"
-HEXIEL_SPEC="${HEXIEL_SPEC:-hexiel[serve]}"            # a path or git URL works too (CI installs the tree under test)
-[ -n "${HEXIEL_VERSION:-}" ] && HEXIEL_SPEC="hexiel[serve]==${HEXIEL_VERSION}"
+HEXIEL_SPEC="${HEXIEL_SPEC:-hexiel[serve,see]}"            # a path or git URL works too (CI installs the tree under test)
+[ -n "${HEXIEL_VERSION:-}" ] && HEXIEL_SPEC="hexiel[serve,see]==${HEXIEL_VERSION}"
 METHOD="${HEXIEL_INSTALL_METHOD:-uv}"
 BIN="$HOME/.local/bin"
 
@@ -145,6 +146,12 @@ if [ -z "${HEXIEL_NO_SYSTEM_DEPS:-}" ] && ! have tesseract; then
     fi && have tesseract && say "installed tesseract (screen OCR)" || true
   fi
   have tesseract || say "optional: install tesseract for screen OCR (brew install tesseract / sudo apt install tesseract-ocr)"
+fi
+
+# local vision model (Florence-2, ~265 MB, one time): lets text-only models "see" pictures. Opt out: HEXIEL_NO_VISION_MODEL=1
+if [ -z "${HEXIEL_NO_VISION_MODEL:-}" ]; then
+  say "downloading the local vision model (~265 MB, once) …"
+  "$HEXIEL" --get-vision || say "note: skipped the vision model — run later: hexiel --get-vision"
 fi
 
 # ---------------------------------------------------------------- first run

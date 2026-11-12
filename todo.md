@@ -162,10 +162,13 @@ Each ticket was marked fixed in 0.9.3/0.9.4 and reopened; the comment says what 
 - [ ] **"See" an image without vision** (b531ece24d7e, c259c37acb2d) — *the card is not useful: the model still cannot tell
       what the picture is.* The tool itself must look with Python and describe it in words. Today's card is size,
       colours, regions and OCR; add what actually answers "what is this?":
-      - [ ] local captioning model as an optional extra (`hexiel[see]`: Florence-2 / moondream / BLIP via onnxruntime or
-            transformers; runs on CPU, downloaded once, no cloud) → a plain-language caption and a dense description
-      - [ ] object / person / face-count detection (small ONNX detector), scene and text-heavy-vs-photo classification
-      - [ ] OCR that needs no system program (rapidocr-onnxruntime or easyocr) so it works on every OS; tesseract stays an option
+      - [x] local captioning model as an optional extra (`hexiel[see]`: Florence-2-base int8 on onnxruntime, CPU, ~265 MB
+            downloaded once by `hexiel --get-vision`, installers do it unless HEXIEL_NO_VISION_MODEL=1) → a detailed
+            description in the image card (`hexiel/looker.py`, ~4–6 s per image)
+      - [x] objects with where they are (Florence <OD> tokens → "square (top-left, 30% wide)")
+      - [ ] people / face counts, scene classification, "this is a terminal / chart / document" labels (the caption
+            calls a terminal UI "a computer screen with buttons" — good enough to orient, not to rely on)
+      - [x] OCR that needs no system program (rapidocr-onnxruntime in `hexiel[see]`); tesseract stays preferred when present
       - [ ] chart / screenshot / document-page awareness: tables and axis labels read into text
       - [ ] one assembled description ("a screenshot of a terminal showing …, 3 buttons, text reads …") handed to the model
             in place of the image; benchmark it against a real vision model on a fixed set of 20 images and show the result
@@ -173,7 +176,8 @@ Each ticket was marked fixed in 0.9.3/0.9.4 and reopened; the comment says what 
 - [ ] **ACP in other editors** (6e2a2e38dc0d) — VS Code, Neovim and Vim: answer the question (ACP clients exist for
       Neovim via CodeCompanion/avante; VS Code needs an extension) and then build thin plugins: a VS Code extension
       that launches `hexiel --acp`, a Neovim Lua plugin (chat split, send selection, apply diff) and a Vim9 script
-- [ ] **Starter skills for the marketplace** (5d13e3a5e169) — ship a first-party marketplace index with useful skills so it is
+- [x] **Starter skills for the marketplace** (5d13e3a5e169) — DONE in 0.9.9: a built-in `hexiel` catalogue shipped in the package
+      (hexiel/starter, works offline, cannot be removed) with 14 skills, sha256-pinned; screenshot scripts/screenshot_market.py. Ship a first-party marketplace index with useful skills so it is
       not empty: commit-message, code-review, test-writer, explain-this-repo, release-notes, changelog, refactor-plan,
       regex-helper, sql-explainer, docs-writer, meeting-notes, email-drafter, data-cleaner, translate; each with a
       test that it loads and a screenshot of `/marketplace` listing them

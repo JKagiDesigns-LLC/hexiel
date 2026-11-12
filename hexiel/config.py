@@ -175,6 +175,7 @@ class ModelConfig:
     keep_alive: str = "1h"           # local Ollama only: keep the model resident this long after the last use ("-1" forever); a reload after idle costs 30–120s on modest hardware
     num_ctx: int = 0                 # local Ollama only: pin the context size (Ollama's default is small and a changed context throws its prefix cache away); 0 = leave the server default
     billing: str = ""                # the bill it is paid from, for spend tracking: "" = worked out (spend.py), "none" = free
+    alt_base_urls: tuple[str, ...] = ()   # other addresses of the same server (e.g. its Tailscale name away from home): the first that answers is used
     vision: str = ""                 # "" = guessed from the model id (vision.py), "yes"/"no" to say; a text-only model gets images described
 
     def compact_share(self, default: float) -> float:
@@ -187,6 +188,10 @@ class ModelConfig:
             self.fallbacks = (self.fallbacks,)
         elif isinstance(self.fallbacks, list):
             self.fallbacks = tuple(self.fallbacks)
+        if isinstance(self.alt_base_urls, str):
+            self.alt_base_urls = (self.alt_base_urls,)
+        elif isinstance(self.alt_base_urls, list):
+            self.alt_base_urls = tuple(self.alt_base_urls)
 
 
 @dataclass

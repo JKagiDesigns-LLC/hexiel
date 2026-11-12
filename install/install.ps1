@@ -17,7 +17,7 @@ Variables: $env:HEXIEL_VERSION = "0.9.3" (default latest) · $env:HEXIEL_SPEC = 
 #>
 $ErrorActionPreference = "Stop"
 $UvVersion = if ($env:UV_VERSION) { $env:UV_VERSION } else { "0.13.7" }
-$Spec = if ($env:HEXIEL_VERSION) { "hexiel[serve]==$($env:HEXIEL_VERSION)" } elseif ($env:HEXIEL_SPEC) { $env:HEXIEL_SPEC } else { "hexiel[serve]" }
+$Spec = if ($env:HEXIEL_VERSION) { "hexiel[serve,see]==$($env:HEXIEL_VERSION)" } elseif ($env:HEXIEL_SPEC) { $env:HEXIEL_SPEC } else { "hexiel[serve,see]" }
 $Bin = Join-Path $env:USERPROFILE ".local\bin"
 New-Item -ItemType Directory -Force -Path $Bin | Out-Null
 
@@ -89,6 +89,13 @@ if (-not $env:HEXIEL_NO_SYSTEM_DEPS -and -not (Get-Command tesseract -ErrorActio
     winget install --id UB-Mannheim.TesseractOCR -e --silent --accept-package-agreements --accept-source-agreements 2>$null | Out-Null
     if ($LASTEXITCODE -eq 0) { Say "installed tesseract (screen OCR)" } else { Say "optional: winget install UB-Mannheim.TesseractOCR (screen OCR)" }
   } else { Say "optional: install tesseract for screen OCR (https://github.com/UB-Mannheim/tesseract/wiki)" }
+}
+
+# local vision model (Florence-2, ~265 MB, one time): lets text-only models "see" pictures. Opt out: HEXIEL_NO_VISION_MODEL=1
+if (-not $env:HEXIEL_NO_VISION_MODEL) {
+  Say "downloading the local vision model (~265 MB, once) …"
+  & hexiel --get-vision
+  if ($LASTEXITCODE -ne 0) { Say "note: skipped the vision model — run later: hexiel --get-vision" }
 }
 
 # ---------------------------------------------------------------- first run

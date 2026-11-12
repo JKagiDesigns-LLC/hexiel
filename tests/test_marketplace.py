@@ -145,10 +145,32 @@ def test_archives_cannot_write_outside_the_install_folder(home, tmp_path):
 
 
 def test_empty_and_broken_states_explain_themselves(home):
-    assert "no marketplace sources yet" in mk.command("search")
+    assert "no marketplace sources yet" not in mk.command("search")          # the built-in starter catalogue is always there
     assert mk.command("add /nope/missing.json").startswith("✗")
     assert mk.command("install ghost").startswith("✗")
     d = catalogue_dir(home)
     mk.command(f"add {d}")
     assert "did you mean pdf-tables" in mk.command("install pdf-tabels")
     assert "sha256: " in mk.command("info pdf-tables") and "unpinned" in mk.command("info sqlite")
+
+
+def test_the_built_in_catalogue_is_not_empty_and_every_skill_installs(home, tmp_path):
+    items = [i for i in mk.catalogue() if i.kind == "skill"]
+    names = {i.name for i in items}
+    assert len(items) >= 14 and {"commit-message", "code-review", "test-writer", "release-notes", "translate"} <= names
+    assert all(i.sha256 and i.source == "hexiel" for i in items)
+    for item in items:
+        assert "installed" in mk.install(item.name).lower() or item.name in mk.installed()
+    loaded = {s.name for s in skills_mod.discover(str(tmp_path))}
+    assert names <= loaded
+    assert all(len(s.description) > 20 for s in skills_mod.discover(str(tmp_path)) if s.name in names)
+
+
+def test_the_built_in_catalogue_cannot_be_removed_or_shadowed(home):
+    assert "cannot be removed" in mk.remove_source("hexiel")
+    assert mk.sources()[0]["name"] == "hexiel" and mk.sources()[0]["builtin"]
+    d = catalogue_dir(home)
+    with pytest.raises(mk.MarketError):
+        mk.add_source(str(d), "hexiel")
+    mk.add_source(str(d), "mine")
+    assert [s["name"] for s in mk.sources()] == ["hexiel", "mine"]

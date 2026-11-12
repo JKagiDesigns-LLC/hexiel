@@ -175,7 +175,7 @@ def _is_busy(mc, settings) -> bool:
     body = {"model": mc.model, "messages": [{"role": "user", "content": "Reply with: ok"}], "max_tokens": 1,
             **{k: v for k, v in (mc.extra_body or {}).items() if k == "reasoning_effort"}}
     try:
-        httpx.post(mc.base_url.rstrip("/") + "/chat/completions", json=body, timeout=BUSY_PROBE_SECONDS,
+        httpx.post(__import__("hexiel.llm", fromlist=["pick_base_url"]).pick_base_url(mc.base_url, getattr(mc, "alt_base_urls", ())) + "/chat/completions", json=body, timeout=BUSY_PROBE_SECONDS,
                    headers={"Authorization": f"Bearer {key or 'none'}"}).raise_for_status()
         return False
     except httpx.HTTPStatusError:

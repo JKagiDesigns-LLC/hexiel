@@ -119,13 +119,69 @@ def _barcodes(data: bytes) -> list[str]:
             pass
 
 
+def _rapid_layout(data: bytes) -> list[str]:
+    """Text lines with position from rapidocr (pip-only, works on every OS); [] when it is not installed."""
+    try:
+        import io
+
+        import numpy as np
+        from PIL import Image
+        from rapidocr_onnxruntime import RapidOCR
+        img = Image.open(io.BytesIO(data)).convert("RGB")
+        found, _ = RapidOCR()(np.asarray(img))
+    except Exception:  # noqa: BLE001 - not installed or it could not read this image
+        return []
+    width, height = img.size
+    lines = []
+    for box, text, conf in sorted(found or [], key=lambda r: (r[0][0][1], r[0][0][0])):
+        if float(conf) < 0.5 or not str(text).strip():
+            continue
+        x, y = box[0]
+        v = "top" if y < height / 3 else "middle" if y < 2 * height / 3 else "bottom"
+        h = "left" if x < width / 3 else "centre" if x < 2 * width / 3 else "right"
+        lines.append(f"{v}-{h}: {text}")
+    return lines
+
+
+def local_description(data: bytes) -> list[str]:
+    """What the picture shows, in words, from the local model (hexiel[see]) — only when its weights are already
+    downloaded: an image card never starts a 265 MB download by itself. [] otherwise."""
+    try:
+        import io
+
+        from PIL import Image
+
+        from . import looker
+        if looker.runtime_missing() or not looker.installed():
+            return []
+        eyes = looker.get(auto_download=False)
+        img = Image.open(io.BytesIO(data)).convert("RGB")
+        out = ["it shows (local vision model): " + eyes.see(img, "detailed")]
+        objects = eyes.objects(img)
+        w, h = img.size
+        seen = []
+        if objects:
+            for label, (x0, y0, x1, y1) in objects[:14]:
+                if (x1 - x0) >= 0.95 * w and (y1 - y0) >= 0.95 * h:
+                    continue                     # 'the whole picture' is not an object
+                cx, cy = (x0 + x1) / 2 / w, (y0 + y1) / 2 / h
+                where = (("top" if cy < 1 / 3 else "bottom" if cy > 2 / 3 else "middle") + "-" +
+                         ("left" if cx < 1 / 3 else "right" if cx > 2 / 3 else "centre"))
+                seen.append(f"{label} ({where}, {100 * (x1 - x0) // w}% wide)")
+            if seen:
+                out.append("objects: " + "; ".join(seen))
+        return out
+    except Exception:  # noqa: BLE001 - the card must never fail because the optional model did
+        return []
+
+
 def _ocr_layout(data: bytes, timeout: float = 30.0) -> list[str]:
-    """Text lines with their position (tesseract TSV): 'top-left: Save changes'. [] without tesseract."""
+    """Text lines with their position (tesseract TSV): 'top-left: Save changes'. Falls back to rapidocr, then []."""
     import shutil
     import subprocess  # nosec B404
     exe = shutil.which("tesseract")
     if not exe:
-        return []
+        return _rapid_layout(data)
     try:
         out = subprocess.run([exe, "stdin", "stdout", "tsv"], input=data, capture_output=True,  # nosec B603
                              timeout=timeout, check=False)
@@ -152,6 +208,11 @@ def _ocr_layout(data: bytes, timeout: float = 30.0) -> list[str]:
         h = "left" if e["x"] < width / 3 else "centre" if e["x"] < 2 * width / 3 else "right"
         out_lines.append(f"{v}-{h}: {' '.join(e['words'])}")
     return out_lines
+
+
+def _has(module: str) -> bool:
+    import importlib.util
+    return importlib.util.find_spec(module) is not None
 
 
 def image_card(data: bytes) -> str:
@@ -190,12 +251,17 @@ def image_card(data: bytes) -> str:
         missing.append("Pillow (colours/layout)")
     except Exception as exc:  # noqa: BLE001
         lines.append(f"(could not decode the image: {exc})")
+    seen = local_description(data)
+    if seen:
+        lines = seen + lines
     text = _ocr_layout(data)
     if text:
-        lines.append("text (tesseract, with position):")
+        lines.append("text (OCR, with position):")
         lines.extend("  " + t for t in text[:80])
-    elif not __import__("shutil").which("tesseract"):
-        missing.append("tesseract (text)")
+    elif not __import__("shutil").which("tesseract") and not _has("rapidocr_onnxruntime"):
+        missing.append("an OCR engine (pip install 'hexiel[see]')")
+    if not seen:
+        missing.append("the local vision model (pip install 'hexiel[see]' then hexiel --get-vision)")
     codes = _barcodes(data)
     if codes:
         lines.append("codes: " + "; ".join(codes))

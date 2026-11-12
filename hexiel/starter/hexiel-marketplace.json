@@ -1,0 +1,159 @@
+{
+  "name": "hexiel",
+  "items": [
+    {
+      "name": "changelog",
+      "kind": "skill",
+      "version": "1.0.0",
+      "description": "Update CHANGELOG.md in Keep-a-Changelog style from recent commits, without rewriting history.",
+      "url": "skills/changelog.md",
+      "sha256": "e9dadd38e610801f0fa5dcfaf22d8df33bf087ba03715ca1fecf11a301b7d7f5",
+      "tags": [
+        "starter"
+      ]
+    },
+    {
+      "name": "code-review",
+      "kind": "skill",
+      "version": "1.0.0",
+      "description": "Review a diff or branch for bugs, risky changes and missing tests, with findings ranked by severity.",
+      "url": "skills/code-review.md",
+      "sha256": "5139d414606dce2ab581aef488da24308f54d27bc7339cfaa8bf6f469717ee16",
+      "tags": [
+        "starter"
+      ]
+    },
+    {
+      "name": "commit-message",
+      "kind": "skill",
+      "version": "1.0.0",
+      "description": "Write a clear commit message from the staged or working-tree changes (no trailers unless the project asks).",
+      "url": "skills/commit-message.md",
+      "sha256": "a3199cd496da6635f66a80969b22250b6785b3467d5ae1befa397460db530496",
+      "tags": [
+        "starter"
+      ]
+    },
+    {
+      "name": "data-cleaner",
+      "kind": "skill",
+      "version": "1.0.0",
+      "description": "Clean a messy CSV/Excel file: find problems first, fix them reproducibly, keep the original, report what changed.",
+      "url": "skills/data-cleaner.md",
+      "sha256": "4a2f9c16a21c1d05285ba9a2b77800215018618cf4d4d06368ff6877fe3341ae",
+      "tags": [
+        "starter"
+      ]
+    },
+    {
+      "name": "docs-writer",
+      "kind": "skill",
+      "version": "1.0.0",
+      "description": "Write or update documentation (README, API docs, how-to) from the code, with examples that were actually run.",
+      "url": "skills/docs-writer.md",
+      "sha256": "ba43a013308967f246a56b3e07b9e4917c4a15f05c1e941706acd8f887a73627",
+      "tags": [
+        "starter"
+      ]
+    },
+    {
+      "name": "email-drafter",
+      "kind": "skill",
+      "version": "1.0.0",
+      "description": "Draft a clear, appropriately toned email or reply from a few bullet points \u2014 short, with a specific ask.",
+      "url": "skills/email-drafter.md",
+      "sha256": "f090e6dd27dbcb048f366aabb289a7c08202e3d9ee31c71d6d5aefa364a21b69",
+      "tags": [
+        "starter"
+      ]
+    },
+    {
+      "name": "explain-this-repo",
+      "kind": "skill",
+      "version": "1.0.0",
+      "description": "Explain an unfamiliar codebase: what it does, how it is laid out, how to run it and where to start reading.",
+      "url": "skills/explain-this-repo.md",
+      "sha256": "e96658670e4d036d38c640afa07cfb6d6546d58655848a905553ce6e23bcf0b6",
+      "tags": [
+        "starter"
+      ]
+    },
+    {
+      "name": "meeting-notes",
+      "kind": "skill",
+      "version": "1.0.0",
+      "description": "Turn raw meeting notes or a transcript into a summary, decisions and an action list with owners and dates.",
+      "url": "skills/meeting-notes.md",
+      "sha256": "4f3ecdae9c1c2c2d5357bff6262e4041556422a8dc96239dc3eff717b9a86a16",
+      "tags": [
+        "starter"
+      ]
+    },
+    {
+      "name": "refactor-plan",
+      "kind": "skill",
+      "version": "1.0.0",
+      "description": "Plan a safe refactor in small, individually testable steps before touching the code.",
+      "url": "skills/refactor-plan.md",
+      "sha256": "297b2e864d7944b6fac6f93c3e11dccfc18fbc2dd50dc48bc58e2cb4f0117287",
+      "tags": [
+        "starter"
+      ]
+    },
+    {
+      "name": "regex-helper",
+      "kind": "skill",
+      "version": "1.0.0",
+      "description": "Build and verify a regular expression against real examples, and explain it in plain words.",
+      "url": "skills/regex-helper.md",
+      "sha256": "019fcda73d51ce7724d66686fe6092748096831099d0d0fd3a3f91b19fa76914",
+      "tags": [
+        "starter"
+      ]
+    },
+    {
+      "name": "release-notes",
+      "kind": "skill",
+      "version": "1.0.0",
+      "description": "Turn commits or merged changes since the last release into user-facing release notes.",
+      "url": "skills/release-notes.md",
+      "sha256": "68ad4cd1ccb14084b2244c19a232bef7072e2bfa1e228333af39a322fdbc3c05",
+      "tags": [
+        "starter"
+      ]
+    },
+    {
+      "name": "sql-explainer",
+      "kind": "skill",
+      "version": "1.0.0",
+      "description": "Explain a SQL query step by step, find performance problems, and suggest a safer or faster version.",
+      "url": "skills/sql-explainer.md",
+      "sha256": "1ed053d344d548ae02590cbf1e903601cb3aa91ad32c6a94a5fddd50ff2b2dd2",
+      "tags": [
+        "starter"
+      ]
+    },
+    {
+      "name": "test-writer",
+      "kind": "skill",
+      "version": "1.0.0",
+      "description": "Write focused tests for a function, module or bug \u2014 matching the project's test framework and style.",
+      "url": "skills/test-writer.md",
+      "sha256": "fbfa14d6b563cd66dac8f3a0aabf5905361bbeba863079436555d611b0a1c560",
+      "tags": [
+        "starter"
+      ]
+    },
+    {
+      "name": "translate",
+      "kind": "skill",
+      "version": "1.0.0",
+      "description": "Translate text or documents accurately, keeping formatting, names and terminology; flag ambiguity instead of guessing.",
+      "url": "skills/translate.md",
+      "sha256": "fcc8618649c7192af42bf6e8d05e6dd48d81c75450a514d2480b8d8e7d42c1b4",
+      "tags": [
+        "starter"
+      ]
+    }
+  ]
+}

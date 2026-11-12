@@ -156,6 +156,34 @@ lands, and is documented on hexiel.tech the same day so the site never goes stal
 - [x] qwen3.5 / qwen3.6 see images (llama-server with an mmproj): no describe detour for gmktec.
 - [x] CI tests pass in the root container runner (sudo, clipboard, ruff, timing assumptions).
 
+## Reopened by the owner (2026-11-12 comments on the tickets) — do these before the rest of the roadmap
+Each ticket was marked fixed in 0.9.3/0.9.4 and reopened; the comment says what was missed.
+
+- [ ] **"See" an image without vision** (b531ece24d7e, c259c37acb2d) — *the card is not useful: the model still cannot tell
+      what the picture is.* The tool itself must look with Python and describe it in words. Today's card is size,
+      colours, regions and OCR; add what actually answers "what is this?":
+      - [ ] local captioning model as an optional extra (`hexiel[see]`: Florence-2 / moondream / BLIP via onnxruntime or
+            transformers; runs on CPU, downloaded once, no cloud) → a plain-language caption and a dense description
+      - [ ] object / person / face-count detection (small ONNX detector), scene and text-heavy-vs-photo classification
+      - [ ] OCR that needs no system program (rapidocr-onnxruntime or easyocr) so it works on every OS; tesseract stays an option
+      - [ ] chart / screenshot / document-page awareness: tables and axis labels read into text
+      - [ ] one assembled description ("a screenshot of a terminal showing …, 3 buttons, text reads …") handed to the model
+            in place of the image; benchmark it against a real vision model on a fixed set of 20 images and show the result
+      - [ ] ticket acceptance: a text-only model answers "what is in this image?" correctly from the description alone
+- [ ] **ACP in other editors** (6e2a2e38dc0d) — VS Code, Neovim and Vim: answer the question (ACP clients exist for
+      Neovim via CodeCompanion/avante; VS Code needs an extension) and then build thin plugins: a VS Code extension
+      that launches `hexiel --acp`, a Neovim Lua plugin (chat split, send selection, apply diff) and a Vim9 script
+- [ ] **Starter skills for the marketplace** (5d13e3a5e169) — ship a first-party marketplace index with useful skills so it is
+      not empty: commit-message, code-review, test-writer, explain-this-repo, release-notes, changelog, refactor-plan,
+      regex-helper, sql-explainer, docs-writer, meeting-notes, email-drafter, data-cleaner, translate; each with a
+      test that it loads and a screenshot of `/marketplace` listing them
+- [ ] **Tree-sitter in the views** (fa9b1b84872b) — use it for what people *see*, not only for symbol ranges: syntax-highlight
+      code and structured files (JSON, YAML, TOML, Markdown code fences) in the TUI and web UI for file views, diffs
+      and tool output; fall back to Pygments/regex when the extra is missing; screenshots of both UIs
+- [ ] **Ticket notifications by plan** (6760ea29be7a) — a reporter is told when their ticket is fixed only if they are a paying
+      customer (they have access to the server); free users get only "a new update is available". Check the notifier
+      against entitlement (cloud `pay.entitled`), add tests for paid vs free, and show the difference in the settings UI
+
 ## Next — Python does the work: files, media and documents without model walls (researched 2026-11-12)
 Principle: every tool is deterministic Python that returns a short text summary plus the output path, so ANY
 model (text-only, small, local) can create and change images, video, documents and data. The model only sees

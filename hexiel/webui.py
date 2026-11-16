@@ -280,6 +280,14 @@ class WebState:
             elapsed = payload[3] if len(payload) > 3 else 0.0
             done = {"t": "tool_done", "id": call.get("id", ""), "ok": not is_error,
                     "elapsed": round(elapsed, 1), "preview": _shorten(text)}
+            if not is_error:
+                try:
+                    from . import highlight
+                    coloured = highlight.preview(call, text, "html", 40)
+                    if coloured:
+                        done["html"] = "\n".join(coloured)
+                except Exception:  # noqa: BLE001 - colour is a nicety
+                    pass
             made = self.__dict__.setdefault("_outputs", {}).pop(call.get("id", ""), [])
             if call.get("name") == "view_image" and not is_error:
                 done["media"] = media_items([self._media_path(call)])
@@ -355,7 +363,7 @@ class WebState:
                     items.append({"t": "assistant", "text": text})
                 for call in msg.get("tool_calls", []):
                     pending[call["id"]] = {"id": call["id"], "t": "tool", **short_call(call),
-                                       "path": self._media_path(call)}
+                                       "path": self._media_path(call), "_call": call}
                     items.append(pending[call["id"]])
             elif role == "graphic":
                 if msg.get("graphics"):
@@ -365,11 +373,20 @@ class WebState:
                 if entry is not None:
                     entry["ok"] = not msg.get("is_error")
                     entry["preview"] = _shorten(msg.get("content", ""))
+                    if entry["ok"]:
+                        try:
+                            from . import highlight
+                            coloured = highlight.preview(entry["_call"], msg.get("content", ""), "html", 40)
+                            if coloured:
+                                entry["html"] = "\n".join(coloured)
+                        except Exception:  # noqa: BLE001 - colour is a nicety
+                            pass
                     if entry["name"] == "view_image" and not msg.get("is_error"):
                         entry["media"] = media_items([entry.get("path", "")])
                     elif msg.get("outputs"):
                         entry["media"] = media_items(msg["outputs"])
         for item in items:
+            item.pop("_call", None)
             item.pop("path", None)             # a local path is only for finding the file, not for the page
         return items
 

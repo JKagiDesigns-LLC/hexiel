@@ -78,3 +78,24 @@ def test_lines_are_highlighted_one_by_one_even_inside_multiline_strings():
     assert len(lines) == 3 and lines[0].count("tok-string") == 1 and 'tok-string">two' in lines[1] and "tok-number" in lines[2]
     rich = h.rich_lines('d["k"]', "python")
     assert rich[0].startswith("d\\[")
+
+
+def test_preview_read_keeps_numbers_and_colours_code():
+    from hexiel import highlight
+    call = {"name": "read", "arguments": {"path": "x.py"}}
+    out = highlight.preview(call, "     1\tdef f(a):\n     2\t    return 'hi'\n", "rich")
+    assert out and out[0].startswith("[dim]     1\t[/]") and "[" in out[0][12:] and "def" in out[0]
+    html = highlight.preview(call, "     1\tdef f(a):\n", "html")
+    assert html and "tok-keyword" in html[0] and "tok-meta" in html[0]
+
+
+def test_preview_json_result_and_plain_text_skipped():
+    from hexiel import highlight
+    assert highlight.preview({"name": "http"}, '{"a": 1, "b": [true]}', "html")
+    assert highlight.preview({"name": "bash"}, "hello world\nfine", "html") is None
+
+
+def test_preview_handles_read_path_header():
+    from hexiel import highlight
+    out = highlight.preview({"name": "read", "arguments": {"path": "a.py"}}, "/p/a.py\n     1\tx = 1\n", "html")
+    assert out[0].count("/p/a.py") == 1 and "tok-meta" in out[1] and "tok-number" in out[1].split("\t")[-1]

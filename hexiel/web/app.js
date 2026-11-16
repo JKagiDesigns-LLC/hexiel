@@ -193,7 +193,8 @@ function toolDone(data) {
   head.innerHTML =
     `<span style="opacity:.8">${data.ok ? "✓" : "✗"}</span> ${esc(name)} — ${esc(head.textContent.split(" — ").slice(1).join(" — "))}` +
     `<span style="opacity:.6"> ${data.elapsed}s</span><span class="chev">▸</span>`;
-  el.querySelector(".preview").textContent = data.preview || "(no output)";
+  const pv = el.querySelector(".preview");
+  if (data.html) pv.innerHTML = data.html; else pv.textContent = data.preview || "(no output)";
   if (data.media && data.media.length) el.append(mediaStrip(data.media));
 }
 
@@ -228,6 +229,7 @@ function renderHistory(items) {
           id: item.id,
           ok: item.ok,
           preview: item.preview,
+          html: item.html,
           elapsed: 0,
           media: item.media,
         });

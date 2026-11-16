@@ -873,7 +873,7 @@ class ToolLine(Static):
     def running(self, short: str) -> None:
         self.update(f"  [{YELLOW}]◌[/] {self._label(short)}  [dim]running…[/]")
 
-    def complete(self, short: str, preview: str, is_error: bool, elapsed: float) -> None:
+    def complete(self, short: str, preview: str, is_error: bool, elapsed: float, call: dict | None = None) -> None:
         colour = RED if is_error else GREEN
         bullet = "✗" if is_error else "⏺"
         took = f"  [dim]{elapsed:.1f}s[/]" if elapsed >= 0.1 else ""
@@ -882,6 +882,14 @@ class ToolLine(Static):
         body = ""
         if lines:
             body = "\n     [dim]⎿[/] " + f"\n       ".join(lines)
+        if call and not is_error:
+            try:
+                from . import highlight
+                coloured = highlight.preview(call, preview, "rich", 12)
+            except Exception:  # noqa: BLE001 - colour is a nicety; never lose the result over it
+                coloured = None
+            if coloured:
+                body = "\n     [dim]⎿[/] " + f"\n       ".join(ln[:400] for ln in coloured)
         self.update(f"  [{colour}]{bullet}[/] {self._label(short)}{took}{body}")
 
 
@@ -2825,7 +2833,7 @@ class HexielTUI(App):
             elapsed = payload[3] if len(payload) > 3 else 0.0
             wid = self._tool_widgets.pop(call["id"], None)
             if wid:
-                wid.complete(call_short(call), text, is_error, elapsed)
+                wid.complete(call_short(call), text, is_error, elapsed, call)
             made = self.__dict__.setdefault("_outputs", {}).pop(call.get("id", ""), [])
             if call.get("name") == "view_image" and not is_error:
                 from . import media

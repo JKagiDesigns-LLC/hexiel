@@ -466,3 +466,8 @@ button.small { font-size: 12px; padding: 3px 9px; }
 .check .lvl { display: inline-block; min-width: 68px; font-size: 11px; letter-spacing: .05em; }
 .check.ok .lvl { color: var(--ok); } .check.info .lvl { color: var(--text-dim); } .check.warning .lvl { color: var(--warn); } .check.error .lvl { color: var(--err); }
 .check .advice { margin: 2px 0 4px 68px; color: var(--text-dim); font-size: 12px; }
+
+.tok-keyword { color: #c792ea; } .tok-string { color: #a5d6a7; } .tok-comment { color: #6b7280; font-style: italic; }
+.tok-number { color: #f9a26c; } .tok-function { color: #82aaff; } .tok-type { color: #ffcb6b; }
+.tok-property { color: #89ddff; } .tok-constant { color: #f78c6c; } .tok-operator { color: #94a3b8; }
+.tok-tag { color: #f07178; } .tok-meta { color: #64748b; }

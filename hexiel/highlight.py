@@ -341,3 +341,29 @@ def strip_line_numbers(text: str) -> tuple[list[str], list[str]]:
         pre.append(m.group(1) + m.group(2))
         code.append(m.group(3))
     return pre, code
+
+
+def preview(call: dict, text: str, fmt: str = "rich", limit: int = 12) -> list[str] | None:
+    """Highlighted first `limit` lines of a tool result, or None when it is not code/data worth colouring.
+
+    `read` results (line-numbered) are coloured by the file's extension with the numbers put back; any other result
+    that parses as JSON is coloured as JSON. `fmt` is "rich" (TUI markup) or "html" (web)."""
+    if not text or len(text) > MAX_CHARS:
+        return None
+    path = (call.get("arguments") or {}).get("path", "") if call.get("name") == "read" else ""
+    header = ""
+    if path and not _NUMBERED.match(text.split("\n", 1)[0]) and "\n" in text:
+        header, text = text.split("\n", 1)                  # `read` leads with the file's path
+    pre, code = strip_line_numbers(text) if path else ([], [])
+    body = "\n".join(code) if pre else text.strip("\n")
+    lang = lang_for(path, body)
+    if not lang:
+        return None
+    lines = (rich_lines if fmt == "rich" else html_lines)(body, lang)[:limit]
+    if pre:
+        dim = (lambda s: f"[dim]{s}[/]") if fmt == "rich" else (lambda s: f'<span class="tok-meta">{s}</span>')
+        lines = [dim(p) + ln for p, ln in zip(pre, lines)]
+    if header:
+        esc = header.replace("[", "\\[") if fmt == "rich" else _html.escape(header, quote=False)
+        lines.insert(0, f"[dim]{esc}[/]" if fmt == "rich" else f'<span class="tok-meta">{esc}</span>')
+    return lines

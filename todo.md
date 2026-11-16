@@ -184,6 +184,9 @@ Each ticket was marked fixed in 0.9.3/0.9.4 and reopened; the comment says what 
 - [ ] **Tree-sitter in the views** (fa9b1b84872b) — use it for what people *see*, not only for symbol ranges: syntax-highlight
       code and structured files (JSON, YAML, TOML, Markdown code fences) in the TUI and web UI for file views, diffs
       and tool output; fall back to Pygments/regex when the extra is missing; screenshots of both UIs
+  - [x] `hexiel/highlight.py` (tree-sitter leaf heuristics, Pygments fallback) and `read`/JSON tool output coloured in
+        the TUI and web UI, live and when a chat is reloaded (`scripts/screenshot_hl.py`)
+  - [ ] Still to do: Markdown code fences in replies, diffs (edit/write previews), YAML/TOML results from non-`read` tools
 - [ ] **Ticket notifications by plan** (6760ea29be7a) — a reporter is told when their ticket is fixed only if they are a paying
       customer (they have access to the server); free users get only "a new update is available". Check the notifier
       against entitlement (cloud `pay.entitled`), add tests for paid vs free, and show the difference in the settings UI

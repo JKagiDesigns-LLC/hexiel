@@ -315,7 +315,7 @@ class AnthropicProvider(AbortableHTTP):
                 blocks = []
                 if msg.get("content"):
                     blocks.append({"type": "text", "text": msg["content"]})
-                for call in msg.get("tool_calls", []):
+                for call in msg.get("tool_calls") or []:
                     blocks.append({
                         "type": "tool_use",
                         "id": safe_tool_id(call["id"]),
@@ -610,18 +610,18 @@ class OpenAICompatProvider(AbortableHTTP):
                 usage, finish = {}, ""
                 for sse in _iter_sse(response.iter_lines()):
                     data = json.loads(sse)
-                    for choice in data.get("choices", []):
+                    for choice in data.get("choices") or []:
                         if choice.get("finish_reason"):
                             finish = choice["finish_reason"]
-                        delta = choice.get("delta", {})
+                        delta = choice.get("delta") or {}
                         if delta.get("reasoning"):
                             yield ("thinking", delta["reasoning"])
                         if delta.get("content"):
                             buf.add_text(delta["content"])
                             yield ("text", delta["content"])
-                        for tc in delta.get("tool_calls", []):
+                        for tc in delta.get("tool_calls") or []:
                             idx = tc.get("index", 0)
-                            fn = tc.get("function", {})
+                            fn = tc.get("function") or {}
                             buf.ensure_call(idx)
                             if tc.get("id") or fn.get("id"):
                                 buf.tool_calls[idx]["id"] = safe_tool_id(tc.get("id") or fn.get("id", ""))

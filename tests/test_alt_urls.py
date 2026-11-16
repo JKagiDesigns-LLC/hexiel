@@ -49,3 +49,34 @@ def test_the_provider_re_picks_each_request_and_profiles_accept_a_string():
 def test_tailscale_addresses_count_as_your_own_machines():
     assert llm._is_local_url("http://100.94.106.25:11436/v1") and llm._is_local_url("http://gmktec.tailec2240.ts.net:11436/v1")
     assert not llm._is_local_url("https://api.deepinfra.com/v1/openai")
+
+
+def test_stream_tolerates_null_tool_calls():
+    """Some OpenAI-compatible servers stream `"tool_calls": null` — that crashed turns with a NoneType error."""
+    import json
+    import threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+    from hexiel.llm import OpenAICompatProvider
+    chunks = [{"choices": [{"delta": {"content": "hi", "tool_calls": None, "reasoning": None}}]},
+              {"choices": None}, {"choices": [{"delta": None, "finish_reason": "stop"}]}]
+
+    class H(BaseHTTPRequestHandler):
+        def do_POST(self):
+            self.rfile.read(int(self.headers.get("content-length", 0)))
+            self.send_response(200)
+            self.send_header("content-type", "text/event-stream")
+            self.end_headers()
+            for c in chunks:
+                self.wfile.write(f"data: {json.dumps(c)}\n\n".encode())
+            self.wfile.write(b"data: [DONE]\n\n")
+
+        def log_message(self, *a):
+            pass
+    srv = HTTPServer(("127.0.0.1", 0), H)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        p = OpenAICompatProvider("", f"http://127.0.0.1:{srv.server_port}/v1")
+        events = list(p.stream([{"role": "user", "content": "x"}], "sys", [], model="m", max_output_tokens=50, extra_body={}, timeout=10))
+    finally:
+        srv.shutdown()
+    assert ("text", "hi") in events

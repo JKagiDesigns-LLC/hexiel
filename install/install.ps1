@@ -17,7 +17,7 @@ Variables: $env:HEXIEL_VERSION = "0.9.3" (default latest) · $env:HEXIEL_SPEC = 
 #>
 $ErrorActionPreference = "Stop"
 $UvVersion = if ($env:UV_VERSION) { $env:UV_VERSION } else { "0.13.7" }
-$Spec = if ($env:HEXIEL_VERSION) { "hexiel[serve,see]==$($env:HEXIEL_VERSION)" } elseif ($env:HEXIEL_SPEC) { $env:HEXIEL_SPEC } else { "hexiel[serve,see]" }
+$Spec = if ($env:HEXIEL_VERSION) { "hexiel[serve,see,code,view]==$($env:HEXIEL_VERSION)" } elseif ($env:HEXIEL_SPEC) { $env:HEXIEL_SPEC } else { "hexiel[serve,see,code,view]" }
 $Bin = Join-Path $env:USERPROFILE ".local\bin"
 New-Item -ItemType Directory -Force -Path $Bin | Out-Null
 

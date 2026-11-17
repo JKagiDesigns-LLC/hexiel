@@ -27,6 +27,7 @@ dependencies = [
     "pypdf>=4.0",       # PDF text for document Q&A (pure Python)
     "Pillow>=10.0",     # image tool: edit, create, combine, diff, convert (wheels for every OS)
     "segno>=1.6",       # QR codes (pure Python)
+    "markdown>=3.5",    # the render tool: Markdown pages to HTML (pure Python)
     "pillow-heif>=0.18",        # iPhone HEIC photos
     "imageio-ffmpeg>=0.5",      # a bundled ffmpeg binary (every OS, no admin rights) for the video/audio tool
 ]

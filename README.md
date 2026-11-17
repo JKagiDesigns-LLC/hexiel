@@ -131,6 +131,10 @@ JetBrains IDEs (AI Assistant → Agents → add a custom agent, or `~/.jetbrains
 `--acp`. Add `-m PROFILE` to pin a model. The editor gets streamed answers, tool cards (with diffs for edits),
 approval prompts, hexiel's todo list as the plan, Ask/Auto modes, its own MCP servers, and past sessions to reopen.
 
+**VS Code, Neovim and Vim** have thin plugins in [`editors/`](editors/) that run the same `hexiel --acp`: a VS Code chat panel
+(selection → ask, edit approvals, *View diff*), a Neovim Lua plugin (`:Hexiel`, `:'<,'>HexielSend`, `:HexielDiff`, approvals through
+`vim.ui.select`) and a Vim 9 script with the same commands. Each folder has its own README.
+
 ## Using it
 
 | | |

@@ -1227,6 +1227,18 @@ def _view_image(args: dict, ctx: ToolContext) -> ToolResult:
     payload = image_payload(data)
     if payload:
         lines.append(f"  {payload[1]}")
+        session = getattr(ctx, "session", None)
+        if session is not None:
+            from . import vision
+            if not vision.sees_images(session.model_config):
+                # a model that can't see gets the picture in words right here, not an attachment it cannot use
+                from . import digest as digest_mod
+                try:
+                    text = digest_mod.describe(session, payload[0], str(args.get("question", "") or ""))
+                except Exception as exc:  # noqa: BLE001 - a helper failing must not fail the turn
+                    text = f"(could not describe it: {exc})"
+                lines.append("  you cannot see images, so this is what a vision model / local eyes make of it:")
+                return ToolResult(text="\n".join(lines) + "\n" + text)
         return ToolResult(text="\n".join(lines), images=[payload[0]])
     return ToolResult(text="\n".join(lines) +
                       "\n  (unsupported format; only png/jpeg/gif/webp attach to the conversation)",
@@ -1812,9 +1824,10 @@ def build_tools(chain: Toolchain) -> list[ToolDef]:
                 readonly=True, run=_map),
         ToolDef("file_info", "Stat a file: size, mtime, permissions, line count, first lines.",
                 obj(path={"type": "string"}), readonly=True, run=_file_info),
-        ToolDef("view_image", "Attach a local image (png/jpeg/gif/webp) to the conversation "
-                "so a vision-capable model can see it.",
-                obj(path={"type": "string"}), readonly=True, run=_view_image),
+        ToolDef("view_image", "Look at a local image (png/jpeg/gif/webp). A model that can see gets the picture "
+                "attached; a text-only model gets a description instead (so it is always safe to call). "
+                "Optional `question` steers the description.",
+                obj(path={"type": "string"}, question={"type": "string"}), readonly=True, run=_view_image),
         ToolDef("render", "Look at what a page really looks like: draws a local .html/.md/.svg file or an "
                 "http(s) URL (e.g. your dev server) in a headless browser and shows you the screenshot — "
                 "described in words if you can't see images. Use it to check UI work.",

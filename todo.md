@@ -173,7 +173,8 @@ Each ticket was marked fixed in 0.9.3/0.9.4 and reopened; the comment says what 
       - [ ] one assembled description ("a screenshot of a terminal showing …, 3 buttons, text reads …") handed to the model
             in place of the image; benchmark it against a real vision model on a fixed set of 20 images and show the result
       - [ ] ticket acceptance: a text-only model answers "what is in this image?" correctly from the description alone
-- [ ] **ACP in other editors** (6e2a2e38dc0d) — VS Code, Neovim and Vim: answer the question (ACP clients exist for
+- [x] **ACP in other editors** (6e2a2e38dc0d) — DONE: `editors/vscode`, `editors/nvim`, `editors/vim` (answer: Zed/JetBrains/Neovim-via-CodeCompanion
+      already work with `hexiel --acp`; VS Code needs an extension). Neovim plugin only syntax-checked here (no nvim on this machine) — VS Code, Neovim and Vim: answer the question (ACP clients exist for
       Neovim via CodeCompanion/avante; VS Code needs an extension) and then build thin plugins: a VS Code extension
       that launches `hexiel --acp`, a Neovim Lua plugin (chat split, send selection, apply diff) and a Vim9 script
 - [x] **Starter skills for the marketplace** (5d13e3a5e169) — DONE in 0.9.9: a built-in `hexiel` catalogue shipped in the package
@@ -190,6 +191,33 @@ Each ticket was marked fixed in 0.9.3/0.9.4 and reopened; the comment says what 
 - [x] **Ticket notifications by plan** (6760ea29be7a; hexiel-cloud commit, needs deploy) — a reporter is told when their ticket is fixed only if they are a paying
       customer (they have access to the server); free users get only "a new update is available". Check the notifier
       against entitlement (cloud `pay.entitled`), add tests for paid vs free, and show the difference in the settings UI
+
+## Phone assistant — widgets and "default assistant" (asked 2026-11-16; app repo `hexiel-app`, Capacitor/Angular)
+Goal: hexiel on the phone can be the assistant the user summons the way they would Gemini or Siri, if they choose it.
+- [ ] **Research first** (one short doc in hexiel-app/docs): what each OS lets a third-party app do —
+      Android `ROLE_ASSISTANT` / `VoiceInteractionService` + `VoiceInteractionSessionService` (power-button / swipe-from-corner
+      assistant gesture, "default digital assistant app" in Settings), `RecognitionService`, App Actions / shortcuts;
+      iOS: no true default-assistant slot — App Intents + App Shortcuts ("Hey Siri, ask hexiel …"), Siri/Spotlight
+      suggestions, Action Button / Back Tap / Lock Screen controls, Live Activities. Say plainly which parts are impossible on iOS
+- [ ] **Android home-screen widgets** (Jetpack Glance or AppWidgetProvider, native module in `android/`): (1) quick-ask box
+      (tap → mic or keyboard, answer inline), (2) running-chats list with a busy/approval-waiting badge, (3) one-tap "approve"
+      for a pending approval, (4) automation run results. Update via push / WorkManager; widget config activity to pick the machine
+- [ ] **Android default assistant**: implement `VoiceInteractionService` + session (assist gesture opens a compact overlay: mic,
+      text box, streamed answer, "open in app"); manifest + `android.app.role.ASSISTANT` request flow from Settings in the app
+      ("Make hexiel my phone assistant"); hotword is out of scope (the OS owns it); works from the lock screen only for safe
+      read-only asks; honours the app's sign-in and the relay subscription check
+- [ ] **iOS widgets** (WidgetKit extension, SwiftUI): small = quick-ask button (deep link into the app with the mic open),
+      medium = recent chats + approvals badge, lock-screen widgets and a Control Center control (iOS 18); App Group shared storage
+      for the token/relay address; widget timeline refreshed from push
+- [ ] **iOS Siri / Shortcuts**: App Intents ("Ask hexiel", "Approve pending", "Run automation …") exposed as App Shortcuts so
+      "Hey Siri, ask hexiel to …" works with no setup; Action Button / Back Tap instructions in the app's settings page
+- [ ] **Voice that works hands-free**: wake from the assistant gesture straight into listening, spoken answer by default when
+      launched by voice, short answers mode (the model is asked for a spoken-length reply), interrupt by tapping/speaking
+- [ ] **Security**: assistant surfaces never auto-approve writes or commands from the lock screen; the pending-approval widget
+      requires device unlock; no chat text on the lock screen unless the user opts in
+- [ ] Tests: unit tests for the intent/deep-link parsing and widget data model (vitest where JS, JUnit/XCTest where native);
+      screenshots of each widget and of the assistant overlay on an emulator/simulator as ticket evidence
+- [ ] Store listing + privacy text updated (microphone, speech, assistant role); website page for the phone app lists the widgets
 
 ## Next — Python does the work: files, media and documents without model walls (researched 2026-11-12)
 Principle: every tool is deterministic Python that returns a short text summary plus the output path, so ANY

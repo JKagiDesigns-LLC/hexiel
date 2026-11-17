@@ -1,0 +1,31 @@
+{
+  "name": "hexiel-vscode",
+  "displayName": "hexiel",
+  "description": "Chat with the hexiel coding assistant in VS Code (it runs `hexiel --acp` on your machine).",
+  "version": "0.1.0",
+  "publisher": "JKagiDesignsLLC",
+  "license": "MIT",
+  "engines": { "vscode": "^1.85.0" },
+  "categories": ["AI", "Chat"],
+  "main": "./extension.js",
+  "activationEvents": [],
+  "scripts": { "test": "node test.js" },
+  "contributes": {
+    "commands": [
+      { "command": "hexiel.open", "title": "hexiel: Open chat" },
+      { "command": "hexiel.sendSelection", "title": "hexiel: Ask about the selection" },
+      { "command": "hexiel.sendFile", "title": "hexiel: Ask about this file" },
+      { "command": "hexiel.stop", "title": "hexiel: Stop" },
+      { "command": "hexiel.newChat", "title": "hexiel: New chat" }
+    ],
+    "menus": { "editor/context": [{ "command": "hexiel.sendSelection", "when": "editorHasSelection", "group": "hexiel" }] },
+    "keybindings": [{ "command": "hexiel.sendSelection", "key": "ctrl+alt+h", "mac": "cmd+alt+h", "when": "editorHasSelection" }],
+    "configuration": {
+      "title": "hexiel",
+      "properties": {
+        "hexiel.command": { "type": "string", "default": "hexiel", "description": "The hexiel program." },
+        "hexiel.args": { "type": "array", "items": { "type": "string" }, "default": ["--acp"], "description": "Arguments (add -m PROFILE to pin a model)." }
+      }
+    }
+  }
+}

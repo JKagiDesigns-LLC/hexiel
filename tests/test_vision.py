@@ -59,3 +59,20 @@ def test_no_vision_model_falls_back_to_ocr_or_says_why(tmp_path, monkeypatch):
     assert "no vision model was usable" in content and "no usable vision model" in content
     assert "image card" in content                                           # something is always said
     assert "images" not in s.messages[0]
+
+
+def test_view_image_describes_for_a_text_only_model_and_attaches_for_a_seeing_one(tmp_path, monkeypatch):
+    from PIL import Image
+
+    from hexiel import tools
+    s, calls, events = session_with(tmp_path, monkeypatch, {"describe_image": {"models": ["small"]}},
+                                   summary="a red square on white")
+    Image.new("RGB", (40, 40), "red").save(tmp_path / "sq.png")
+    from hexiel.tooling import Toolchain
+    ctx = tools.ToolContext(cwd=str(tmp_path), chain=Toolchain(), session=s)
+    s.model_config = TEXT_ONLY
+    blind = tools._view_image({"path": "sq.png"}, ctx)
+    assert not blind.images and "a red square on white" in blind.text and not blind.is_error
+    s.model_config = ModelConfig(name="v", provider="openai", model="qwen3-vl:8b")
+    seeing = tools._view_image({"path": "sq.png"}, ctx)
+    assert seeing.images and "red square" not in seeing.text

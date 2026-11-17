@@ -21,8 +21,8 @@
 set -eu
 
 UV_VERSION="${UV_VERSION:-0.13.7}"
-HEXIEL_SPEC="${HEXIEL_SPEC:-hexiel[serve,see]}"            # a path or git URL works too (CI installs the tree under test)
-[ -n "${HEXIEL_VERSION:-}" ] && HEXIEL_SPEC="hexiel[serve,see]==${HEXIEL_VERSION}"
+HEXIEL_SPEC="${HEXIEL_SPEC:-hexiel[serve,see,code,view]}"            # a path or git URL works too (CI installs the tree under test)
+[ -n "${HEXIEL_VERSION:-}" ] && HEXIEL_SPEC="hexiel[serve,see,code,view]==${HEXIEL_VERSION}"
 METHOD="${HEXIEL_INSTALL_METHOD:-uv}"
 BIN="$HOME/.local/bin"
 

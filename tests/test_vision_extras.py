@@ -89,7 +89,8 @@ def test_read_picture_falls_back_to_ocr_then_card(monkeypatch):
     assert vision.read_picture(b"x") == ("card", "[image card]")
 
 
-def test_markdown_fallback_converter():
+def test_markdown_fallback_converter(monkeypatch):
+    monkeypatch.setitem(sys.modules, "markdown", None)          # python-markdown is a dependency now: force the fallback
     html = vision.markdown_to_html("# Title\n\n- **one**\n- `two`\n\n```\ncode <x>\n```\n")
     assert "<h1>Title</h1>" in html and "<li><b>one</b></li>" in html and "&lt;x&gt;" in html
 

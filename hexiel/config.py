@@ -83,6 +83,7 @@ searxng_url = ""            # e.g. http://localhost:8888 when search_backend = "
 # consult_mode = "auto"         # ask the planner model for advice when stuck: "auto" | "tool" (only if the model asks) | "off"
 # delegate_review = "auto"      # the planner reviews the finished diff and fixes problems: "auto" | "always" | "off"
 # error_reports = "account"     # send hexiel's own errors (scrubbed of paths and secrets) for tracking: "account" (signed in to Hexiel Remote) | "all" (anyone, to the public queue at hexiel.tech/support) | "off"
+# remote_control = "off"        # every open hexiel window connects to remote.hexiel.tech by itself: "auto" | "off" (type /remote-control in a window to connect just that one)
 # redact_secrets = "full"       # hide credentials (API keys, tokens, passwords) from the AI: scrubbed out of tool output and typed text before it reaches any model | "off" = send everything as-is
 
 [models.glm-flash]
@@ -230,6 +231,7 @@ class Settings:
     escalate_mode: str = "auto"       # when the working model is struggling, let the planner model take over for a few steps: "auto" | "off"
     consult_mode: str = "auto"        # ask the planner model for advice: "auto" (the model may ask, and hexiel asks when it is stuck) | "tool" (only when the model asks) | "off"
     error_reports: str = "account"    # send hexiel's own errors to remote.hexiel.tech for tracking: "account" (when signed in to Hexiel Remote) | "all" (also anonymously, to the public queue) | "off"
+    remote_control: str = "off"       # "auto": every open window connects to Hexiel Remote by itself (when signed in) | "off": only where you type /remote-control
     redact_secrets: str = "full"      # scrub credentials out of everything the AI reads: "full" (tool output AND typed text) | "off"
     cloud_fallback_profile: str = ""  # cloud tasks only (plans, advice, compaction summaries): used when the cloud model fails or is limited
     tool_models: dict = field(default_factory=dict)   # [tool_models]: tool -> profile that condenses its big output (see digest.py)
@@ -377,6 +379,7 @@ def _settings_from(settings_raw: dict) -> "Settings":
                       if str(settings_raw.get("consult_mode", "auto")).lower() in ("off", "tool", "auto") else "auto"),
         error_reports=(str(settings_raw.get("error_reports", "account")).lower()
                        if str(settings_raw.get("error_reports", "account")).lower() in ("account", "all", "off") else "account"),
+        remote_control="auto" if str(settings_raw.get("remote_control", "off")).lower() in ("auto", "on", "true") else "off",
         delegate_review=(str(settings_raw.get("delegate_review", "auto")).lower()
                          if str(settings_raw.get("delegate_review", "auto")).lower() in ("off", "auto", "always") else "auto"),
         knowledge_auto="off" if str(settings_raw.get("knowledge_auto", "auto")).lower() in ("off", "false", "0") else "auto",

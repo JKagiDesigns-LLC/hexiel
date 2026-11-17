@@ -175,23 +175,28 @@ _task_seq = itertools.count(1)
 def _pump(task: ShellTask) -> None:
     """Drain the task's output into its buffer; the process is dead when the loop ends."""
     proc = task.proc
+
+    def read() -> None:
+        try:
+            for line in proc.stdout:
+                with task.lock:
+                    task.out.append(line)
+                    if sum(len(l) for l in task.out) > _TASK_KEEP_CHARS:
+                        del task.out[0]              # newest output wins, like head+tail capping
+                if task.run is not None:
+                    try:
+                        task.run.feed(line)
+                        if task.run._dirty:
+                            testrun.notify(task.run)
+                    except Exception:                # noqa: BLE001 - progress is a bonus, never a reason to lose output
+                        pass
+        except Exception:                            # noqa: BLE001 - a closed/cancelled pipe just ends the reader
+            pass
+    reader = threading.Thread(target=read, daemon=True, name="hexiel-shell-reader")
+    reader.start()
     try:
-        for line in proc.stdout:
-            with task.lock:
-                task.out.append(line)
-                if sum(len(l) for l in task.out) > _TASK_KEEP_CHARS:
-                    del task.out[0]                  # newest output wins, like head+tail capping
-            if task.run is not None:
-                try:
-                    task.run.feed(line)
-                    if task.run._dirty:
-                        testrun.notify(task.run)
-                except Exception:                    # noqa: BLE001 - progress is a bonus, never a reason to lose output
-                    pass
-    except Exception:                                # noqa: BLE001 - a closed/cancelled pipe just ends the pump
-        pass
-    try:
-        task.code = proc.wait(timeout=600)
+        task.code = proc.wait()                      # the command itself ends the task, not the pipe: a server it
+        reader.join(2.0)                             # started in the background (`nohup node … &`) keeps the pipe open
     except Exception:                                # noqa: BLE001
         try:
             _kill_tree(proc)

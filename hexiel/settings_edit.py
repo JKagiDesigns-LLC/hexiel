@@ -104,6 +104,11 @@ FIELDS = [
      "help": "hexiel's own errors (paths, keys and e-mails scrubbed) go to remote.hexiel.tech so they can be tracked: "
              "account = only when signed in to Hexiel Remote (see them at hexiel.tech/support), all = also without an "
              "account (public queue), off = never. /bug always sends"},
+    {"key": "settings.remote_control", "label": "Remote access", "kind": "choice",
+     "options": ["auto", "off"],
+     "help": "auto = every open hexiel window connects to remote.hexiel.tech by itself (once this machine is signed in), "
+             "so your phone and browser can pick any of them; off = only a window where you type /remote-control. "
+             "`/remote-control off` still turns one window off"},
     {"key": "settings.redact_secrets", "label": "Hide secrets from the AI", "kind": "choice",
      "options": ["full", "off"],
      "help": "credentials (API keys, tokens, passwords) in tool output and typed text are replaced with <redacted> "

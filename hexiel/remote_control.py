@@ -28,6 +28,21 @@ def sign_in(email: str, password: str) -> str:
     return remote.login(cfg.get("relay") or remote.DEFAULT_RELAY, email, password, platform.node() or "this machine")
 
 
+def auto_wanted() -> bool:
+    """[settings] remote_control = "auto" and this machine is signed in to Hexiel Remote."""
+    try:
+        from .config import load_config
+        return load_config().settings.remote_control == "auto" and signed_in()
+    except Exception:                                    # noqa: BLE001 - a bad config must not stop a window opening
+        return False
+
+
+def set_mode(session, mode: str) -> str:
+    """Persist remote_control = auto|off in config.toml (and in this run's settings)."""
+    from . import settings_edit
+    return settings_edit.apply(session, "settings.remote_control", mode, "permanent")
+
+
 def active(session) -> bool:
     return id(session) in _active
 

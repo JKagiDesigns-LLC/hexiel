@@ -7,6 +7,7 @@ The server shares the same Session object the TUI uses, so `hexiel serve` and
 `hexiel` stay in sync on messages, todo state and incidents."""
 
 import asyncio
+import os
 import random
 import re
 import sys
@@ -705,6 +706,8 @@ def make_app(session: Session, driver=None) -> web.Application:
             return remote_control.stop(session)
         if arg.lower() == "status":
             return remote_control.status_text(session)
+        if arg.lower() in ("auto", "manual"):
+            return remote_control.set_mode(session, "auto" if arg.lower() == "auto" else "off")
         if remote_control.active(session):
             return remote_control.status_text(session)
         if not remote_control.signed_in():
@@ -1309,6 +1312,12 @@ async def _serve_and_wait(host: str, port: int, session: Session) -> None:
     session.web_base = f"http://127.0.0.1:{port}"       # /remote-control tunnels this page
     site = web.TCPSite(runner, host, port)
     await site.start()
+    from . import remote_control
+    if remote_control.auto_wanted() and not os.environ.get("HEXIEL_NO_REMOTE_AUTO"):
+        state_ = runner.app["state"]
+        loop = asyncio.get_running_loop()
+        loop.run_in_executor(None, lambda: remote_control.start(
+            session, local_base=session.web_base, say=lambda m: state_.broadcast({"t": "note", "text": m})))
     try:
       await asyncio.Event().wait()  # serve until interrupted
     finally:

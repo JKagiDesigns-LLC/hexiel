@@ -1810,6 +1810,7 @@ class HexielTUI(App):
         self._inbox_notice()
         if not os.environ.get("HEXIEL_NO_UPDATE_CHECK"):
             threading.Thread(target=self._check_update, daemon=True).start()
+        self._auto_remote()
 
     def _apply_sidebar_visibility(self) -> None:
         wanted = self._sidebar_forced
@@ -2376,6 +2377,12 @@ class HexielTUI(App):
         if word in ("off", "stop"):
             threading.Thread(target=lambda: self._post(self.add_note, rc.stop(self.session)),
                              daemon=True).start()
+        elif word in ("auto", "manual"):
+            self.add_note(rc.set_mode(self.session, "auto" if word == "auto" else "off")
+                          + ("\nevery window you open now connects by itself; `/remote-control off` turns one off"
+                             if word == "auto" else "\nwindows connect only when you type /remote-control"))
+            if word == "auto" and not rc.active(self.session):
+                self.cmd_remote_control("")
         elif word == "status" or rc.active(self.session):
             self.add_note(rc.status_text(self.session))
         elif not rc.signed_in():
@@ -2400,6 +2407,17 @@ class HexielTUI(App):
         self.add_note("signing in…")
         threading.Thread(target=work, daemon=True).start()
 
+    def _auto_remote(self) -> None:
+        """[settings] remote_control = "auto": this window joins Hexiel Remote by itself."""
+        from . import remote_control as rc
+        if getattr(self.session.settings, "remote_control", "off") != "auto" or os.environ.get("HEXIEL_NO_REMOTE_AUTO"):
+            return
+        if rc.signed_in():
+            self._remote_on()
+        else:
+            self.add_note("remote access is set to auto, but this machine isn't signed in to Hexiel Remote yet - "
+                          "type /remote-control once to sign in")
+
     def _remote_on(self) -> None:
         from . import remote_control as rc
         self.add_note("connecting to Hexiel Remote…")
@@ -2414,7 +2432,7 @@ class HexielTUI(App):
                 self.screen.dismiss("no")
         self._post(close)
 
-    def _post(self, fn, *args) -> None:
+    def _post(self, fn, *args, **kw) -> None:
         """Run fn (with args) on the UI thread without waiting. Every worker→UI path goes through
         this: the old call_from_thread calls blocked the agent thread on drawing, and once the
         window was closing they raised out of the worker threads — tracebacks on close. Scheduled
@@ -2426,7 +2444,7 @@ class HexielTUI(App):
         async def run() -> None:
             with self._context():             # as call_from_thread does: widgets need the active app
                 try:
-                    fn(*args)
+                    fn(*args, **kw)
                 except Exception as exc:  # noqa: BLE001 - a widget bug must not kill the feed
                     if getattr(self, "_exit", False):
                         return                # the window is closing: widgets are being torn down

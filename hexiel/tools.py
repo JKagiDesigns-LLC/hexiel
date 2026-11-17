@@ -422,6 +422,41 @@ def _kill_tree(proc: subprocess.Popen) -> None:
         proc.kill()
 
 
+def _release_pipes(argv, proc: subprocess.Popen) -> subprocess.CompletedProcess:
+    """The command exited but something it started in the background keeps its stdout/stderr open. Keep what
+    was written so far, hand the pipes to daemon threads that discard the rest (so that child never blocks on a
+    full pipe), and return — the child is left running, which is what `&` asked for."""
+    got = {}
+    for name, f in (("out", proc.stdout), ("err", proc.stderr)):
+        chunks = getattr(proc, "_fileobj2output", {}).get(f) or []
+        text = b"".join(c if isinstance(c, bytes) else c.encode("utf-8", "replace") for c in chunks).decode("utf-8", "replace")
+        if os.name != "nt" and f is not None:
+            try:
+                import fcntl
+                fcntl.fcntl(f, fcntl.F_SETFL, fcntl.fcntl(f, fcntl.F_GETFL) | fcntl.O_NONBLOCK)
+                while True:
+                    try:
+                        more = os.read(f.fileno(), 65536)
+                    except BlockingIOError:
+                        break
+                    if not more:
+                        break
+                    text += more.decode("utf-8", "replace")
+                fcntl.fcntl(f, fcntl.F_SETFL, fcntl.fcntl(f, fcntl.F_GETFL) & ~fcntl.O_NONBLOCK)
+            except Exception:                            # noqa: BLE001 - best effort
+                pass
+        got[name] = text
+
+        def _discard(fh=f):
+            try:
+                while fh is not None and fh.read(65536):
+                    pass
+            except Exception:                            # noqa: BLE001
+                pass
+        threading.Thread(target=_discard, daemon=True, name="hexiel-shell-discard").start()
+    return subprocess.CompletedProcess(argv, proc.returncode, got["out"], got["err"])
+
+
 def run_cancellable(argv, *, cwd=None, timeout=None, stop=None, input=None, on_timeout=None,
                     on_start=None) -> subprocess.CompletedProcess:
     """subprocess.run(capture_output, text) that notices `stop` (a threading.Event) within ~0.25 s and kills
@@ -439,12 +474,17 @@ def run_cancellable(argv, *, cwd=None, timeout=None, stop=None, input=None, on_t
             pass
     deadline = time.time() + timeout if timeout else None
     pending = input
+    exited_at = None
     while True:
         try:
             out, err = proc.communicate(input=pending, timeout=0.25)
             return subprocess.CompletedProcess(argv, proc.returncode, out, err)
         except subprocess.TimeoutExpired:
             pending = None              # communicate() may only be given input on its first call
+        if proc.poll() is not None:     # the shell is done but a background child (`nohup node … &`) still holds
+            exited_at = exited_at or time.time()    # the pipes open: do not wait for an EOF that may never come
+            if time.time() - exited_at > 1.5:
+                return _release_pipes(argv, proc)
         if stop is not None and stop.is_set():
             _kill_tree(proc)
             out, err = proc.communicate()

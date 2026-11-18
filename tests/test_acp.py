@@ -7,6 +7,7 @@ import os
 import queue
 import sys
 import threading
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -144,8 +145,10 @@ def test_auto_mode_skips_permission_requests(tmp_path, monkeypatch):
 
 def test_cancel_stops_a_running_turn(tmp_path, monkeypatch):
     gate = queue.Queue()
+    started = threading.Event()
 
     def slow(args, ctx):
+        started.set()
         gate.get(timeout=10)
         return text_result("late")
     tools = [ToolDef("wait", "wait", {"type": "object", "properties": {}}, readonly=True, run=slow)]
@@ -153,7 +156,15 @@ def test_cancel_stops_a_running_turn(tmp_path, monkeypatch):
                {"role": "assistant", "content": "should not be reached"}]
     ed, _, built = make(tmp_path, monkeypatch, replies, tools=tools)
     sid = ed.call("session/new", {"cwd": str(tmp_path)})["result"]["sessionId"]
-    threading.Timer(0.5, lambda: (ed.notify("session/cancel", {"sessionId": sid}), gate.put(1))).start()
+
+    def cancel_once_running():                       # only once the tool is really running — a fixed delay loses on a slow runner
+        started.wait(60)
+        ed.notify("session/cancel", {"sessionId": sid})
+        deadline = time.time() + 30
+        while not built[0]._stop.is_set() and time.time() < deadline:     # the server has read the cancel
+            time.sleep(0.01)
+        gate.put(1)
+    threading.Thread(target=cancel_once_running, daemon=True).start()
     res = ed.call("session/prompt", {"sessionId": sid, "prompt": [{"type": "text", "text": "wait"}]})
     assert res["result"]["stopReason"] == "cancelled"
 

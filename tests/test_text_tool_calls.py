@@ -107,3 +107,15 @@ def test_a_leaked_call_that_fits_no_tool_ends_the_turn_normally(tmp_path, monkey
     s.run_turn("hi")
     assert s.messages[-1]["content"] == '{"route":"chat","reason":"greeting"}'
     assert not [m for m in s.messages if m.get("role") == "tool"]
+
+
+def test_glm_xml_style_call_is_rescued():
+    text = ('<tool_call>bash<arg_key>command</arg_key><arg_value>cd /x && nohup npx cucumber-js > /tmp/l 2>&1 & '
+            'echo started</arg_value><arg_key>timeout</arg_key><arg_value>60000</arg_value></tool_call>')
+    name, args = _text_tool_call(text, TOOLS)
+    assert name == "bash" and args["command"].startswith("cd /x && nohup") and "timeout" in args
+
+
+def test_xml_call_for_unknown_tool_or_midprose_is_ignored():
+    assert _text_tool_call("<tool_call>nope<arg_key>a</arg_key><arg_value>1</arg_value></tool_call>", TOOLS) is None
+    assert _text_tool_call("<tool_call>bash<arg_key>command</arg_key><arg_value>ls</arg_value></tool_call> and more", TOOLS) is None

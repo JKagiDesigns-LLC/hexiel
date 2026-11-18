@@ -173,12 +173,50 @@ def _match_text_call(obj: dict, tools) -> tuple[str, dict] | None:
     return None
 
 
+_XML_CALL = re.compile(r"<tool_call>\s*([A-Za-z_][\w.-]*)\s*((?:<arg_key>.*?</arg_key>\s*<arg_value>.*?</arg_value>\s*)*)</tool_call>\s*$", re.S)
+_XML_ARG = re.compile(r"<arg_key>(.*?)</arg_key>\s*<arg_value>(.*?)</arg_value>", re.S)
+
+
+def _xml_tool_call(text: str, tools) -> tuple[str, dict] | None:
+    """GLM-style call written as text: <tool_call>bash<arg_key>command</arg_key><arg_value>ls</arg_value></tool_call>.
+    Only when it ends the reply and names a real tool; numbers/booleans are coerced by the tool's schema."""
+    m = _XML_CALL.search(text.strip())
+    if not m:
+        return None
+    tool = next((t for t in tools if t.name == m.group(1)), None)
+    if tool is None:
+        return None
+    props = (tool.parameters or {}).get("properties") or {}
+    args: dict = {}
+    for k, v in _XML_ARG.findall(m.group(2)):
+        k, v = k.strip(), v.strip()
+        kind = (props.get(k) or {}).get("type")
+        try:
+            if kind == "integer":
+                v = int(v)
+            elif kind == "number":
+                v = float(v)
+            elif kind == "boolean":
+                v = v.lower() in ("true", "1", "yes")
+            elif kind in ("array", "object"):
+                v = json.loads(v)
+        except ValueError:
+            pass
+        args[k] = v
+    if [k for k in (tool.parameters or {}).get("required", []) if k not in args]:
+        return None
+    return tool.name, args
+
+
 def _text_tool_call(text: str, tools) -> tuple[str, dict] | None:
     """A tool call the model wrote into its reply text, or None. Only when the call is the
     point of the message: a JSON answer that happens to reuse a tool's keys but sits inside
     a long prose reply is left alone."""
     if not text or len(text) > _TEXT_CALL_SCAN * 4:
         return None
+    xml = _xml_tool_call(text, tools)
+    if xml is not None:
+        return xml
     fences = [m.start() for m in re.finditer(r"```", text)]
     for obj, (start, end) in _json_objects(text):
         hit = _match_text_call(obj, tools)

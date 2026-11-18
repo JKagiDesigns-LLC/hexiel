@@ -477,6 +477,7 @@ def main() -> None:
         session.guard_commits = False          # -y is "everything"; use auto_approve = "except-commits" for the careful mode
 
     if args.print_mode is not None:
+        session.__dict__["_oneshot"] = True         # a script's single question: a dead model server is an answer, not a wait
         prompts = [args.print_mode]
     elif ci_ is not None:                         # --ci implies a headless run: build the prompt
         from . import ci_mode

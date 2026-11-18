@@ -1199,6 +1199,8 @@ class Session:
         """Seconds to wait before retrying, or None to stop waiting."""
         if not self.settings.auto_resume or exc.long_term and exc.retry_after is None:
             return None
+        if self.__dict__.get("_oneshot") and isinstance(exc, llm.TransientError):
+            return None                                   # `hexiel -p` with no reachable server: say so, don't wait it out
         if exc.retry_after is not None:
             # the server's reset time wins, but never tighter than a 60-120 s floor: a tiny retry-after
             # would otherwise hammer the struggling server (a floor keeps the requests respectable)

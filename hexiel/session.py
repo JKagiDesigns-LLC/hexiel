@@ -328,6 +328,11 @@ PLAN_MODE_NOTE = ("[plan mode] Investigate with read-only tools and produce a st
                   "Do not try to change files or run commands; the user will approve the plan "
                   "and turn plan mode off.")
 
+KEEP_GOING_NUDGE = ("(You stopped, but your todo list still has open steps: {steps}. Nobody is waiting to approve "
+                    "each step — carry on with the next one now and keep going until every step is done. Stop only if "
+                    "you are genuinely blocked on something only the user can decide, and then say exactly what you need.)")
+KEEP_GOING_MAX_IDLE = 2   # replies in a row that end without a tool call despite the nudge: the model really is blocked
+
 EMPTY_NUDGE = ("(Your previous reply was empty. Continue the task: either call the next tool "
                "or reply to the user with your answer.)")
 
@@ -955,6 +960,14 @@ class Session:
                                               "— the reply may be incomplete; ask for the rest or chunk smaller")
                     if self.has_pending():        # the user spoke while this reply was being written: answer them too
                         continue
+                    steps = self._open_todo_steps(turn)
+                    if steps:                     # a multi-step job must not stall after one step to wait for a "go ahead"
+                        turn["idle"] = turn.get("idle", 0) + 1
+                        if turn["idle"] <= KEEP_GOING_MAX_IDLE:
+                            self.on_event("note", "…open todo steps remain — carrying on "
+                                                  f"({turn['idle']}/{KEEP_GOING_MAX_IDLE})")
+                            self.messages.append({"role": "user", "content": KEEP_GOING_NUDGE.format(steps=steps)})
+                            continue
                     turn["ok"] = True
                     self.on_event("turn_end")
                     return
@@ -978,6 +991,7 @@ class Session:
                             return
                         self._execute_tool(call)
                         self._auto_todo_step(user_text, call, assistant, turn)
+                turn["idle"] = 0                          # it acted: the keep-going allowance starts over
                 runaway = consult.hard_stop(self)         # Cline's mistake/loop budget as a hard stop
                 if runaway and not self._stop.is_set():
                     self.on_event("note", f"🛑 {runaway}")
@@ -1024,6 +1038,7 @@ class Session:
         turn["tools"] += 1
         if call.get("name") == "todo":
             turn["used_todo"] = True
+            self.__dict__["_todo_used"] = True
         if turn["used_todo"]:
             return
         try:
@@ -1037,6 +1052,21 @@ class Session:
             todo_mod.auto_checkpoint(self.cwd, f"{call.get('name')}({first})" + (f" — {said}" if said else ""))
         except Exception:  # noqa: BLE001 - bookkeeping must never break a turn
             pass
+
+    def _open_todo_steps(self, turn: dict) -> str:
+        """The unfinished steps of the todo list THIS session wrote (via the todo tool), as one short string; ''
+        when there are none, the list is not ours (a stale file from an earlier session) or keep_going is off."""
+        if not getattr(self.settings, "keep_going", True) or not self.__dict__.get("_todo_used"):
+            return ""
+        try:
+            _, _, items = todo_mod.read_todos(self.cwd)
+        except Exception:  # noqa: BLE001
+            return ""
+        open_items = [i.text for i in items if i.state != "x"]
+        if not open_items:
+            return ""
+        more = f" (+{len(open_items) - 3} more)" if len(open_items) > 3 else ""
+        return "; ".join(t[:70] for t in open_items[:3]) + more
 
     def _auto_todo_finish(self, turn: dict) -> None:
         if not turn.get("item"):

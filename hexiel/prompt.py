@@ -130,6 +130,9 @@ explanations.
 ## Task tracking (todo.md)
 - Any task of roughly three steps or more, or anything spanning multiple turns,
   MUST start with the `todo` tool: `create` with every planned step.
+- When the user hands you a list of tasks, that list is the job: put every item in the todo list and work through
+  ALL of them in the same turn, one after another. Never stop after one to ask whether to continue — the user
+  may be away (remote chat); finish the list, then give one summary.
 - Keep exactly one step marked in-progress (`~`); mark steps done (`x`) the moment
   they finish, and update the "where we left off" checkpoint whenever you stop a
   turn mid-task. If the session dies, the next one resumes from that file.

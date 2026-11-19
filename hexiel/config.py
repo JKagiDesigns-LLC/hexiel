@@ -205,6 +205,7 @@ class Settings:
     search_backend: str = "duckduckgo"
     searxng_url: str = ""
     auto_resume: bool = True          # wait out rate limits and continue automatically
+    keep_going: bool = True           # do not end a turn while the todo list this session wrote still has open steps
     auto_resume_max_wait: int = 21600 # longest wait (s) before giving up / falling back
     fallback_profile: str = ""        # switch here when a limit won't reset soon (e.g. a local model)
     cloud_cooldown_minutes: float = 60  # a cloud account found unusable (bad key, no credits, monthly limit, budget) is skipped this long
@@ -349,6 +350,7 @@ def _settings_from(settings_raw: dict) -> "Settings":
         search_backend=str(settings_raw.get("search_backend", "duckduckgo")),
         searxng_url=str(settings_raw.get("searxng_url", "")),
         auto_resume=bool(settings_raw.get("auto_resume", True)),
+        keep_going=bool(settings_raw.get("keep_going", True)),
         auto_resume_max_wait=int(settings_raw.get("auto_resume_max_wait", 21600)),
         fallback_profile=str(settings_raw.get("fallback_profile", "")),
         cloud_cooldown_minutes=max(1.0, float(settings_raw.get("cloud_cooldown_minutes", 60) or 60)),

@@ -512,6 +512,30 @@ def main() -> None:
         if result == "restart":      # /update installed a new version
             from .updater import restart
             restart()
+        leave_without_waiting()
+
+
+def leave_without_waiting(code: int = 0) -> None:
+    """Quit now even if a worker thread is still busy. Python waits for non-daemon threads (the tool pool that
+    runs a turn's tool calls) before it exits, so closing hexiel mid-task hung on whatever command or fetch was
+    still running, and a second Ctrl+C only showed a traceback from the exit handler. The terminal is already
+    restored and the session saved by now; run the registered cleanups (MCP servers, remote control), then go."""
+    import threading
+    busy = [t for t in threading.enumerate() if t is not threading.main_thread() and not t.daemon and t.is_alive()]
+    if not busy:
+        return                         # nothing to wait for: the normal exit is fine
+    import atexit
+    import os
+    try:
+        atexit._run_exitfuncs()
+    except Exception:  # noqa: BLE001 - leaving must not fail on a cleanup
+        pass
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.flush()
+        except (OSError, ValueError):
+            pass
+    os._exit(code)
 
 
 if __name__ == "__main__":

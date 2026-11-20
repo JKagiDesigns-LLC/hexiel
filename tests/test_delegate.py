@@ -146,7 +146,7 @@ def test_delegate_runs_every_task_and_summarises(env):
     assert providers["cloud"].calls == 1                                     # ONE cloud call for the whole job
     saved = list((tmp / ".hexiel" / "plans").glob("*.json"))
     assert saved and all(t["status"] == "done" for t in json.loads(saved[0].read_text())["tasks"])
-    todo = (tmp / ".hexiel" / "todo.md").read_text()
+    todo = (tmp / "todo.md").read_text()
     assert todo.count("[x]") == 3 and "[ ]" not in todo
 
 

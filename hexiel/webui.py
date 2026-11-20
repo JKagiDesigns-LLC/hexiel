@@ -813,11 +813,10 @@ def make_app(session: Session, driver=None) -> web.Application:
         return _json_response({"commands": items})
 
     async def api_paste_image(request):
-        """A pasted or dropped image or PDF: saved under .hexiel/pastes, returned with what the page needs to show it."""
+        """A pasted, dropped or phone-sent file (image, PDF, document, spreadsheet, code…): saved under .hexiel/pastes
+        — never run — and returned with what the page needs to show it. The agent reads it from that path."""
         from .clipboard import save_image
         mime = request.content_type
-        if mime not in ("image/png", "image/jpeg", "image/webp", "image/gif", "application/pdf"):
-            return _json_response({"error": "unsupported file type (png, jpeg, webp, gif or pdf)"}, status=400)
         data = await request.read()
         if not data or len(data) > 20 * 1024 * 1024:
             return _json_response({"error": "empty or over 20MB"}, status=400)
@@ -825,7 +824,8 @@ def make_app(session: Session, driver=None) -> web.Application:
             return _json_response({"error": "not a PDF"}, status=400)
         path = save_image(data, mime, session.cwd, request.headers.get("x-filename", ""))
         info = media_mod.describe(path) or {}
-        return _json_response({"path": path, **{k: info[k] for k in ("kind", "name", "id", "w", "h", "pages", "duration", "poster") if k in info}})
+        return _json_response({"path": path, "name": Path(path).name,
+                               **{k: info[k] for k in ("kind", "name", "id", "w", "h", "pages", "duration", "poster") if k in info}})
 
     async def api_media(request):
         """Serve a file that surfaced in the conversation (see media.py) — nothing else."""

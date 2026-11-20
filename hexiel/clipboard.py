@@ -42,11 +42,13 @@ def clipboard_image() -> tuple[bytes, str] | None:
 
 
 def save_image(data: bytes, mime: str, cwd: str, name: str = "") -> str:
-    """Write pasted or dropped bytes (an image, or a PDF) under <cwd>/.hexiel/pastes and return the path.
+    """Write pasted or dropped bytes (an image, a PDF or any other file) under <cwd>/.hexiel/pastes and return the path.
     A dropped file keeps a cleaned-up version of its own name so the chat reads sensibly."""
     folder = Path(cwd) / ".hexiel" / "pastes"
     folder.mkdir(parents=True, exist_ok=True)
-    ext = _EXT.get(mime, "png")
+    ext = _EXT.get(mime)
+    if ext is None:                       # any other file (docs, spreadsheets, code…) keeps its own extension
+        ext = re.sub(r"[^a-z0-9]", "", Path(name).suffix.lower())[:10] or ("png" if mime.startswith("image/") else "bin")
     stem = re.sub(r"[^A-Za-z0-9._-]+", "-", Path(name).stem).strip("-.")[:40] if name else ""
     stem = f"{stem}-" if stem else "paste-"
     path = folder / f"{stem}{time.strftime('%Y%m%d-%H%M%S')}-{time.time_ns() % 1000000}.{ext}"

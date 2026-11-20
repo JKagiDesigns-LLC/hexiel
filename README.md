@@ -504,7 +504,7 @@ semver, arithmetic) · `have` (is a program or Python package installed, and the
 - **Project instructions:** `AGENTS.md` / `CLAUDE.md` / `HEXIEL.md` (any letter
   case) at the project root are loaded into every session; a root `todo.md` is
   pointed out so the model reads it when you say "continue".
-- **todo.md:** multi-step work is tracked in `<project>/.hexiel/todo.md` (`- [ ]`
+- **todo.md:** multi-step work is tracked in `todo.md` in the directory hexiel was opened in (an existing one is used and edited in place) (`- [ ]`
   queued, one `- [~]` in progress, `- [x]` done). When a request takes three or
   more tool calls and the model hasn't planned it itself, hexiel logs it as a
   task, refreshes the *where we left off* line after every step and ticks it off

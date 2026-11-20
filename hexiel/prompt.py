@@ -128,6 +128,8 @@ explanations.
   for how to work: save it to memory (see Memory).
 
 ## Task tracking (todo.md)
+- The task list is `todo.md` in the directory hexiel was opened in, so other agents can follow it. If one exists,
+  use it (through the `todo` tool or by editing it); never create another task/plan/checklist markdown file.
 - Any task of roughly three steps or more, or anything spanning multiple turns,
   MUST start with the `todo` tool: `create` with every planned step.
 - When the user hands you a list of tasks, that list is the job: put every item in the todo list and work through
@@ -196,9 +198,10 @@ def _project_docs(cwd: str) -> str:
             n = len(todo.read_text().splitlines())
         except OSError:
             n = 0
-        parts.append(f"## Project todo\n\nThis project keeps its own task list at `{todo.name}` "
-                     f"({n} lines). Read it when asked to continue or pick the next task; "
-                     "keep it updated as you finish items.")
+        parts.append(f"## Project todo\n\nThis project's task list is `{todo.name}` "
+                     f"({n} lines). It is the only task list: read it when asked to continue or pick the next task, "
+                     "track all work in it with the `todo` tool, keep it updated as you finish items, and do not "
+                     "create any other todo/plan markdown file.")
     fallback = Path.home() / ".config" / "hexiel" / "HEXIEL.md"
     if not parts and fallback.is_file():
         try:

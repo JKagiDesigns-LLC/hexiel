@@ -151,3 +151,27 @@ def test_web_fetch_survives_a_url_with_a_stray_newline(monkeypatch):
     out = tools._web_fetch({"url": "https://example.com/a\nsecond line"}, ctx)
     assert seen == ["https://example.com/a"] and not out.is_error
     assert tools._web_fetch({"url": ""}, ctx).is_error
+
+
+def test_the_web_ui_accepts_any_file_from_the_phone(tmp_path):
+    pytest.importorskip("aiohttp")
+    from aiohttp.test_utils import TestClient, TestServer
+    from tests.test_remote_control import make_session
+    from hexiel.webui import make_app
+    s = make_session(tmp_path)
+
+    async def go():
+        async with TestClient(TestServer(make_app(s))) as client:
+            out = []
+            for name, mime in (("Budget Q3.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
+                               ("notes.docx", "application/octet-stream"), ("main.py", "text/x-python"), ("Makefile", "")):
+                r = await client.post("/api/paste-image", data=b"data", headers={"content-type": mime, "x-filename": name}
+                                      if mime else {"x-filename": name})
+                out.append((r.status, await r.json()))
+            return out
+    out = asyncio.run(go())
+    assert all(status == 200 for status, _ in out)
+    names = [body["name"] for _, body in out]
+    assert names[0].startswith("Budget-Q3") and names[0].endswith(".xlsx")
+    assert names[1].endswith(".docx") and names[2].endswith(".py") and names[3].endswith(".bin")
+    assert all((tmp_path / ".hexiel" / "pastes" / n).is_file() for n in names)

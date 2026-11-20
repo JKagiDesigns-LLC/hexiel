@@ -1,6 +1,9 @@
 """todo.md task tracking: hexiel's structured to-do list for multi-step work.
 
-State lives in `<project>/.hexiel/todo.md` as GitHub-task-style markdown:
+State lives in `todo.md` in the directory hexiel was opened in (an existing one is used as-is, any
+letter case; otherwise it is created there) so every other agent and tool follows the same file.
+A legacy `.hexiel/todo.md` is only used when no root todo.md exists. Existing files are edited in
+place: prose, headings and other lists are never rewritten. Format is GitHub-task-style markdown:
 
     # todo — <task title>
     <!-- hexiel: updated 2026-09-30 14:00 -->
@@ -25,19 +28,28 @@ MARKER = "hexiel"
 
 
 def todo_path(cwd: str) -> Path:
-    return Path(cwd) / ".hexiel" / "todo.md"
+    root = Path(cwd)
+    try:
+        for entry in sorted(root.iterdir()):
+            if entry.name.lower() == "todo.md" and entry.is_file():
+                return entry
+    except OSError:
+        pass
+    legacy = root / ".hexiel" / "todo.md"
+    return legacy if legacy.is_file() else root / "todo.md"
 
 
 @dataclass
 class TodoItem:
     state: str      # " " | "~" | "x"
     text: str
+    line: int | None = None     # index into the file's lines when it came from disk (None = new)
 
 
 def _parse(text: str) -> tuple[str, str, list[TodoItem]]:
     """Return (title, left_off, items) from todo.md content."""
     title, left_off, items = "", "", []
-    for line in text.splitlines():
+    for lineno, line in enumerate(text.splitlines()):
         stripped = line.strip()
         if stripped.startswith("# todo") and not title:
             title = re.sub(r"^#+\s*todo\s*[—-]\s*", "", stripped)
@@ -49,7 +61,7 @@ def _parse(text: str) -> tuple[str, str, list[TodoItem]]:
             continue
         match = re.match(r"^[-*]\s+\[([ x~])\]\s+(.*)$", stripped)
         if match:
-            items.append(TodoItem(state=match.group(1), text=match.group(2).strip()))
+            items.append(TodoItem(state=match.group(1), text=match.group(2).strip(), line=lineno))
     return title, left_off, items
 
 
@@ -101,8 +113,16 @@ def action_create(args: dict, cwd: str) -> str:
                 "add or restate steps instead of overwriting progress")
     items = [TodoItem(state=" ", text=s) for s in steps]
     path = todo_path(cwd)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(serialise(title, "starting", items))
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if path.exists() and path.read_text(encoding="utf-8", errors="replace").strip():
+            # someone's todo.md already exists: add a section, never replace what is there
+            with path.open("a", encoding="utf-8") as fh:
+                fh.write(f"\n## {title}\n\n" + "\n".join(f"- [ ] {i.text}" for i in items) + "\n")
+            return f"{len(items)} steps added under '## {title}' in the existing {path}"
+        path.write_text(serialise(title, "starting", items), encoding="utf-8")
+    except OSError as exc:
+        return f"error: cannot write {path}: {exc}"
     return f"todo.md created ({len(items)} steps) at {path}"
 
 
@@ -170,11 +190,69 @@ def action_list(args: dict, cwd: str) -> str:
     return "\n".join(lines)
 
 
+_BOX = re.compile(r"^(\s*[-*]\s+)\[[ x~]\](\s+.*)$")
+
+
+def _merge(text: str, title: str, left_off: str, items: list[TodoItem]) -> str:
+    """Apply the item states / new items / checkpoint to an existing file without disturbing anything
+    else in it (headings, prose, other lists, other people's formatting)."""
+    lines = text.splitlines()
+    for item in items:
+        if item.line is not None and item.line < len(lines):
+            m = _BOX.match(lines[item.line])
+            if m:
+                lines[item.line] = f"{m.group(1)}[{item.state}]{m.group(2)}"
+    old = [i.line for i in items if i.line is not None]
+    first_old = min(old) if old else None
+    after: dict[int, list[str]] = {}      # insert after this line index
+    before_first: list[str] = []
+    tail: list[str] = []
+    anchor: int | None = None
+    for item in items:
+        if item.line is not None:
+            anchor = item.line
+            continue
+        row = f"- [{item.state}] {item.text}"
+        if anchor is not None:
+            after.setdefault(anchor, []).append(row)
+        elif first_old is not None:
+            before_first.append(row)
+        else:
+            tail.append(row)
+    out: list[str] = []
+    for idx, line in enumerate(lines):
+        if idx == first_old:
+            out.extend(before_first)
+        out.append(line)
+        out.extend(after.get(idx, []))
+    if tail:
+        if out and out[-1].strip():
+            out.append("")
+        out.extend(tail)
+    now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+    for idx, line in enumerate(out):
+        if line.strip().startswith(f"<!-- {MARKER}: updated"):
+            out[idx] = f"<!-- {MARKER}: updated {now} -->"
+    marker = next((i for i, ln in enumerate(out) if "where we left off:" in ln), None)
+    if marker is not None:
+        out[marker] = f"<!-- where we left off: {left_off} -->" if left_off else ""
+    elif left_off:
+        head = next((i for i, ln in enumerate(out) if ln.startswith("#")), None)
+        at = 0 if head is None else head + 1
+        out[at:at] = ["", f"<!-- where we left off: {left_off} -->"]
+    return "\n".join(out) + "\n"
+
+
 def _write(cwd: str, title: str, left_off: str, items: list[TodoItem]) -> None:
     path = todo_path(cwd)
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(serialise(title or "(untitled)", left_off, items))
+        existing = path.read_text(encoding="utf-8", errors="replace") if path.exists() else ""
+        if existing.strip():
+            path.write_text(_merge(existing, title, left_off, items), encoding="utf-8")
+        else:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(serialise(title or "(untitled)", left_off,
+                                      [TodoItem(i.state, i.text) for i in items]), encoding="utf-8")
     except OSError:
         pass
 

@@ -10,7 +10,7 @@ Flow (see /delegate, and the `auto_delegate` setting):
               failures are retried, then escalated to the planner model once, then the plan stops
     wrap up   a summary built in code (not by a model) is added to the conversation
 
-The plan is saved in .hexiel/plans/ and mirrored in .hexiel/todo.md so `/delegate resume` can continue.
+The plan is saved in .hexiel/plans/ and mirrored in the project root todo.md so `/delegate resume` can continue.
 """
 
 from __future__ import annotations
@@ -446,7 +446,10 @@ _MARK = {"pending": " ", "running": "~", "done": "x", "failed": " "}
 
 def sync_todo(session, plan: Plan, left_off: str = "") -> None:
     try:
-        items = [todo_mod.TodoItem(state=_MARK[t.status], text=f"{t.id}. {t.title}") for t in plan.tasks]
+        _, _, old = todo_mod.read_todos(session.cwd)
+        lines = {i.text: i.line for i in old}      # re-sync edits the lines already in todo.md, no duplicates
+        items = [todo_mod.TodoItem(state=_MARK[t.status], text=f"{t.id}. {t.title}",
+                                   line=lines.get(f"{t.id}. {t.title}")) for t in plan.tasks]
         todo_mod._write(session.cwd, f"delegated: {plan.summary[:80]}", left_off, items)
     except Exception:  # noqa: BLE001 - bookkeeping must never break the run
         pass

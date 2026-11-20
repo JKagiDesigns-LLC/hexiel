@@ -1920,7 +1920,7 @@ def build_tools(chain: Toolchain) -> list[ToolDef]:
         ToolDef("skill", "Load an installed skill's instructions into context so its methodology "
                 "replaces the default approach for the current task.",
                 obj(name={"type": "string"}), readonly=True, run=_skill),
-        ToolDef("todo", "Maintain the project's .hexiel/todo.md so multi-step work survives "
+        ToolDef("todo", "Maintain the project's todo.md (in the directory hexiel was opened in; an existing one is used, never a second file) so multi-step work survives "
                 "any interruption. Actions: create (title, steps[]), add (step, after?), "
                 "update (step, state: ' '~' '), left_off (note), list.",
                 obj(action={"type": "string", "enum": ["create", "add", "update",

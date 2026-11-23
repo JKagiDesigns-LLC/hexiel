@@ -209,6 +209,12 @@ def test_the_plans_own_period_and_remainder_drive_the_bar(fake, monkeypatch):
     bought — so a top-up grows the bar instead of overflowing it."""
     monkeypatch.setenv("OLLAMA_API_KEY", "olk")
     monkeypatch.setattr(spend, "SNAPSHOT_SECONDS", 0)
+
+    class FrozenDate(dt.date):          # refresh() asks the real clock; the cycle must not roll over under the test
+        @classmethod
+        def today(cls):
+            return cls(2026, 10, 30)
+    monkeypatch.setattr(spend.dt, "date", FrozenDate)
     Fake.balance = REAL_BALANCE
     s = Settings(spend={"ollama": {"limit": 60, "cycle_day": 23}})          # the 23rd is wrong: the plan says the 20th
     spend.refresh(s, force=True)

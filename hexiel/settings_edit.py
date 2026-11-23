@@ -148,6 +148,18 @@ def _live_value(session, key: str):
 _MODE_LABEL = {"off": "off", "except-commits": "except commits", "all": "everything"}
 
 
+def set_auto_mode(session, mode: str) -> None:
+    """Switch the auto-approve mode NOW: the session, every sub-agent it is running, and any approval already
+    waiting on an answer (a mode change must not wait for the current step, or the current hour-long task, to end)."""
+    session.auto_approve, session.guard_commits = mode != "off", mode == "except-commits"
+    session.settings.auto_approve, session.settings.guard_commits = session.auto_approve, session.guard_commits
+    for helper in list(getattr(session, "_helpers", ())):
+        set_auto_mode(helper, mode)
+    changed = getattr(session, "auto_changed", None)
+    if changed is not None:
+        changed(mode)
+
+
 def restore_auto_mode(session, saved: dict) -> None:
     """A resumed chat comes back in the auto-approve mode it was set to for that chat (if it was set at all)."""
     mode = saved.get("auto_mode")
@@ -245,9 +257,7 @@ def apply(session, key: str, value, scope: str) -> str:
         session.model_config = dataclasses.replace(session.model_config,
                                                    **{key.split(".", 1)[1]: value})
     elif key == "settings.auto_approve":
-        session.auto_approve = value != "off"
-        session.guard_commits = value == "except-commits"
-        session.settings.auto_approve, session.settings.guard_commits = session.auto_approve, session.guard_commits
+        set_auto_mode(session, value)
         if scope == "session":
             session.auto_override = value       # remembered with the saved chat: a restart or update resumes in this mode
             session.save()

@@ -108,6 +108,7 @@ class WebState:
                 self.turn_base = users[-1] if users else None
         # Every status frame says whether a turn is running, so a tab that joins (or reconnects) mid-turn shows Stop.
         session.busy_probe = self.is_busy
+        session.auto_changed = self.release_approvals
         if driver is None:
             self.start_wake_watcher()
 
@@ -316,7 +317,7 @@ class WebState:
 
     def ask_approval(self, tool_name: str, args) -> str:
         request_id = time.time_ns() % 10 ** 9
-        holder = {"event": threading.Event(), "verdict": "no"}
+        holder = {"event": threading.Event(), "verdict": "no", "tool": tool_name, "args": args}
         self.approvals[request_id] = holder
         titles = {"delegate": "plan this with the strong model?", "delegate-plan": "run this plan?"}
         shown = (str(args["text"])[:2400] if tool_name in titles and isinstance(args, dict) and "text" in args
@@ -333,6 +334,27 @@ class WebState:
         verdict = holder["verdict"] if holder["verdict"] in ("yes", "always", "no") else "no"
         self.broadcast({"t": "approval_done", "id": request_id, "verdict": verdict})
         return verdict
+
+    def release_approvals(self, mode: str) -> None:
+        """The auto-approve mode just changed: answer 'yes' to every approval already waiting that the new mode would
+        not have asked about (never one a permission rule says to ask, a delegate prompt, or, in 'except commits',
+        a commit/push), so a long task does not sit on a question the user has just said to stop asking."""
+        from . import permissions
+        if mode == "off":
+            return
+        for holder in list(self.approvals.values()):
+            tool, args = holder.get("tool", ""), holder.get("args")
+            if tool in ("delegate", "delegate-plan") or holder["event"].is_set():
+                continue
+            try:
+                if permissions.decide(self.session.rules, tool, args, self.session.cwd) == "ask":
+                    continue
+                if mode == "except-commits" and permissions.commit_action(tool, args if isinstance(args, dict) else {}):
+                    continue
+            except Exception:  # noqa: BLE001 - when unsure, leave the question for the user
+                continue
+            holder["verdict"] = "yes"
+            holder["event"].set()
 
     # -- history rendering
 
@@ -734,7 +756,9 @@ def make_app(session: Session, driver=None) -> web.Application:
     def handle_ws_message(data: dict) -> None:
         if data.get("t") == "send":
             text = str(data.get("text", "")).strip()
-            if text.startswith("/") and not state.is_busy():
+            live = text[1:].split(None, 1)[0].lower() if text.startswith("/") and len(text) > 1 else ""
+            # /auto takes effect at once, even in the middle of a long task (the others wait for the turn to end)
+            if text.startswith("/") and (not state.is_busy() or live == "auto"):
                 reply = web_command(text)
                 if reply and not reply.startswith("prompt:"):
                     state.broadcast({"t": "note", "text": reply})

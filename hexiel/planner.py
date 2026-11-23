@@ -23,6 +23,7 @@ import re
 import subprocess
 import threading
 import time
+import weakref
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -471,6 +472,9 @@ def make_helper(session, mc, system: str, tools: list):
     helper.internal = True            # its prompts come from hexiel, not the user; and a stuck step is escalated by the plan itself
     helper.auto_approve = session.auto_approve
     helper.guard_commits = session.guard_commits
+    if not hasattr(session, "_helpers"):
+        session._helpers = weakref.WeakSet()      # so a later /auto reaches this helper while it is still running
+    session._helpers.add(helper)
     helper.save = lambda: None
     return helper
 

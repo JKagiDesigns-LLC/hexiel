@@ -333,6 +333,24 @@ KEEP_GOING_NUDGE = ("(You stopped, but your todo list still has open steps: {ste
                     "you are genuinely blocked on something only the user can decide, and then say exactly what you need.)")
 KEEP_GOING_MAX_IDLE = 2   # replies in a row that end without a tool call despite the nudge: the model really is blocked
 
+STALL_NUDGE = ("(Your last reply only announced an action ({said!r}) and contained no tool call, so nothing ran. "
+               "Narrating does not execute anything: make the actual tool call now, through the tool-calling "
+               "interface, with no preamble. If you are blocked on a decision only the user can make, say exactly "
+               "what you need instead.)")
+STALL_MAX = 2     # announce-only replies in a row that are nudged per turn before the turn is let go
+_INTENT_RE = re.compile(r"^\s*(?:(?:ok(?:ay)?|now|so|next|alright)[,.:]?\s+)?(?:let me|let's|i'll|i will|i'm going to|"
+                        r"emitting|running|calling|issuing|checking|proceeding)\b", re.I)
+
+
+def _announces_action(text: str) -> bool:
+    """A short reply that ends on 'Let me check.' / 'Emitting.' — intent stated, tool call never made
+    (some models drop the call when the reply is cut right after the announcement)."""
+    t = (text or "").strip()
+    if not t or len(t) > 600:
+        return False
+    last = re.split(r"\n\s*\n", t)[-1].strip()
+    return bool(_INTENT_RE.match(last)) and len(last) < 200
+
 EMPTY_NUDGE = ("(Your previous reply was empty. Continue the task: either call the next tool "
                "or reply to the user with your answer.)")
 
@@ -968,6 +986,15 @@ class Session:
                                                   f"({turn['idle']}/{KEEP_GOING_MAX_IDLE})")
                             self.messages.append({"role": "user", "content": KEEP_GOING_NUDGE.format(steps=steps)})
                             continue
+                    said = (assistant.get("content") or "").strip()
+                    if _announces_action(said) and turn.get("stalls", 0) < STALL_MAX \
+                            and not self._stop.is_set():
+                        turn["stalls"] = turn.get("stalls", 0) + 1
+                        self.on_event("note", "…the model announced an action without calling a tool — "
+                                              f"asking it to make the call ({turn['stalls']}/{STALL_MAX})")
+                        self.messages.append({"role": "user", "content": STALL_NUDGE.format(
+                            said=re.split(r"\n\s*\n", said)[-1].strip()[:80])})
+                        continue
                     turn["ok"] = True
                     self.on_event("turn_end")
                     return

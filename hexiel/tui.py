@@ -2873,7 +2873,7 @@ class HexielTUI(App):
             chat.mount(Static("… compacting context (summarizing history) …", classes="note"))
         elif event == "compact_end":
             stats = payload[0] if payload else {}
-            if stats:
+            if stats.get("before"):
                 before = stats.get("before", 0) // 1000
                 after = stats.get("after", 0) // 1000
                 dropped = stats.get("dropped", 0)

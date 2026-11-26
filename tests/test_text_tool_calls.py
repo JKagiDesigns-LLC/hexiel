@@ -140,3 +140,10 @@ def test_several_dsml_invokes_all_run():
     t = "<｜DSML｜function_calls>" + one % "ls" + one % "pwd" + "</｜DSML｜function_calls>"
     assert _dsml_tool_calls(t, TOOLS) == [("bash", {"command": "ls"}), ("bash", {"command": "pwd"})]
     assert _dsml_tool_calls(t.replace('name="bash"', 'name="nope"', 1), TOOLS) == []   # half a batch never runs
+
+
+def test_dsml_parameter_without_its_invoke_opener():
+    t = 'Let me see the file.\n\n<｜DSML｜parameter name="command" string="true">cd /x; sed -n \'1,5p\' a.java'
+    assert _text_tool_call(t, TOOLS) == ("bash", {"command": "cd /x; sed -n '1,5p' a.java"})
+    t2 = t + "</｜DSML｜parameter>\n</｜DSML｜invoke>"
+    assert _text_tool_call(t2, TOOLS)[0] == "bash"

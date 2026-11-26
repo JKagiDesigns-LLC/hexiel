@@ -224,7 +224,9 @@ def _dsml_tool_calls(text: str, tools) -> list[tuple[str, dict]]:
     Empty unless the calls are the point of the message — nothing but closing tags after the last one — and
     every one names a real tool with its required arguments (half a batch is never run)."""
     matches = list(_DSML_INVOKE.finditer(text))
-    if not matches or not _DSML_TAIL.fullmatch(text[matches[-1].end():]):
+    if not matches:
+        return _dsml_orphan_params(text, tools)
+    if not _DSML_TAIL.fullmatch(text[matches[-1].end():]):
         return []
     calls: list[tuple[str, dict]] = []
     for m in matches:
@@ -246,6 +248,42 @@ def _dsml_tool_calls(text: str, tools) -> list[tuple[str, dict]]:
             return []
         calls.append((tool.name, args))
     return calls
+
+
+_DSML_OPEN_PARAM = re.compile(rf"<\s*{_P}\s*parameter\s+name=\"([^\"]+)\"([^>]*)>")
+_DSML_ANY_TAG = re.compile(rf"<\s*/?\s*{_P}[^>]*>")
+
+
+def _dsml_orphan_params(text: str, tools) -> list[tuple[str, dict]]:
+    """The provider swallowed the `<｜DSML｜invoke name="bash">` opener and left only the parameters (often
+    with no closing tag either): `<｜DSML｜parameter name="command" string="true">ls`. The tool is the one whose
+    parameter names fit — the registry's order breaks ties, as for bare JSON calls."""
+    opens = list(_DSML_OPEN_PARAM.finditer(text))
+    if not opens:
+        return []
+    args: dict = {}
+    for i, m in enumerate(opens):
+        end = opens[i + 1].start() if i + 1 < len(opens) else len(text)
+        value = _DSML_ANY_TAG.sub("", text[m.end():end]) if i + 1 < len(opens) else _DSML_ANY_TAG.split(text[m.end():end])[0]
+        args[m.group(1).strip()] = value.strip("\n") if "string=\"false\"" not in m.group(2) else value
+    for t in tools:
+        props = (t.parameters or {}).get("properties") or {}
+        if props and not set(args) - set(props) and not [k for k in (t.parameters or {}).get("required", []) if k not in args]:
+            for k, v in list(args.items()):
+                if (props.get(k) or {}).get("type") in ("integer", "number", "boolean", "array", "object") \
+                        and isinstance(v, str):
+                    try:
+                        args[k] = json.loads(v.strip())
+                    except ValueError:
+                        pass
+            return [(t.name, args)]
+    return []
+
+
+def _dsml_start(text: str) -> int:
+    """Where the leaked DSML begins (so the saved reply keeps only the prose before it), or -1."""
+    m = _DSML_ANY_TAG.search(text)
+    return m.start() if m else -1
 
 
 def _dsml_tool_call(text: str, tools) -> tuple[str, dict] | None:
@@ -1073,6 +1111,9 @@ class Session:
                     rescued = _dsml_tool_calls(text, self.tools) or \
                         ([r] if (r := _text_tool_call(text, self.tools)) else [])
                     if rescued:
+                        cut = _dsml_start(text)
+                        if cut >= 0:                  # keep the prose, not the leaked markup, in history
+                            assistant["content"] = text[:cut].rstrip()
                         assistant["tool_calls"] = [{"id": f"call_text_{uuid.uuid4().hex[:8]}",
                                                     "name": name, "arguments": args} for name, args in rescued]
                         self.on_event("note", f"🔧 the model wrote its {rescued[0][0]} call"

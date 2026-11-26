@@ -538,7 +538,7 @@ def _main() -> None:
         leave_without_waiting()
 
 
-def leave_without_waiting(code: int = 0, grace: float = 2.0) -> None:
+def leave_without_waiting(code: int = 0, grace: float = 1.0) -> None:
     """Quit, cancelling whatever is still running but never being held up by it. Python waits for non-daemon
     threads (the tool pool that runs a turn's tool calls) before it exits, so closing hexiel mid-task hung on
     whatever command or fetch was still running. So: ask every session to stop (this kills running commands),
@@ -548,8 +548,17 @@ def leave_without_waiting(code: int = 0, grace: float = 2.0) -> None:
     import time
 
     def busy():
+        # Python's own exit handler (concurrent.futures.thread._python_exit) joins EVERY pool worker, daemon or
+        # not — and a pool made from a daemon thread (the TUI's workers) has daemon workers that a plain
+        # "non-daemon" filter misses, which is how closing still hung and then printed the traceback.
+        pooled = set()
+        try:
+            from concurrent.futures import thread as _cft
+            pooled = set(getattr(_cft, "_threads_queues", {}))
+        except Exception:  # noqa: BLE001
+            pass
         return [t for t in threading.enumerate()
-                if t is not threading.main_thread() and not t.daemon and t.is_alive()]
+                if t is not threading.main_thread() and t.is_alive() and (not t.daemon or t in pooled)]
 
     if not busy():
         if code:

@@ -319,7 +319,8 @@ class WebState:
         request_id = time.time_ns() % 10 ** 9
         holder = {"event": threading.Event(), "verdict": "no", "tool": tool_name, "args": args}
         self.approvals[request_id] = holder
-        titles = {"delegate": "plan this with the strong model?", "delegate-plan": "run this plan?"}
+        titles = {"delegate": "plan this with the strong model?", "delegate-plan": "run this plan?",
+                  "plan_exit": "build this plan?"}
         shown = (str(args["text"])[:2400] if tool_name in titles and isinstance(args, dict) and "text" in args
                  else json.dumps(args, indent=2)[:1400])
         holder["frame"] = {"t": "approval", "id": request_id, "tool": titles.get(tool_name, tool_name),
@@ -596,7 +597,9 @@ def make_app(session: Session, driver=None) -> web.Application:
             return "prompt:" + text           # the session parses the prefix
         if cmd == "plan":
             session.plan_mode = not session.plan_mode
-            return "📝 plan mode ON — investigate and plan, change nothing" if session.plan_mode else "plan mode OFF"
+            session.review_hold = False
+            return ("📝 plan mode ON — investigate and plan, change nothing; you approve the plan before it is built"
+                    if session.plan_mode else "🔨 build mode")
         if cmd == "accounts":
             from . import availability
             if not arg.strip():

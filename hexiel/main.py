@@ -127,6 +127,13 @@ def build_session(cwd: str, model_name: str | None, resumed: dict | None = None,
                                         "always gets one, named after the description unless given"}},
         "required": ["prompt"]},
         readonly=True, run=lambda args, ctx: session.run_subagent(args)))
+    session.tools.append(ToolDef(
+        "plan_exit", "Only in plan mode (or when the user asked to review first): submit your finished plan for the "
+        "user's approval. Approval switches to build mode so you can carry it out; if they decline, revise the plan "
+        "from their feedback and call it again.",
+        {"type": "object", "properties": {"plan": {"type": "string", "description": "the complete step-by-step plan"}},
+         "required": ["plan"]},
+        readonly=True, run=lambda args, ctx: session.plan_exit(args)))
     if settings.consult_mode != "off" and (settings.planner_profile or settings.fallback_profile):
         from . import consult
         session.tools.append(consult.tool_def(session))       # the working model can ask the strong model for advice

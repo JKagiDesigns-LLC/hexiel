@@ -135,6 +135,9 @@ explanations.
 - When the user hands you a list of tasks, that list is the job: put every item in the todo list and work through
   ALL of them in the same turn, one after another. Never stop after one to ask whether to continue — the user
   may be away (remote chat); finish the list, then give one summary.
+- If the user asks for a plan and says to wait, review, or confirm first ("make a plan and wait for my input"),
+  write the plan (a `todo` create is fine), then STOP and ask for their go-ahead. Do not start the steps: the
+  "finish the whole list" rule above applies only after they have approved or when they asked for the work itself.
 - Keep exactly one step marked in-progress (`~`); mark steps done (`x`) the moment
   they finish, and update the "where we left off" checkpoint whenever you stop a
   turn mid-task. If the session dies, the next one resumes from that file.

@@ -149,7 +149,8 @@ class ApproveScreen(ModalScreen):
     BINDINGS = [("y", "yes", "Yes"), ("n", "no", "No"), ("a", "always", "Always"),
                 ("escape", "no", "No")]
 
-    TITLES = {"delegate": "Plan this with the strong model?", "delegate-plan": "Run this plan?"}
+    TITLES = {"delegate": "Plan this with the strong model?", "delegate-plan": "Run this plan?",
+              "plan_exit": "Build this plan?"}
 
     def __init__(self, tool_name: str, args_preview: str, always_rule: str = "") -> None:
         super().__init__()
@@ -910,7 +911,7 @@ class StatusLine(Static):
             window = session.model_config.context_window
             pct = 100 * tokens_now // max(window, 1)
             if getattr(session, "plan_mode", False):
-                mode = f"[b {YELLOW}]PLAN MODE[/]"
+                mode = f"[b {YELLOW}]PLAN MODE[/] [{MUTED}]shift+tab: build[/]"
             elif not session.auto_approve:
                 mode = f"[{MUTED}]asks before writes[/]"
             elif session.guard_commits:
@@ -1638,6 +1639,7 @@ class HexielTUI(App):
         Binding("ctrl+l", "clear_chat", "Clear chat", priority=True),
         Binding("ctrl+p", "pick_model", "Switch model", priority=True),
         Binding("ctrl+b", "toggle_sidebar", "Toggle sidebar", priority=True, show=False),
+        Binding("shift+tab", "toggle_plan", "Plan / build mode", priority=True),
     ]
     CSS = """
     Screen { layout: vertical; background: #0e1014; color: #d6dae2; }
@@ -2516,13 +2518,18 @@ class HexielTUI(App):
         threading.Thread(target=lambda: self._post(self.add_note, digest.status_text(self.session, True)),
                          daemon=True).start()
 
+    def action_toggle_plan(self) -> None:
+        """Shift+Tab: switch between plan mode (read-only) and build mode, like OpenCode's Tab."""
+        self.cmd_plan("")
+
     def cmd_plan(self, arg: str) -> None:
         self.session.plan_mode = not self.session.plan_mode
         if self.session.plan_mode:
-            self.add_note("📝 plan mode ON — hexiel will investigate and propose a plan without "
-                          "changing anything. /plan again to apply it.")
+            self.add_note("📝 plan mode ON — hexiel will investigate and propose a plan without changing "
+                          "anything, then ask you to approve it. Shift+Tab or /plan switches to build mode.")
         else:
-            self.add_note("plan mode OFF — say 'go ahead' (or similar) to carry out the plan")
+            self.add_note("🔨 build mode — hexiel can make changes again (Shift+Tab or /plan for plan mode)")
+        self.session.review_hold = False
         self._refresh_status()
 
     def cmd_permissions(self, arg: str) -> None:

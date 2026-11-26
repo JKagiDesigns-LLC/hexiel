@@ -323,10 +323,43 @@ def fork_payload(session, upto: int | None = None) -> tuple[dict, int]:
     return data, kept
 
 
-PLAN_MODE_ALLOWED = {"todo", "memory", "skill", "timer"}   # bookkeeping still works in plan mode
+PLAN_MODE_ALLOWED = {"todo", "memory", "skill", "timer", "plan_exit"}   # bookkeeping still works in plan mode
 PLAN_MODE_NOTE = ("[plan mode] Investigate with read-only tools and produce a step-by-step plan. "
-                  "Do not try to change files or run commands; the user will approve the plan "
-                  "and turn plan mode off.")
+                  "Do not try to change files or run commands. When the plan is ready, call plan_exit with the "
+                  "complete plan: the user approves it there (switching to build mode) or sends feedback to revise it.")
+
+REVIEW_HOLD_NOTE = ("[review hold] The user asked to review before you act. Investigate with read-only tools, write the "
+                    "plan (recording it in the todo list is fine), then call plan_exit with the complete plan so they can "
+                    "approve it. Do not start carrying it out and do not change anything until they approve.")
+REVIEW_HOLD_BLOCK = ("The user asked to review the plan before anything is done, so no changes are made yet. Present the "
+                     "plan and wait; they will say 'go ahead' when they approve it.")
+_HOLD_RE = re.compile(
+    r"wait\s+(?:for|until)\b[^.\n]{0,40}\b(?:my|me|i|your?\s+(?:input|ok|approval))\b"
+    r"|\buntil\s+i\b"
+    r"|\b(?:don'?t|do\s+not|no\s+need\s+to|not\s+yet)\s+(?:start|begin|proceed|implement|execute|make\s+any\s+changes|"
+    r"change\s+anything|do\s+anything|act)\b"
+    r"|\b(?:let\s+me|i\s+want\s+to|i'?d\s+like\s+to|i\s+will|i'?ll)\s+(?:review|approve|look\s+(?:at|over)|check|go\s+over|read)\b"
+    r"[^.\n]{0,40}\b(?:first|plan|before)\b"
+    r"|\b(?:just|only)\s+(?:make|give|write|draft|show|create|come\s+up\s+with)\s+(?:me\s+)?(?:a\s+|the\s+)?plan\b"
+    r"|\bplan\s+only\b"
+    r"|\b(?:ask|check|confirm|run\s+it\s+by)\s+(?:with\s+)?me\s*(?:first|before)?\b(?=[^.\n]{0,20}(?:first|before|$))"
+    r"|\bfor\s+(?:my|me\s+to)\s+(?:review|approval|approve)\b"
+    r"|\b(?:get|wait\s+for)\s+my\s+(?:ok|okay|approval|go[- ]?ahead|sign[- ]?off|confirmation)\b", re.I)
+_APPROVE_RE = re.compile(
+    r"\b(?:go\s+ahead|go\s+for\s+it|approved?|lgtm|looks\s+good|proceed|do\s+it|"
+    r"(?:implement|execute|carry\s+out)\s+(?:it|the\s+plan|that)|start\s+(?:now|implementing|working|building))\b", re.I)
+
+
+def review_hold_after(text: str, held: bool) -> bool:
+    """Is the user asking hexiel to stop at the plan and wait for them? Set by phrases like 'make a plan and wait for
+    my input'; it stays on through short revisions of the plan and ends when they approve ('go ahead')."""
+    text = text or ""
+    if _HOLD_RE.search(text):
+        return True
+    if _APPROVE_RE.search(text[:300]):
+        return False
+    return held and len(text) < 300
+
 
 KEEP_GOING_NUDGE = ("(You stopped, but your todo list still has open steps: {steps}. Nobody is waiting to approve "
                     "each step — carry on with the next one now and keep going until every step is done. Stop only if "
@@ -483,16 +516,22 @@ class Session:
         self.tools = tools
         self.system_prompt = system_prompt
         self._on_event = on_event or (lambda *_a, **_k: None)
-        self._on_approve = on_approve or (lambda *_: "yes")
+        def self_default(*_):                    # headless runs approve everything; plan_exit must not rely on it
+            return "yes"
+        self._default_approve = self_default
+        self._on_approve = on_approve or self_default
         self.web_base = ""                       # the local web UI's address, once one is serving this session
         self.busy_probe = None                   # set by a web view: is a turn running (for its Stop button)
         self.remote_notify = None                # set while Hexiel Remote is on: (kind, text) -> push to the phone
         self.mirrors: list = []                  # other views of this chat (Hexiel Remote): see add_mirror
         self.dismiss_approval = lambda: None     # the primary UI closes its approval prompt when a mirror answers first
         self.id = uuid.uuid4().hex[:12]
+        self.findings = None                     # shared Findings board (created by the lead on first helper)
+        self.parent_id = ""                      # set on subagent/team helpers: the chat that started them (they are not separate sessions)
         self.created = time.time()
         self.messages: list[dict] = []
         self.mcp_servers: list = []   # started MCP servers (see mcp_client)
+        self.review_hold = False        # the user asked to review the plan first: no changes, no keep-going nudges
         self.plan_mode = False          # read-only planning: no writes/commands run
         self.loaded_toolsets: set = set()   # optional tool groups in use (toolsets.py)
         self.checkpoints: list[list] = []   # per turn: [(path, original bytes | None)] for /undo
@@ -841,8 +880,16 @@ class Session:
             return
         images, notes = attach_images(user_text, self.cwd)
         shown_content = user_shown
+        if user_text and not self.internal and not self.parent_id:
+            was = self.review_hold
+            self.review_hold = review_hold_after(user_text, was)
+            if self.review_hold and not was:
+                self.on_event("note", "⏸ holding for your review — hexiel will make the plan and wait; "
+                                      "say 'go ahead' when you approve it")
         if self.plan_mode:
             shown_content += "\n" + PLAN_MODE_NOTE
+        elif self.review_hold:
+            shown_content += "\n" + REVIEW_HOLD_NOTE
         entry = {"role": "user", "content": "\n".join(
             [shown_content, *notes]),
             "ts": time.time()}
@@ -868,7 +915,8 @@ class Session:
         except Exception:                  # noqa: BLE001 - the durable copy is a bonus; memory undo continues
             pass
         from . import hooks as hooks_mod
-        for out in hooks_mod.run(self.hooks, "UserPromptSubmit", self.cwd, self.id, prompt=user_text):
+        for out in hooks_mod.run(self.hooks, "UserPromptSubmit", self.cwd, self.id, prompt=user_text,
+                                 parent_session_id=self.parent_id):
             if out.blocked:
                 self.on_event("turn_end", {"error": f"blocked by a UserPromptSubmit hook: {out.stderr or out.command}"})
                 return
@@ -979,7 +1027,7 @@ class Session:
                     if self.has_pending():        # the user spoke while this reply was being written: answer them too
                         continue
                     steps = self._open_todo_steps(turn)
-                    if steps:                     # a multi-step job must not stall after one step to wait for a "go ahead"
+                    if steps and not self.review_hold:   # a multi-step job must not stall after one step to wait for a "go ahead"
                         turn["idle"] = turn.get("idle", 0) + 1
                         if turn["idle"] <= KEEP_GOING_MAX_IDLE:
                             self.on_event("note", "…open todo steps remain — carrying on "
@@ -987,7 +1035,7 @@ class Session:
                             self.messages.append({"role": "user", "content": KEEP_GOING_NUDGE.format(steps=steps)})
                             continue
                     said = (assistant.get("content") or "").strip()
-                    if _announces_action(said) and turn.get("stalls", 0) < STALL_MAX \
+                    if _announces_action(said) and turn.get("stalls", 0) < STALL_MAX and not self.review_hold \
                             and not self._stop.is_set():
                         turn["stalls"] = turn.get("stalls", 0) + 1
                         self.on_event("note", "…the model announced an action without calling a tool — "
@@ -1033,7 +1081,7 @@ class Session:
             if turn["ok"]:
                 self._auto_commit(user_text)
             from . import hooks as hooks_mod
-            hooks_mod.run(self.hooks, "Stop", self.cwd, self.id)
+            hooks_mod.run(self.hooks, "Stop", self.cwd, self.id, parent_session_id=self.parent_id)
             self.save()
             self._schedule_idle_compact()
 
@@ -1406,7 +1454,8 @@ class Session:
             self.save()
         sent = len(self.messages)       # the prompt covers exactly these messages
         from . import modelbusy
-        slot = modelbusy.enter(self.model_config, lambda t: self.on_event("note", t), self.id)
+        slot = modelbusy.enter(self.model_config, lambda t: self.on_event("note", t),
+                                self.parent_id or self.id)
         try:
             stream = provider.stream(self.messages, self.system_prompt, tool_defs,
                                      model=self.model_config.model,
@@ -1513,6 +1562,8 @@ class Session:
             return None, None, False, False, (
                 "Plan mode is on: no changes are made. Describe the change you "
                 "would make instead; the user will turn plan mode off to apply it.", True)
+        if self.review_hold and not tool.readonly and tool.name not in PLAN_MODE_ALLOWED:
+            return None, None, False, False, (REVIEW_HOLD_BLOCK, True)
         skips_approval = getattr(tool, "always_ok", False) or rule == "allow"
         needs_ask = rule == "ask" or (not tool.readonly and not skips_approval and not self.auto_approve)
         guarded = False
@@ -1543,8 +1594,8 @@ class Session:
                 return False                   # this one needs the main thread
             if tool.readonly:
                 continue
-            if self.plan_mode and tool.name not in PLAN_MODE_ALLOWED:
-                continue                       # plan-mode refusal: a message, no work, no approval
+            if (self.plan_mode or self.review_hold) and tool.name not in PLAN_MODE_ALLOWED:
+                continue                       # plan-mode / review-hold refusal: a message, no work, no approval
             if getattr(tool, "always_ok", False) or rule == "allow":
                 if not (self.auto_approve and self.guard_commits
                         and permissions.commit_action(tool.name, args)):
@@ -1558,7 +1609,8 @@ class Session:
         land results in call order."""
         from . import hooks as hooks_mod
         for out in hooks_mod.run(self.hooks, "PreToolUse", self.cwd, self.id,
-                                 tool=tool.name, tool_input=call["arguments"]):
+                                 tool=tool.name, tool_input=call["arguments"],
+                                 parent_session_id=self.parent_id):
             if out.blocked:
                 reason = out.stderr or f"blocked by hook: {out.command}"
                 return self._tool_message(call, f"A PreToolUse hook blocked this call: {reason}", True), 0.0
@@ -1595,7 +1647,8 @@ class Session:
                                          f"(recorded to {path}); work around it or retry",
                                     is_error=True)
         for out in hooks_mod.run(self.hooks, "PostToolUse", self.cwd, self.id, tool=tool.name,
-                                 tool_input=call["arguments"], tool_response=result.text):
+                                 tool_input=call["arguments"], tool_response=result.text,
+                                 parent_session_id=self.parent_id):
             if out.blocked and out.stderr:          # feedback for the model (e.g. lint errors)
                 result = ToolResult(text=f"{result.text}\n\n[PostToolUse hook]\n{out.stderr[:4000]}",
                                     images=result.images, is_error=result.is_error,
@@ -1672,6 +1725,27 @@ class Session:
         with ThreadPoolExecutor(max_workers=min(8, len(calls)), thread_name_prefix="hexiel-tools") as pool:
             return dict(zip((c["id"] for c in calls), pool.map(one, calls)))
 
+    # ---------------------------------------------------------------- plan -> build
+
+    def plan_exit(self, args: dict) -> "ToolResult":
+        """The `plan_exit` tool (OpenCode's plan -> build hand-off): the model hands over its finished plan, the user
+        approves it in the normal approval prompt, and approval turns plan mode / the review hold off."""
+        plan = str(args.get("plan", "")).strip()
+        if not (self.plan_mode or self.review_hold):
+            return ToolResult(text="error: not in plan mode — there is nothing to exit; just do the work", is_error=True)
+        if not plan:
+            return ToolResult(text="error: plan is required — give the complete plan to approve", is_error=True)
+        if self._on_approve is self._default_approve:
+            return ToolResult(text="Plan recorded. There is no one here to approve it interactively: present the plan "
+                                   "as your final answer and wait for the user.")
+        verdict = self.on_approve("plan_exit", {"text": plan})
+        if verdict == "no":
+            return ToolResult(text="The user did not approve the plan yet. Ask what they want changed, revise the "
+                                   "plan, and call plan_exit again when it is ready. Change nothing meanwhile.")
+        self.plan_mode = self.review_hold = False
+        self.on_event("note", "✓ plan approved — build mode: hexiel will carry it out")
+        return ToolResult(text="Approved. Plan mode is off — carry out the plan now, step by step.")
+
     # ---------------------------------------------------------------- subagents
 
     def run_subagent(self, args: dict, extra_tools=(), on_helper=None) -> "ToolResult":
@@ -1697,13 +1771,19 @@ class Session:
         nested = ("task", "team")                       # helpers never start helpers of their own
         tools = [t for t in self.tools if t.name not in nested] if mode == "write" \
             else [t for t in self.tools if t.readonly and t.name not in nested]
-        tools = tools + list(extra_tools)
+        from . import findings as findings_mod
+        board = self.findings
+        if board is None:
+            board = self.findings = findings_mod.Findings()
+        label = str(args.get("description", "")).strip()[:60] or "subagent"
+        tools = tools + list(extra_tools) + findings_mod.tools_for(board, label)
         helper = Session(model, self.settings, self.cwd, tools,
                          SUBAGENT_WRITE if mode == "write" else SUBAGENT_SYSTEM)
         helper.bind_tool_ctx(self.tool_ctx)
+        helper.parent_id = self.parent_id or self.id    # hooks and the model-busy check see a helper of THIS chat
         helper.hooks = self.hooks
         helper.rules = self.rules
-        label = str(args.get("description", "")).strip()[:60] or "subagent"
+        helper.findings = board                        # one board for the whole tree of helpers
         wt_note = ""
         want_wt = args.get("worktree")                 # true = its own ephemeral worktree; "name" = a named one
         write_auto = mode == "write" and not want_wt   # a write agent without a box: make one up front
@@ -1768,7 +1848,12 @@ class Session:
         if on_helper is not None:
             on_helper(helper)                       # agent teams: register for messages, watch its steps
         try:
-            helper.run_turn(prompt + SUBAGENT_LIMIT)
+            known = board.render(exclude=label)
+            if known:
+                prompt = (f"Already established by other helpers on this chat (do not redo this work; build on it, "
+                          f"and use read_findings for more):\n{known}\n\n---\n{prompt}")
+            helper.run_turn(prompt + SUBAGENT_LIMIT + "\nIf you learn something other helpers may need before "
+                            "you finish, call share_finding.")
         finally:
             link.set()
         if self._stop.is_set():
@@ -1779,6 +1864,8 @@ class Session:
             self.usage_totals[key] += helper.usage_totals.get(key, 0)
         self.merge_usage(helper)
         steps = sum(1 for m in helper.messages if m.get("role") == "tool")
+        if answer:                                  # later helpers start from this; the lead already has it
+            board.post(label, "final answer", answer[:findings_mod.ENTRY_CAP])
         if not answer:
             return ToolResult(text=f"the subagent finished without an answer after {steps} step(s)",
                               is_error=True)

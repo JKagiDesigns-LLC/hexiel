@@ -1,6 +1,6 @@
 [project]
 name = "hexiel"
-version = "0.9.24"
+version = "1.0.0"
 description = "Open-source AI coding agent for the terminal and browser — runs on local Ollama models (even on modest hardware) or any cloud LLM. A self-hostable alternative to Claude Code and opencode."
 readme = "README.md"
 license = "LicenseRef-GPL-3.0-with-Commons-Clause"
@@ -10,7 +10,7 @@ keywords = ["ai", "coding-agent", "ai-coding-assistant", "llm", "ollama", "local
             "terminal", "tui", "cli", "claude-code-alternative", "opencode-alternative",
             "anthropic", "openai", "qwen", "agent", "developer-tools", "self-hosted"]
 classifiers = [
-    "Development Status :: 4 - Beta",
+    "Development Status :: 5 - Production/Stable",
     "Environment :: Console",
     "Environment :: Web Environment",
     "Intended Audience :: Developers",

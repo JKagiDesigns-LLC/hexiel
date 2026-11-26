@@ -358,6 +358,22 @@ def jobs_cli(argv: list[str]) -> int:
 
 
 def main() -> None:
+    """Run hexiel, then leave without waiting on a busy worker thread — on every way out (normal return,
+    SystemExit, Ctrl+C), not just the TUI's: Python's exit handler joins the tool pool and a busy
+    thread made closing hang, then a second Ctrl+C printed 'Exception ignored on threading shutdown'."""
+    code = 0
+    try:
+        _main()
+    except SystemExit as exc:
+        code = exc.code if isinstance(exc.code, int) else (0 if exc.code is None else 1)
+        if isinstance(exc.code, str):
+            print(exc.code, file=sys.stderr)
+    except KeyboardInterrupt:
+        code = 130
+    leave_without_waiting(code)
+
+
+def _main() -> None:
     from .remote import ensure_streams
     ensure_streams()                  # no console (Windows scheduled task): log to a file instead of crashing
     from .remote import load_service_env
@@ -522,20 +538,51 @@ def main() -> None:
         leave_without_waiting()
 
 
-def leave_without_waiting(code: int = 0) -> None:
-    """Quit now even if a worker thread is still busy. Python waits for non-daemon threads (the tool pool that
-    runs a turn's tool calls) before it exits, so closing hexiel mid-task hung on whatever command or fetch was
-    still running, and a second Ctrl+C only showed a traceback from the exit handler. The terminal is already
-    restored and the session saved by now; run the registered cleanups (MCP servers, remote control), then go."""
+def leave_without_waiting(code: int = 0, grace: float = 2.0) -> None:
+    """Quit, cancelling whatever is still running but never being held up by it. Python waits for non-daemon
+    threads (the tool pool that runs a turn's tool calls) before it exits, so closing hexiel mid-task hung on
+    whatever command or fetch was still running. So: ask every session to stop (this kills running commands),
+    give the workers a moment to wind down, say plainly which ones would not stop, run the registered cleanups
+    (MCP servers, remote control) and go. Nothing here may raise or block the exit — not even a second Ctrl+C."""
     import threading
-    busy = [t for t in threading.enumerate() if t is not threading.main_thread() and not t.daemon and t.is_alive()]
-    if not busy:
+    import time
+
+    def busy():
+        return [t for t in threading.enumerate()
+                if t is not threading.main_thread() and not t.daemon and t.is_alive()]
+
+    if not busy():
+        if code:
+            sys.exit(code)
         return                         # nothing to wait for: the normal exit is fine
+    try:
+        from .session import LIVE_SESSIONS
+        for live in list(LIVE_SESSIONS):
+            try:
+                live.stop()
+            except Exception:  # noqa: BLE001 - one stuck session must not keep the others running
+                pass
+    except Exception:  # noqa: BLE001
+        pass
+    deadline = time.monotonic() + grace
+    try:
+        while busy() and time.monotonic() < deadline:
+            time.sleep(0.05)
+    except KeyboardInterrupt:          # impatient second Ctrl+C: stop waiting, still leave cleanly
+        pass
+    left = busy()
+    if left:
+        names = ", ".join(sorted({t.name for t in left}))[:120]
+        try:
+            print(f"hexiel: {len(left)} background task(s) did not stop in time ({names}); "
+                  "closing anyway — they end with the process.", file=sys.stderr)
+        except Exception:  # noqa: BLE001
+            pass
     import atexit
     import os
     try:
         atexit._run_exitfuncs()
-    except Exception:  # noqa: BLE001 - leaving must not fail on a cleanup
+    except BaseException:  # noqa: BLE001 - leaving must not fail on a cleanup
         pass
     for stream in (sys.stdout, sys.stderr):
         try:

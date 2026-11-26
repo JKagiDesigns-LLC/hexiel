@@ -106,6 +106,9 @@ def _degenerate(tail: str) -> bool:
 # turn would simply end with nothing run. Recognize the common shapes and turn the text back
 # into a real call, so the work still happens.
 
+import weakref
+LIVE_SESSIONS: "weakref.WeakSet" = weakref.WeakSet()    # every session, subagents and plan steps included
+
 _TEXT_CALL_SCAN = 4000              # never look for call JSON in more than this much reply text
 _WRAPPER_KEYS = (("name", "arguments"), ("name", "args"), ("name", "parameters"),
                  ("tool", "arguments"), ("tool", "args"), ("tool", "parameters"),
@@ -208,12 +211,64 @@ def _xml_tool_call(text: str, tools) -> tuple[str, dict] | None:
     return tool.name, args
 
 
+_P = r"[|\uff5c]\s*DSML\s*[|\uff5c]"          # DeepSeek writes ｜DSML｜ with full-width bars; some gateways use ASCII ones
+_DSML_INVOKE = re.compile(rf"<\s*{_P}\s*invoke\s+name=\"([^\"]+)\"\s*>(.*?)(?:<\s*/\s*{_P}\s*invoke\s*>|$)", re.S)
+_DSML_PARAM = re.compile(rf"<\s*{_P}\s*parameter\s+name=\"([^\"]+)\"([^>]*)>(.*?)<\s*/\s*{_P}\s*parameter\s*>", re.S)
+_DSML_TAIL = re.compile(rf"(?:<\s*/?\s*{_P}\s*(?:invoke|function_calls)[^>]*>|\s)*")
+_BRACKET_CALL = re.compile(r"\[tool call\]\s*([A-Za-z_][\w.-]*)\s*\(\s*(\{.*\})\s*\)\s*$", re.S)
+
+
+def _dsml_tool_call(text: str, tools) -> tuple[str, dict] | None:
+    """DeepSeek-style call written as text: <｜DSML｜invoke name="write"><｜DSML｜parameter name="path"
+    string="true">a.ts</｜DSML｜parameter>…. Only the first invoke is run; the turn continues from its result."""
+    m = _DSML_INVOKE.search(text)
+    if not m:
+        return None
+    tool = next((t for t in tools if t.name == m.group(1)), None)
+    if tool is None or not _DSML_TAIL.fullmatch(text[m.end():]):
+        return None                               # not the point of the message: more reply follows
+    props = (tool.parameters or {}).get("properties") or {}
+    args: dict = {}
+    for k, attrs, v in _DSML_PARAM.findall(m.group(2)):
+        kind = (props.get(k.strip()) or {}).get("type")
+        if 'string="false"' in attrs or (kind in ("integer", "number", "boolean", "array", "object")
+                                         and 'string="true"' not in attrs):
+            try:
+                v = json.loads(v.strip())
+            except ValueError:
+                pass
+        args[k.strip()] = v
+    if [k for k in (tool.parameters or {}).get("required", []) if k not in args]:
+        return None
+    return tool.name, args
+
+
+def _bracket_tool_call(text: str, tools) -> tuple[str, dict] | None:
+    """`[tool call] bash({"command": "ls"})` — a model echoing the shape of a transcript line."""
+    m = _BRACKET_CALL.search(text.strip())
+    if not m or not any(t.name == m.group(1) for t in tools):
+        return None
+    try:
+        args = json.loads(m.group(2))
+    except ValueError:
+        return None
+    return (m.group(1), args) if isinstance(args, dict) else None
+
+
 def _text_tool_call(text: str, tools) -> tuple[str, dict] | None:
     """A tool call the model wrote into its reply text, or None. Only when the call is the
     point of the message: a JSON answer that happens to reuse a tool's keys but sits inside
     a long prose reply is left alone."""
-    if not text or len(text) > _TEXT_CALL_SCAN * 4:
+    if not text:
         return None
+    dsml = _dsml_tool_call(text, tools)          # a write call carries a whole file: exempt from the size cap
+    if dsml is not None:
+        return dsml
+    if len(text) > _TEXT_CALL_SCAN * 4:
+        return None
+    bracket = _bracket_tool_call(text, tools)
+    if bracket is not None:
+        return bracket
     xml = _xml_tool_call(text, tools)
     if xml is not None:
         return xml
@@ -558,6 +613,7 @@ class Session:
         self._pending: list[str] = []          # messages the user typed while a turn was running
         self._pending_lock = threading.Lock()
         self._stop = threading.Event()
+        LIVE_SESSIONS.add(self)    # main.leave_without_waiting() cancels whatever is still running on exit
         self._tool_ctx = None  # bind with bind_tool_ctx() before run_turn
 
     # ---------------------------------------------------------------- run turn

@@ -119,3 +119,16 @@ def test_glm_xml_style_call_is_rescued():
 def test_xml_call_for_unknown_tool_or_midprose_is_ignored():
     assert _text_tool_call("<tool_call>nope<arg_key>a</arg_key><arg_value>1</arg_value></tool_call>", TOOLS) is None
     assert _text_tool_call("<tool_call>bash<arg_key>command</arg_key><arg_value>ls</arg_value></tool_call> and more", TOOLS) is None
+
+
+def test_deepseek_dsml_call_becomes_a_real_call():
+    t = ('Now write.\n<｜DSML｜function_calls>\n<｜DSML｜invoke name="write">\n'
+         '<｜DSML｜parameter name="path" string="true">/a/b.ts</｜DSML｜parameter>\n'
+         '<｜DSML｜parameter name="content" string="true">x = 1\n</｜DSML｜parameter>\n'
+         '</｜DSML｜invoke>\n</｜DSML｜function_calls>')
+    assert _text_tool_call(t, TOOLS) == ("write", {"path": "/a/b.ts", "content": "x = 1\n"})
+    assert _text_tool_call(t.replace("｜", "|"), TOOLS)[0] == "write"          # ASCII bars too
+
+
+def test_bracketed_tool_call_line():
+    assert _text_tool_call('[tool call] bash({"command": "ls | head"})', TOOLS) == ("bash", {"command": "ls | head"})

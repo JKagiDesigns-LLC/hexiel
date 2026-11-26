@@ -218,29 +218,39 @@ _DSML_TAIL = re.compile(rf"(?:<\s*/?\s*{_P}\s*(?:invoke|function_calls)[^>]*>|\s
 _BRACKET_CALL = re.compile(r"\[tool call\]\s*([A-Za-z_][\w.-]*)\s*\(\s*(\{.*\})\s*\)\s*$", re.S)
 
 
+def _dsml_tool_calls(text: str, tools) -> list[tuple[str, dict]]:
+    """Every DeepSeek-style call written as text (a reply may hold several invokes):
+    <｜DSML｜invoke name="write"><｜DSML｜parameter name="path" string="true">a.ts</｜DSML｜parameter>….
+    Empty unless the calls are the point of the message — nothing but closing tags after the last one — and
+    every one names a real tool with its required arguments (half a batch is never run)."""
+    matches = list(_DSML_INVOKE.finditer(text))
+    if not matches or not _DSML_TAIL.fullmatch(text[matches[-1].end():]):
+        return []
+    calls: list[tuple[str, dict]] = []
+    for m in matches:
+        tool = next((t for t in tools if t.name == m.group(1)), None)
+        if tool is None:
+            return []
+        props = (tool.parameters or {}).get("properties") or {}
+        args: dict = {}
+        for k, attrs, v in _DSML_PARAM.findall(m.group(2)):
+            kind = (props.get(k.strip()) or {}).get("type")
+            if 'string="false"' in attrs or (kind in ("integer", "number", "boolean", "array", "object")
+                                             and 'string="true"' not in attrs):
+                try:
+                    v = json.loads(v.strip())
+                except ValueError:
+                    pass
+            args[k.strip()] = v
+        if [k for k in (tool.parameters or {}).get("required", []) if k not in args]:
+            return []
+        calls.append((tool.name, args))
+    return calls
+
+
 def _dsml_tool_call(text: str, tools) -> tuple[str, dict] | None:
-    """DeepSeek-style call written as text: <｜DSML｜invoke name="write"><｜DSML｜parameter name="path"
-    string="true">a.ts</｜DSML｜parameter>…. Only the first invoke is run; the turn continues from its result."""
-    m = _DSML_INVOKE.search(text)
-    if not m:
-        return None
-    tool = next((t for t in tools if t.name == m.group(1)), None)
-    if tool is None or not _DSML_TAIL.fullmatch(text[m.end():]):
-        return None                               # not the point of the message: more reply follows
-    props = (tool.parameters or {}).get("properties") or {}
-    args: dict = {}
-    for k, attrs, v in _DSML_PARAM.findall(m.group(2)):
-        kind = (props.get(k.strip()) or {}).get("type")
-        if 'string="false"' in attrs or (kind in ("integer", "number", "boolean", "array", "object")
-                                         and 'string="true"' not in attrs):
-            try:
-                v = json.loads(v.strip())
-            except ValueError:
-                pass
-        args[k.strip()] = v
-    if [k for k in (tool.parameters or {}).get("required", []) if k not in args]:
-        return None
-    return tool.name, args
+    calls = _dsml_tool_calls(text, tools)
+    return calls[0] if calls else None
 
 
 def _bracket_tool_call(text: str, tools) -> tuple[str, dict] | None:
@@ -1059,12 +1069,14 @@ class Session:
                     return
                 assistant.setdefault("ts", time.time())
                 if not assistant.get("tool_calls"):
-                    rescued = _text_tool_call(assistant.get("content") or "", self.tools)
+                    text = assistant.get("content") or ""
+                    rescued = _dsml_tool_calls(text, self.tools) or \
+                        ([r] if (r := _text_tool_call(text, self.tools)) else [])
                     if rescued:
-                        name, args = rescued
                         assistant["tool_calls"] = [{"id": f"call_text_{uuid.uuid4().hex[:8]}",
-                                                    "name": name, "arguments": args}]
-                        self.on_event("note", f"🔧 the model wrote its {name} call into the reply "
+                                                    "name": name, "arguments": args} for name, args in rescued]
+                        self.on_event("note", f"🔧 the model wrote its {rescued[0][0]} call"
+                                              f"{'s' if len(rescued) > 1 else ''} into the reply "
                                               "text — running it anyway")
                 self.messages.append(assistant)
                 self.save()

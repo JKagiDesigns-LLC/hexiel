@@ -132,3 +132,11 @@ def test_deepseek_dsml_call_becomes_a_real_call():
 
 def test_bracketed_tool_call_line():
     assert _text_tool_call('[tool call] bash({"command": "ls | head"})', TOOLS) == ("bash", {"command": "ls | head"})
+
+
+def test_several_dsml_invokes_all_run():
+    from hexiel.session import _dsml_tool_calls
+    one = '<｜DSML｜invoke name="bash"><｜DSML｜parameter name="command" string="true">%s</｜DSML｜parameter></｜DSML｜invoke>'
+    t = "<｜DSML｜function_calls>" + one % "ls" + one % "pwd" + "</｜DSML｜function_calls>"
+    assert _dsml_tool_calls(t, TOOLS) == [("bash", {"command": "ls"}), ("bash", {"command": "pwd"})]
+    assert _dsml_tool_calls(t.replace('name="bash"', 'name="nope"', 1), TOOLS) == []   # half a batch never runs

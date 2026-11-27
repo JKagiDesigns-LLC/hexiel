@@ -328,6 +328,15 @@ def _tool_checks(cwd: str) -> list[Check]:
         found = shutil.which(name) or (shutil.which("npx") and name in ("prettier", "tsc"))
         out.append(Check("Tools", f"helper:{name}", OK if found else INFO, name, why if found else f"not found — {why} is off",
                          () if found else (how,)))
+    try:
+        from . import lsp as lsp_mod
+        for name, installed, how in lsp_mod.doctor_lines(cwd):
+            out.append(Check("Tools", f"lsp:{name}", OK if installed else INFO, f"language server: {name}",
+                             "live definitions, references and types (the lsp tool)" if installed
+                             else "not installed — the lsp tool can't answer for these files; hexiel's symbol index is used",
+                             () if installed else ((how,) if how else ())))
+    except Exception:   # noqa: BLE001 - a hint must never break --doctor
+        pass
     for name, why, how in (("tesseract", "the ocr tool (text out of screenshots)", _pkg_manager_install("tesseract")),):
         found = shutil.which(name)
         out.append(Check("Tools", f"helper:{name}", OK if found else INFO, name, why if found else f"not found — {why} is off",

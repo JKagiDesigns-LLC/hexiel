@@ -865,6 +865,12 @@ def _diagnostics(args: dict, ctx: ToolContext) -> ToolResult:
     return text_result(body + f"\n({diags_mod.available(ctx.cwd)})")
 
 
+def _lsp(args: dict, ctx: ToolContext) -> ToolResult:
+    from . import lsp as lsp_mod
+    text, err = lsp_mod.run_action(args, ctx.cwd, ctx.stop_event)
+    return text_result(text, err)
+
+
 def _atomic_write(path: Path, text: str, newline: str | None = None) -> None:
     """Write via a temp file in the same folder and swap it in, so a kill or a full disk never leaves a
     truncated file. Follows symlinks (the target is replaced, not the link) and keeps the file mode."""
@@ -1903,6 +1909,16 @@ def build_tools(chain: Toolchain) -> list[ToolDef]:
                 "runs python compile checks; no network.",
                 obj(path={"type": "string"}, timeout={"type": "number"}),
                 readonly=True, run=_diagnostics),
+        ToolDef("lsp", "Ask the project's language server (pyright, typescript-language-server, gopls, "
+                "rust-analyzer, clangd, ... whichever is installed) for an exact answer instead of grepping: "
+                "action `definition` / `references` / `hover` (type + docs) for a `symbol` in `path` "
+                "(add `line` to pick between uses), `diagnostics` for a file, or `symbols` with `query` to "
+                "search the workspace. Resolves imports, inheritance and overloads that text search "
+                "cannot. If no server is installed it says how to install one; then use where_is / callers.",
+                obj(action={"type": "string", "enum": ["definition", "references", "hover", "diagnostics", "symbols"]},
+                    path={"type": "string"}, symbol={"type": "string"}, line={"type": "integer"},
+                    column={"type": "integer"}, query={"type": "string"}),
+                readonly=True, run=_lsp),
         ToolDef("container", "Drive the detected container runtime (docker or podman) natively. "
                 "actions: list, run (image, name, ports[], volumes[], cmd), exec (container, cmd, stdin?), "
                 "cmd is run directly, NOT through a shell: no pipes, heredocs or redirects — use "

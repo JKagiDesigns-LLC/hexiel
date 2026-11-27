@@ -26,6 +26,9 @@ def quiet(monkeypatch, tmp_path):
     import hexiel.skills as skills
     monkeypatch.setattr(skills, "discover", lambda cwd: [])
     monkeypatch.setattr(sys.stdout, "isatty", lambda: False)
+    import collections
+    usage = collections.namedtuple("usage", "total used free")      # a full disk on the test machine is not a doctor failure
+    monkeypatch.setattr(doctor.shutil, "disk_usage", lambda p: usage(500e9, 100e9, 400e9))
     return tmp_path
 
 

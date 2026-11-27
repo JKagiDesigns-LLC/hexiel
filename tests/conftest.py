@@ -29,6 +29,9 @@ def isolated_dirs(tmp_path_factory, monkeypatch):
     import hexiel.inventory as inventory_mod
     with tools_mod._task_lock:                          # a task another test killed must not be "finished" news for this one
         tools_mod._TASKS.clear()
+    import hexiel.testrun as testrun_mod
+    with testrun_mod._lock:                             # a run another test left going must not show up as "active" in this one
+        testrun_mod.RUNS.clear()
     session_mod._limited_until.clear()                 # a cooldown left by another test must not skip this one's model
     symbols_mod._INDEXES.clear()
     monkeypatch.setattr(symbols_mod, "WARM_ENABLED", False)  # no background indexer outliving the test's HEXIEL_DATA

@@ -871,6 +871,13 @@ def _lsp(args: dict, ctx: ToolContext) -> ToolResult:
     return text_result(text, err)
 
 
+def _lsp_install(args: dict, ctx: ToolContext) -> ToolResult:
+    from . import lsp as lsp_mod
+    approve = (lambda desc: bool(ctx.on_step("lsp_install", desc))) if ctx.on_step else None
+    text, err = lsp_mod.run_install(args, ctx.cwd, approve, ctx.stop_event)
+    return text_result(text, err)
+
+
 def _atomic_write(path: Path, text: str, newline: str | None = None) -> None:
     """Write via a temp file in the same folder and swap it in, so a kill or a full disk never leaves a
     truncated file. Follows symlinks (the target is replaced, not the link) and keeps the file mode."""
@@ -1919,6 +1926,11 @@ def build_tools(chain: Toolchain) -> list[ToolDef]:
                     path={"type": "string"}, symbol={"type": "string"}, line={"type": "integer"},
                     column={"type": "integer"}, query={"type": "string"}),
                 readonly=True, run=_lsp),
+        ToolDef("lsp_install", "Install a missing language server (pyright, typescript, gopls, rust-analyzer, ...) "
+                "with the machine's package manager so the lsp tool can use it. The user is shown the exact command "
+                "and must approve it first. Only call this when the lsp tool says a server is missing AND the user "
+                "wants to work in that language; never install speculatively.",
+                obj(server={"type": "string"}), always_ok=True, run=_lsp_install),
         ToolDef("container", "Drive the detected container runtime (docker or podman) natively. "
                 "actions: list, run (image, name, ports[], volumes[], cmd), exec (container, cmd, stdin?), "
                 "cmd is run directly, NOT through a shell: no pipes, heredocs or redirects — use "

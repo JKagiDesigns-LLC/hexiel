@@ -57,6 +57,9 @@ def parse_args() -> argparse.Namespace:
                     help="run environment preflight checks and exit (grouped report with advice)")
     ap.add_argument("--fix", action="store_true", help="with --doctor: apply the safe generic fixes")
     ap.add_argument("--json", action="store_true", help="with --doctor: print the report as JSON")
+    ap.add_argument("--install-lsp", metavar="SERVER", nargs="?", const="",
+                    help="install a language server for the lsp tool (pyright, typescript, gopls, rust-analyzer, ...) "
+                         "after asking; with no name, lists what this project needs")
     ap.add_argument("--setup", action="store_true", help="first-run guided wizard")
     ap.add_argument("--get-vision", action="store_true",
                     help="download the local vision model (Florence-2, ~265 MB) so image cards say what a picture shows")
@@ -458,6 +461,21 @@ def _main() -> None:
         looker.download(progress)
         print(f"local vision model ready in {looker.model_dir()}")
         return
+    if args.install_lsp is not None:
+        from . import lsp
+        if not args.install_lsp:
+            for name, ok, how in lsp.doctor_lines(cwd) or []:
+                print(f"{'✓' if ok else '✗'} {name}" + ("" if ok else f"  —  hexiel --install-lsp {name}   ({how})"))
+            if not lsp.doctor_lines(cwd):
+                print("no source files here that a built-in language server handles")
+            return
+        def ask(desc: str) -> bool:
+            if not sys.stdin.isatty():
+                return False
+            return input(f"hexiel: {desc}\nrun it? [y/N] ").strip().lower() in ("y", "yes")
+        text, err = lsp.run_install({"server": args.install_lsp}, cwd, ask)
+        print(("hexiel: " if not err else "hexiel: ") + text)
+        raise SystemExit(1 if err else 0)
     if args.doctor:
         from .doctor import doctor_main
         raise SystemExit(doctor_main(cwd, fix=args.fix, as_json_out=args.json))

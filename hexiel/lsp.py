@@ -44,6 +44,7 @@ extensions = [".py", ".pyi"]
 root_markers = ["pyproject.toml", "setup.py", "setup.cfg", "requirements.txt", ".git"]
 language_id = "python"
 install = "pipx install pyright   (or: npm i -g pyright)"
+install_cmds = [["pipx","install","pyright"],["uv","tool","install","pyright"],["npm","i","-g","pyright"]]
 
 [server.typescript]
 command = ["typescript-language-server", "--stdio"]
@@ -51,6 +52,7 @@ extensions = [".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"]
 root_markers = ["tsconfig.json", "jsconfig.json", "package.json", ".git"]
 language_id = "typescript"
 install = "npm i -g typescript typescript-language-server"
+install_cmds = [["npm","i","-g","typescript","typescript-language-server"]]
 
 [server.gopls]
 command = ["gopls"]
@@ -58,6 +60,7 @@ extensions = [".go"]
 root_markers = ["go.work", "go.mod", ".git"]
 language_id = "go"
 install = "go install golang.org/x/tools/gopls@latest"
+install_cmds = [["go","install","golang.org/x/tools/gopls@latest"]]
 
 [server.rust-analyzer]
 command = ["rust-analyzer"]
@@ -65,6 +68,7 @@ extensions = [".rs"]
 root_markers = ["Cargo.toml", ".git"]
 language_id = "rust"
 install = "rustup component add rust-analyzer"
+install_cmds = [["rustup","component","add","rust-analyzer"]]
 
 [server.clangd]
 command = ["clangd"]
@@ -79,6 +83,7 @@ extensions = [".java"]
 root_markers = ["pom.xml", "build.gradle", "build.gradle.kts", ".git"]
 language_id = "java"
 install = "brew install jdtls   (or your package manager)"
+install_cmds = [["brew","install","jdtls"]]
 
 [server.lua-language-server]
 command = ["lua-language-server"]
@@ -86,6 +91,7 @@ extensions = [".lua"]
 root_markers = [".luarc.json", ".git"]
 language_id = "lua"
 install = "brew install lua-language-server   (or your package manager)"
+install_cmds = [["brew","install","lua-language-server"]]
 
 [server.bash-language-server]
 command = ["bash-language-server", "start"]
@@ -93,6 +99,7 @@ extensions = [".sh", ".bash"]
 root_markers = [".git"]
 language_id = "shellscript"
 install = "npm i -g bash-language-server"
+install_cmds = [["npm","i","-g","bash-language-server"]]
 
 [server.ruby-lsp]
 command = ["ruby-lsp"]
@@ -100,6 +107,7 @@ extensions = [".rb"]
 root_markers = ["Gemfile", ".git"]
 language_id = "ruby"
 install = "gem install ruby-lsp"
+install_cmds = [["gem","install","ruby-lsp"]]
 
 [server.intelephense]
 command = ["intelephense", "--stdio"]
@@ -107,6 +115,7 @@ extensions = [".php"]
 root_markers = ["composer.json", ".git"]
 language_id = "php"
 install = "npm i -g intelephense"
+install_cmds = [["npm","i","-g","intelephense"]]
 """
 
 
@@ -118,10 +127,32 @@ class ServerSpec:
     root_markers: list = field(default_factory=lambda: [".git"])
     language_id: str = ""
     install: str = ""
+    install_cmds: list = field(default_factory=list)   # argv lists, tried in order: the first whose program exists
     env: dict = field(default_factory=dict)
 
+    def resolve(self) -> str | None:
+        """Full path of the server's program, looking in the usual user install folders too (pipx, go, cargo, npm)."""
+        return find_program(self.command[0]) if self.command else None
+
     def installed(self) -> bool:
-        return bool(self.command) and shutil.which(self.command[0]) is not None
+        return self.resolve() is not None
+
+
+def extra_bin_dirs() -> list[str]:
+    """Where installers drop programs that are often not on PATH yet."""
+    home = Path.home()
+    dirs = [home / ".local" / "bin", home / ".cargo" / "bin", home / ".npm-global" / "bin", home / "go" / "bin"]
+    for var, sub in (("GOBIN", ""), ("GOPATH", "bin"), ("CARGO_HOME", "bin"), ("PNPM_HOME", "")):
+        if os.environ.get(var):
+            dirs.append(Path(os.environ[var]) / sub)
+    return [str(d) for d in dirs if d.is_dir()]
+
+
+def find_program(name: str) -> str | None:
+    found = shutil.which(name)
+    if found:
+        return found
+    return shutil.which(name, path=os.pathsep.join(extra_bin_dirs())) if extra_bin_dirs() else None
 
 
 def _spec(name: str, d: dict, base: ServerSpec | None = None) -> ServerSpec | None:
@@ -134,7 +165,28 @@ def _spec(name: str, d: dict, base: ServerSpec | None = None) -> ServerSpec | No
         root_markers=[str(m) for m in d.get("root_markers", base.root_markers if base else [".git"])],
         language_id=str(d.get("language_id", base.language_id if base else "") or ""),
         install=str(d.get("install", base.install if base else "") or ""),
+        install_cmds=_cmds(d.get("install_cmds", base.install_cmds if base else [])),
         env={str(k): str(v) for k, v in (d.get("env") or {}).items()})
+
+
+def _cmds(v) -> list:
+    return [[str(a) for a in c] for c in v if isinstance(c, list) and c] if isinstance(v, list) else []
+
+
+def project_file_trusted(project: str) -> bool:
+    """A project's own lsp.toml names programs hexiel will run, so it only counts in a trusted project
+    (`hexiel --trust-project`, the same switch that lets a project's plugins load)."""
+    try:
+        from .openwebui_compat import is_trusted
+        return bool(is_trusted(project))
+    except Exception:   # noqa: BLE001
+        return False
+
+
+def untrusted_project_note(project: str) -> str:
+    if (Path(project) / ".hexiel" / "lsp.toml").is_file() and not project_file_trusted(project):
+        return " (this project's .hexiel/lsp.toml is ignored until you run `hexiel --trust-project` here)"
+    return ""
 
 
 def load_registry(project: str | None = None, extra_files: list | None = None) -> dict[str, ServerSpec]:
@@ -143,7 +195,7 @@ def load_registry(project: str | None = None, extra_files: list | None = None) -
     from .config import home_config_dir
     reg: dict[str, ServerSpec] = {}
     files: list = [None, home_config_dir() / "lsp.toml"]
-    if project:
+    if project and project_file_trusted(project):
         files.append(Path(project) / ".hexiel" / "lsp.toml")
     files += extra_files or []
     for f in files:
@@ -206,7 +258,8 @@ class Client:
         self.dead = False
         env = {**os.environ, **spec.env}
         try:
-            self.proc = subprocess.Popen(spec.command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            cmd = [spec.resolve() or spec.command[0], *spec.command[1:]]
+            self.proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                          stderr=subprocess.DEVNULL, cwd=root, env=env, start_new_session=True)
         except OSError as e:
             raise LspError(f"could not start {spec.command[0]}: {e}") from e
@@ -350,6 +403,8 @@ class Client:
             pass
         if self.proc.poll() is None:
             try:
+                if self.proc.pid <= 1:
+                    raise ProcessLookupError
                 os.killpg(self.proc.pid, 9)
             except (OSError, ProcessLookupError):
                 self.proc.kill()
@@ -535,10 +590,11 @@ def run_action(args: dict, cwd: str, stop=None, manager: Manager | None = None) 
         spec = server_for(path, reg)
         if spec is None:
             return (f"no language server is configured for {Path(path).suffix or 'this file type'} files. Add one in "
-                    f"~/.config/hexiel/lsp.toml (see hexiel/lsp.py), or use where_is / callers / outline."), True
+                    f"~/.config/hexiel/lsp.toml, or use where_is / callers / outline." + untrusted_project_note(cwd)), True
         if not spec.installed():
             return (f"{spec.name} is not installed, so no live code intelligence for {Path(path).suffix} files. "
-                    f"Install: {spec.install or 'see its docs'}. Meanwhile use where_is / callers / outline."), True
+                    f"Install: {spec.install or 'see its docs'}" + (f" — or call lsp_install server={spec.name!r} (asks the user first)" if spec.install_cmds else "")
+                    + ". Meanwhile use where_is / callers / outline." + untrusted_project_note(cwd)), True
         root = find_root(path, spec.root_markers, cwd)
     try:
         client = mgr.get(spec, root)
@@ -603,3 +659,71 @@ def doctor_lines(cwd: str) -> list[tuple[str, bool, str]]:
         if n > 4000:
             break
     return [(reg[k].name, reg[k].installed(), reg[k].install) for k in sorted(used)]
+
+
+# ------------------------------------------------------------------ installing
+
+def pick_recipe(spec: ServerSpec) -> list | None:
+    """The first install command whose program is available on this machine."""
+    return next((c for c in spec.install_cmds if find_program(c[0])), None)
+
+
+def install_server(spec: ServerSpec, approve, stop=None, timeout: float = 900.0, popen=subprocess.Popen) -> tuple[str, bool]:
+    """Install `spec` with the first available package manager, after `approve(command_text)` says yes.
+    `approve` is required: with no way to ask, nothing is installed. Returns (text, is_error)."""
+    if spec.installed():
+        return f"{spec.name} is already installed ({spec.resolve()}).", False
+    if approve is None:
+        return "error: no way to ask the user for approval here, so nothing was installed.", True
+    cmd = pick_recipe(spec)
+    if cmd is None:
+        why = "no install command is configured for it" if not spec.install_cmds else \
+            "none of its package managers (" + ", ".join(sorted({c[0] for c in spec.install_cmds})) + ") is installed"
+        return f"cannot install {spec.name} automatically: {why}. Do it by hand: {spec.install or 'see its docs'}", True
+    shown = " ".join(shlex_quote(a) for a in cmd)
+    if not approve(f"install the {spec.name} language server: {shown}"):
+        return f"not installed: the user declined `{shown}`.", True
+    env = {**os.environ, "PATH": os.pathsep.join([*extra_bin_dirs(), os.environ.get("PATH", "")])}
+    try:
+        proc = popen([find_program(cmd[0]) or cmd[0], *cmd[1:]], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                     stderr=subprocess.STDOUT, text=True, env=env, start_new_session=True)
+    except OSError as e:
+        return f"error: could not run {cmd[0]}: {e}", True
+    chunks: list[str] = []
+    reader = threading.Thread(target=lambda: chunks.extend(iter(proc.stdout.readline, "")), daemon=True)
+    reader.start()
+    end = time.monotonic() + timeout
+    while proc.poll() is None:
+        if (stop is not None and stop.is_set()) or time.monotonic() > end:
+            try:
+                if proc.pid <= 1:
+                    raise ProcessLookupError
+                os.killpg(proc.pid, 15)
+            except (OSError, ProcessLookupError):
+                proc.kill()
+            reason = "cancelled" if stop is not None and stop.is_set() else f"timed out after {timeout:.0f}s"
+            return f"install of {spec.name} {reason}; it was stopped.", True
+        time.sleep(0.2)
+    reader.join(2)
+    tail = "".join(chunks)[-800:].strip()
+    if proc.returncode != 0:
+        return f"`{shown}` failed (exit {proc.returncode}):\n{tail}", True
+    where = spec.resolve()
+    if where is None:
+        return (f"`{shown}` finished but {spec.command[0]} is still not found. It may have installed to a folder that "
+                f"is not on PATH; add that folder to PATH and try again.\n{tail}"), True
+    return f"installed {spec.name} ({where}). The lsp tool can use it now.", False
+
+
+def shlex_quote(a: str) -> str:
+    import shlex
+    return shlex.quote(a)
+
+
+def run_install(args: dict, cwd: str, approve, stop=None) -> tuple[str, bool]:
+    reg = load_registry(cwd)
+    name = str(args.get("server", "")).strip().lower()
+    spec = reg.get(name) or next((s for s in reg.values() if name in (s.name.lower(), *[e.lstrip(".") for e in s.extensions])), None)
+    if spec is None:
+        return f"error: unknown server {name!r}. Known: {', '.join(sorted(reg))}", True
+    return install_server(spec, approve, stop)

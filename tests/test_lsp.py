@@ -52,6 +52,7 @@ FAKE = textwrap.dedent('''
 @pytest.fixture
 def project(tmp_path, monkeypatch):
     monkeypatch.setenv("HEXIEL_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("HEXIEL_TRUST_PROJECT", "1")
     fake = tmp_path / "fake_lsp.py"
     fake.write_text(FAKE)
     (tmp_path / "proj").mkdir()
@@ -133,7 +134,7 @@ def test_errors_are_readable(project, tmp_path):
 def test_missing_server_says_how_to_install(tmp_path, monkeypatch):
     monkeypatch.setenv("HEXIEL_HOME", str(tmp_path / "h"))
     (tmp_path / "x.go").write_text("package x\n")
-    monkeypatch.setattr(lsp.shutil, "which", lambda c: None)
+    monkeypatch.setattr(lsp, "find_program", lambda c: None)
     out, err = lsp.run_action({"action": "hover", "path": "x.go", "symbol": "x"}, str(tmp_path), manager=lsp.Manager())
     assert err and "gopls is not installed" in out and "go install" in out and "where_is" in out
 
@@ -152,3 +153,112 @@ def test_tool_is_registered():
     from hexiel.tools import Toolchain, build_tools
     t = {t.name: t for t in build_tools(Toolchain())}
     assert "lsp" in t and t["lsp"].readonly
+
+
+# ------------------------------------------------------------------ safety and installing
+
+def test_untrusted_project_file_is_ignored(project, monkeypatch):
+    proj, mgr = project
+    monkeypatch.delenv("HEXIEL_TRUST_PROJECT")
+    monkeypatch.setattr("hexiel.openwebui_compat._read_trusted", lambda: [])
+    reg = lsp.load_registry(str(proj))
+    assert reg["pyright"].command[0] == "pyright-langserver"          # the repo's own command never loaded
+    assert "--trust-project" in lsp.untrusted_project_note(str(proj))
+    out, err = lsp.run_action({"action": "hover", "path": "a.py", "symbol": "foo"}, str(proj), manager=mgr)
+    assert "--trust-project" in out or "not installed" in out
+    assert not mgr.running()                                           # nothing was started
+
+
+def _spec(tmp_path, cmds, found=False):
+    prog = tmp_path / "bin" / "fakels"
+    return lsp.ServerSpec("fakels", ["fakels"], [".fk"], install="by hand", install_cmds=cmds), prog
+
+
+class _Proc:
+    def __init__(self, out="done\n", code=0, on_run=None):
+        import io
+        self.stdout, self.returncode, self.pid = io.StringIO(out), code, 1   # pid 1 is never signalled
+        if on_run:
+            on_run()
+    def poll(self):
+        return self.returncode
+    def kill(self):
+        pass
+
+
+def test_install_asks_first_and_runs_the_exact_command(tmp_path, monkeypatch):
+    monkeypatch.setattr(lsp, "extra_bin_dirs", lambda: [str(tmp_path / "bin")])
+    monkeypatch.setenv("PATH", str(tmp_path / "bin"))
+    (tmp_path / "bin").mkdir()
+    for tool in ("pm",):
+        f = tmp_path / "bin" / tool
+        f.write_text("#!/bin/sh\n"); f.chmod(0o755)
+    spec, prog = _spec(tmp_path, [["nomanager", "x"], ["pm", "install", "fakels"]])
+    asked, ran = [], []
+
+    def popen(argv, **kw):
+        ran.append(argv)
+        return _Proc(on_run=lambda: (prog.write_text("#!/bin/sh\n"), prog.chmod(0o755)))
+
+    text, err = lsp.install_server(spec, lambda d: asked.append(d) or True, popen=popen)
+    assert not err and "installed fakels" in text
+    assert asked == [f"install the fakels language server: pm install fakels"]       # first available manager, shown verbatim
+    assert ran[0][1:] == ["install", "fakels"] and ran[0][0].endswith("/pm")
+
+
+def test_install_declined_or_unaskable_changes_nothing(tmp_path, monkeypatch):
+    monkeypatch.setattr(lsp, "extra_bin_dirs", lambda: [str(tmp_path)])
+    f = tmp_path / "pm"; f.write_text("#!/bin/sh\n"); f.chmod(0o755)
+    monkeypatch.setenv("PATH", str(tmp_path))
+    spec, _ = _spec(tmp_path, [["pm", "i", "x"]])
+    boom = lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not run"))
+    text, err = lsp.install_server(spec, lambda d: False, popen=boom)
+    assert err and "declined" in text
+    text, err = lsp.install_server(spec, None, popen=boom)
+    assert err and "no way to ask" in text
+
+
+def test_install_failure_and_missing_manager_are_readable(tmp_path, monkeypatch):
+    monkeypatch.setattr(lsp, "extra_bin_dirs", lambda: [str(tmp_path)])
+    f = tmp_path / "pm"; f.write_text("#!/bin/sh\n"); f.chmod(0o755)
+    monkeypatch.setenv("PATH", str(tmp_path))
+    spec, _ = _spec(tmp_path, [["pm", "i", "x"]])
+    text, err = lsp.install_server(spec, lambda d: True, popen=lambda *a, **k: _Proc("E: no such package\n", 100))
+    assert err and "failed (exit 100)" in text and "no such package" in text
+    spec2, _ = _spec(tmp_path, [["nomanager", "x"]])
+    text, err = lsp.install_server(spec2, lambda d: True)
+    assert err and "nomanager" in text and "by hand" in text
+    text, err = lsp.install_server(_spec(tmp_path, [])[0], lambda d: True)
+    assert err and "no install command" in text
+
+
+def test_install_can_be_cancelled(tmp_path, monkeypatch):
+    import threading
+    monkeypatch.setattr(lsp, "extra_bin_dirs", lambda: [str(tmp_path)])
+    f = tmp_path / "pm"; f.write_text("#!/bin/sh\n"); f.chmod(0o755)
+    monkeypatch.setenv("PATH", str(tmp_path))
+    spec, _ = _spec(tmp_path, [["pm", "i", "x"]])
+    stop = threading.Event(); stop.set()
+    class Hang(_Proc):
+        def poll(self):
+            return None
+    text, err = lsp.install_server(spec, lambda d: True, stop=stop, popen=lambda *a, **k: Hang())
+    assert err and "cancelled" in text
+
+
+def test_find_program_looks_in_install_folders(tmp_path, monkeypatch):
+    d = tmp_path / "gobin"; d.mkdir()
+    f = d / "gopls"; f.write_text("#!/bin/sh\n"); f.chmod(0o755)
+    monkeypatch.setenv("PATH", "/nonexistent")
+    monkeypatch.setattr(lsp, "extra_bin_dirs", lambda: [str(d)])
+    assert lsp.find_program("gopls") == str(f)
+    assert lsp.load_registry(None)["gopls"].installed()
+
+
+def test_install_tool_fails_closed_without_an_approval_gate(tmp_path):
+    from hexiel.tools import ToolContext, Toolchain, build_tools
+    t = {t.name: t for t in build_tools(Toolchain())}["lsp_install"]
+    res = t.run({"server": "gopls"}, ToolContext(cwd=str(tmp_path), chain=Toolchain()))
+    assert res.is_error and ("no way to ask" in res.text or "already installed" in res.text)
+    res = t.run({"server": "nonsense"}, ToolContext(cwd=str(tmp_path), chain=Toolchain()))
+    assert res.is_error and "unknown server" in res.text

@@ -20,6 +20,7 @@ from textual.widgets import Button, Input, Label, Markdown, OptionList, Static, 
 from textual.widgets.option_list import Option
 from textual.widgets.text_area import Selection
 
+from . import leaks
 from . import memory as memory_mod
 from . import skills as skills_mod
 from .session import STEERING_NOTE, strip_env_note
@@ -1849,7 +1850,7 @@ class HexielTUI(App):
                     self.add_user_msg(strip_env_note(body).removeprefix(STEERING_NOTE)[:2000], stamp(msg.get("ts")))   # env note + steering marker are bookkeeping, not the user's words
             elif role == "assistant":
                 # the model's text precedes the tool calls it then makes
-                text = msg.get("content", "")
+                text = leaks.strip_leaks(msg.get("content", ""))     # chats saved before leaked calls were filtered
                 if text.strip():
                     chat.mount(ResponseHeader(stamp(msg.get("ts"))))
                     chat.mount(Markdown(text, classes="assistant-msg"))

@@ -19,6 +19,7 @@ from pathlib import Path
 import aiohttp
 from aiohttp import WSMsgType, web
 
+from . import leaks
 from . import media as media_mod
 from . import memory as memory_mod
 from . import prompt_edit
@@ -382,7 +383,7 @@ class WebState:
                     items.append(item)
             elif role == "assistant":
                 # the model's text precedes the tool calls it then makes
-                text = msg.get("content", "")
+                text = leaks.strip_leaks(msg.get("content", ""))     # chats saved before leaked calls were filtered
                 if text.strip():
                     items.append({"t": "assistant", "text": text})
                 for call in msg.get("tool_calls", []):

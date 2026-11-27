@@ -14,6 +14,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from . import consult
+from . import leaks
 from . import explain as explain_mod
 from . import llm
 from . import prompt_edit
@@ -278,12 +279,6 @@ def _dsml_orphan_params(text: str, tools) -> list[tuple[str, dict]]:
                         pass
             return [(t.name, args)]
     return []
-
-
-def _dsml_start(text: str) -> int:
-    """Where the leaked DSML begins (so the saved reply keeps only the prose before it), or -1."""
-    m = _DSML_ANY_TAG.search(text)
-    return m.start() if m else -1
 
 
 def _dsml_tool_call(text: str, tools) -> tuple[str, dict] | None:
@@ -1106,14 +1101,15 @@ class Session:
                         self.on_event("turn_end", aborted=True)
                     return
                 assistant.setdefault("ts", time.time())
+                leaked_unread = False
                 if not assistant.get("tool_calls"):
                     text = assistant.get("content") or ""
                     rescued = _dsml_tool_calls(text, self.tools) or \
                         ([r] if (r := _text_tool_call(text, self.tools)) else [])
+                    if leaks.has_leak(text):          # keep the prose, never the leaked markup, in history
+                        assistant["content"] = leaks.strip_leaks(text)
+                        leaked_unread = not rescued   # a call the model wrote as text that could not be read
                     if rescued:
-                        cut = _dsml_start(text)
-                        if cut >= 0:                  # keep the prose, not the leaked markup, in history
-                            assistant["content"] = text[:cut].rstrip()
                         assistant["tool_calls"] = [{"id": f"call_text_{uuid.uuid4().hex[:8]}",
                                                     "name": name, "arguments": args} for name, args in rescued]
                         self.on_event("note", f"🔧 the model wrote its {rescued[0][0]} call"
@@ -1122,6 +1118,13 @@ class Session:
                 self.messages.append(assistant)
                 self.save()
                 calls = assistant.get("tool_calls") or []
+                if not calls and leaked_unread and turn.get("leaks", 0) < MALFORMED_CALL_RETRIES \
+                        and not self._stop.is_set():
+                    turn["leaks"] = turn.get("leaks", 0) + 1
+                    self.on_event("note", f"…the model wrote a tool call as text that could not be read — asking it "
+                                          f"to retry ({turn['leaks']}/{MALFORMED_CALL_RETRIES})")
+                    self.messages.append({"role": "user", "content": MALFORMED_CALL_NUDGE})
+                    continue
                 if not calls:
                     truncated = assistant.pop("_truncated", False)   # cut off at max_output_tokens (llm.py)
                     if truncated:
@@ -1559,6 +1562,7 @@ class Session:
         final = None
         reasoning: list[str] = []
         streamed: list[str] = []
+        leak = leaks.LeakFilter()        # a tool call written as text never reaches a screen (see leaks.py)
         if repair_tool_pairs(self.messages):     # e.g. a chat saved mid-command, then resumed
             self.save()
         sent = len(self.messages)       # the prompt covers exactly these messages
@@ -1580,7 +1584,9 @@ class Session:
                 if self._stop.is_set():
                     break
                 if event == "text":
-                    self.on_event("text", payload[0])
+                    shown = leak.feed(payload[0])
+                    if shown:
+                        self.on_event("text", shown)
                     streamed.append(payload[0])
                     if len(streamed) % 20 == 0 and _degenerate("".join(streamed)[-600:]):
                         self._provider_error = DEGENERATE_HELP
@@ -1630,6 +1636,9 @@ class Session:
             if llm.is_malformed_tool_call(str(exc)):
                 self._error_recoverable = True       # a different model may write the call properly
         finally:
+            tail = leak.flush()
+            if tail:
+                self.on_event("text", tail)
             slot.release()
         final = final if final is not None else {"role": "assistant", "content": ""}
         if reasoning:

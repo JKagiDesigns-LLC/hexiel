@@ -80,7 +80,11 @@ def build_session(cwd: str, model_name: str | None, resumed: dict | None = None,
     from . import mcp_client
     mcp_servers = getattr(reuse, "mcp_servers", None) or mcp_client.start_servers(
         mcp_client.load_configs(cwd, config.mcp))   # reuse=an in-process session (/fork): never double-start
-    tool_defs = tool_defs + mcp_client.tool_defs(mcp_servers)
+    mcp_defs = mcp_client.tool_defs(mcp_servers)
+    mcp_deferred: list = []
+    if mcp_client.should_defer(mcp_defs, settings):     # many MCP tools: find them on demand, not in every prompt
+        mcp_deferred, mcp_defs = mcp_defs, []
+    tool_defs = tool_defs + mcp_defs
     if tool_defs:
         known = {t.name for t in tools}
         tools = tools + [t for t in tool_defs if t.name not in known]
@@ -107,6 +111,8 @@ def build_session(cwd: str, model_name: str | None, resumed: dict | None = None,
     from .tools import ToolDef
     from . import toolsets
     toolsets.install(session, config.settings)
+    if mcp_deferred:
+        mcp_client.install_search(session, mcp_deferred)
     session.tools.append(ToolDef(
         "task", "Delegate a self-contained investigation (e.g. 'find where X is configured and how "
         "it is used', 'research Y on the web') to a subagent with its own context and read-only "

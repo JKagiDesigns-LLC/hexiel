@@ -387,6 +387,73 @@ def tool_defs(servers: list[Server]) -> list:
     return defs
 
 
+# ---------------------------------------------------------------- deferred tools (mcp_search)
+
+def schema_tokens(defs: list) -> int:
+    """About how many tokens these tool definitions cost on every request."""
+    return sum(len(json.dumps(d.parameters)) + len(d.description) + len(d.name) for d in defs) // 4
+
+
+def should_defer(defs: list, settings) -> bool:
+    mode = str(getattr(settings, "mcp_defer", "auto")).lower()
+    if not defs or mode == "off":
+        return False
+    return mode == "on" or schema_tokens(defs) > int(getattr(settings, "mcp_defer_tokens", 3000))
+
+
+def _words(text: str) -> set[str]:
+    text = re.sub(r"([a-z])([A-Z])", r"\1 \2", text)
+    return {w for w in re.split(r"[^A-Za-z0-9]+", text.lower()) if len(w) > 1}
+
+
+def search_deferred(deferred: list, query: str, limit: int = 5) -> list:
+    """The deferred tools that best match a query: name words count double, description words once."""
+    q = _words(query)
+    if not q:
+        return []
+    scored = []
+    for d in deferred:
+        name_w, desc_w = _words(d.name.replace("mcp__", "", 1)), _words(d.description)
+        score = 2 * len(q & name_w) + len(q & desc_w)
+        if query.strip().lower() in d.name.lower():
+            score += 5
+        if score:
+            scored.append((score, d))
+    scored.sort(key=lambda x: -x[0])
+    return [d for _, d in scored[:max(1, limit)]]
+
+
+def install_search(session, deferred: list) -> None:
+    """Leave the MCP schemas out of the prompt and add one small `mcp_search` tool. A match is registered
+    into the live tool list and stays for the session, so the prompt prefix changes once per tool, not
+    on every call."""
+    from .tools import ToolDef, text_result
+    by_server: dict[str, int] = {}
+    for d in deferred:
+        server = d.description.split("]", 1)[0].removeprefix("[MCP ").strip()
+        by_server[server] = by_server.get(server, 0) + 1
+    catalog = ", ".join(f"{s} ({n} tools)" for s, n in by_server.items())
+
+    def run(args, ctx):
+        query = str(args.get("query", "")).strip()
+        hits = search_deferred(deferred, query, int(args.get("limit") or 5))
+        if not hits:
+            return text_result(f"no MCP tool matches '{query}' — try other words, e.g. the service or the action. "
+                               f"Available: {catalog}", True)
+        loaded, lines = [], []
+        for d in hits:
+            if not any(t.name == d.name for t in session.tools):
+                session.tools.append(d)
+                loaded.append(d.name)
+            lines.append(f"- {d.name}: {d.description[:140]}")
+        return text_result("matching MCP tools (now callable — use them directly):\n" + "\n".join(lines))
+    session.tools.append(ToolDef(
+        "mcp_search", "Find and load a tool from the connected MCP servers. Their tools are not listed up front "
+        f"to save context: search by service or action (e.g. 'create issue', 'query database'). Servers: {catalog}.",
+        {"type": "object", "properties": {"query": {"type": "string"}, "limit": {"type": "integer"}},
+         "required": ["query"]}, readonly=True, always_ok=True, run=run))
+
+
 def status_lines(servers: list[Server]) -> list[str]:
     lines = []
     for s in servers:

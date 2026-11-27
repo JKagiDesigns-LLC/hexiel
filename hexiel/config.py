@@ -205,6 +205,8 @@ class Settings:
     search_backend: str = "duckduckgo"
     searxng_url: str = ""
     auto_resume: bool = True          # wait out rate limits and continue automatically
+    mcp_defer: str = "auto"           # MCP tool schemas: "auto" = leave them out of the prompt and let the model find tools with mcp_search once they pass mcp_defer_tokens; "on" = always; "off" = send every schema every request
+    mcp_defer_tokens: int = 3000      # mcp_defer = "auto": defer MCP tools once their schemas together are about this many tokens
     keep_going: bool = True           # do not end a turn while the todo list this session wrote still has open steps
     auto_resume_max_wait: int = 21600 # longest wait (s) before giving up / falling back
     fallback_profile: str = ""        # switch here when a limit won't reset soon (e.g. a local model)
@@ -350,6 +352,8 @@ def _settings_from(settings_raw: dict) -> "Settings":
         search_backend=str(settings_raw.get("search_backend", "duckduckgo")),
         searxng_url=str(settings_raw.get("searxng_url", "")),
         auto_resume=bool(settings_raw.get("auto_resume", True)),
+        mcp_defer=str(settings_raw.get("mcp_defer", "auto")),
+        mcp_defer_tokens=int(settings_raw.get("mcp_defer_tokens", 3000)),
         keep_going=bool(settings_raw.get("keep_going", True)),
         auto_resume_max_wait=int(settings_raw.get("auto_resume_max_wait", 21600)),
         fallback_profile=str(settings_raw.get("fallback_profile", "")),

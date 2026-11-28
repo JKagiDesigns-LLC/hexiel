@@ -60,6 +60,11 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--install-lsp", metavar="SERVER", nargs="?", const="",
                     help="install a language server for the lsp tool (pyright, typescript, gopls, rust-analyzer, ...) "
                          "after asking; with no name, lists what this project needs")
+    ap.add_argument("--review", metavar="BASE", nargs="?", const="HEAD",
+                    help="print a review pack for the uncommitted changes (or everything since BASE) and exit")
+    ap.add_argument("--audit", nargs="*", metavar="SESSION",
+                    help="show where tokens went in your saved sessions (or the given session files) and what masking "
+                         "old tool results would save, then exit")
     ap.add_argument("--setup", action="store_true", help="first-run guided wizard")
     ap.add_argument("--get-vision", action="store_true",
                     help="download the local vision model (Florence-2, ~265 MB) so image cards say what a picture shows")
@@ -460,6 +465,14 @@ def _main() -> None:
                 print(f"downloading {name} …", flush=True)
         looker.download(progress)
         print(f"local vision model ready in {looker.model_dir()}")
+        return
+    if args.audit is not None:
+        from . import audit
+        print(audit.main(args.audit))
+        return
+    if args.review is not None:
+        from . import review
+        print(review.build(cwd, args.review))
         return
     if args.install_lsp is not None:
         from . import lsp

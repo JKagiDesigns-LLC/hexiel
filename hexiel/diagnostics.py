@@ -247,7 +247,8 @@ def available(root: str) -> str:
     where = {name: bool(shutil.which(name))
              for name in ("pyright", "ruff", "tsc", "go", "cargo")}
     have = [k for k, v in where.items() if v]
-    missing = [f"{k} ({CHECKER_HINT[k + '.py'] if k == 'pyright' or k == 'ruff' else k})"
-               for k, v in where.items() if not v]
+    hint = {"pyright": "npm i -g pyright, or pipx install pyright", "ruff": "pipx install ruff",
+            "tsc": "npm i -g typescript", "go": "the Go toolchain", "cargo": "the Rust toolchain"}
+    missing = [f"{k} ({hint[k]})" for k, v in where.items() if not v]
     return ("installed checkers: " + (", ".join(have) or "none")
             + ("; missing: " + ", ".join(missing) if missing else ""))

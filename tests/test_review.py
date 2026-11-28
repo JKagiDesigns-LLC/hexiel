@@ -1,143 +1,91 @@
-"""After a /delegate run the planner model reviews the diff; its findings become fix steps for the worker."""
-
-import json
-import sys
-from pathlib import Path
+"""review pack: facts about an edit for the human who reviews it."""
+import subprocess
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-
-from hexiel import llm, planner
-from hexiel.config import Settings
-from hexiel.session import Session
-from hexiel.tooling import Toolchain
-from hexiel.tools import ToolContext, ToolDef
-from test_delegate import PLANNER, WORKER, Planner, Worker, _write_tool, plan_json
-
-OK = json.dumps({"verdict": "ok", "summary": "looks right", "issues": []})
-FIX = json.dumps({"verdict": "fix", "summary": "one gap", "issues": [
-    {"file": "a.txt", "problem": "the request also needed create fixed.txt but it is missing", "fix": "create fixed.txt"}]})
+from hexiel import review
+from hexiel import symbols as sm
 
 
-def build(tmp_path, monkeypatch, replies, review="auto", planner_profile="cloud"):
-    providers = {"cloud": Planner(*replies), "local": Worker()}
-    monkeypatch.setattr(llm, "make_provider", lambda mc, settings: providers[mc.name])
-    monkeypatch.setattr(planner, "_config_profile", lambda session, name: {"cloud": PLANNER, "local": WORKER}.get(name))
-    tools = [ToolDef("write", "w", {"type": "object", "properties": {}}, run=_write_tool)]
-    s = Session(WORKER, Settings(planner_profile=planner_profile, executor_profile="local", delegate_review=review,
-                                 delegate_approval=False), str(tmp_path), tools, "sys")
-    s.auto_approve = True
-    s.bind_tool_ctx(ToolContext(cwd=str(tmp_path), chain=Toolchain()))
-    s.save = lambda: None
-    events, shown = [], []
-    s.on_event = lambda e, *p, **k: (events.append((e, *p)), shown.append(s.active_model) if e == "model_active" else None)
-    return s, providers, events, shown
+def git(cwd, *a):
+    subprocess.run(["git", "-C", str(cwd), "-c", "user.email=t@t", "-c", "user.name=t", *a], check=True,
+                   capture_output=True)
 
 
-def notes(events):
-    return [e[1] for e in events if e[0] == "note"]
+@pytest.fixture
+def proj(tmp_path, monkeypatch):
+    monkeypatch.delenv("GIT_INDEX_FILE", raising=False)
+    (tmp_path / "pkg").mkdir()
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "pkg" / "core.py").write_text(
+        "def price(x):\n    return x * 2\n\n\ndef old():\n    return 0\n\n\ndef steady():\n    return 1\n")
+    (tmp_path / "pkg" / "api.py").write_text(
+        "from pkg.core import price, old\n\n\ndef quote(x):\n    return price(x) + old()\n")
+    (tmp_path / "tests" / "test_api.py").write_text(
+        "from pkg.api import quote\n\n\ndef test_quote():\n    assert quote(1) == 2\n")
+    git(tmp_path, "init", "-q")
+    git(tmp_path, "add", "-A")
+    git(tmp_path, "commit", "-qm", "init")
+    sm._INDEXES.clear()
+    return tmp_path
 
 
-def test_a_clean_review_is_reported_in_the_summary(tmp_path, monkeypatch):
-    s, providers, events, shown = build(tmp_path, monkeypatch, [plan_json("a.txt"), OK])
-    s.run_turn("/delegate make a file")
-    assert providers["cloud"].calls == 2                                   # one plan + one review, nothing more
-    assert "Review: no problems found by cloud" in s.messages[-1]["content"]
-    assert any("review by cloud" in n and "no problems found" in n for n in notes(events))
-    assert "big · reviewing" in shown and s.active_model == ""
+def pack(p):
+    return review.build(str(p), "HEAD", None, with_checks=False)
 
 
-def test_the_reviewer_sees_the_request_the_plan_and_the_real_diff(tmp_path, monkeypatch):
-    s, providers, *_ = build(tmp_path, monkeypatch, [plan_json("a.txt"), OK])
-    seen = []
-    original = providers["cloud"].stream
-
-    def spy(messages, system, tools, **kw):
-        seen.append((system, messages[-1]["content"]))
-        return original(messages, system, tools, **kw)
-    providers["cloud"].stream = spy
-    s.run_turn("/delegate make a file called a.txt")
-    system, user = seen[1]
-    assert system == planner.REVIEW_SYSTEM
-    assert "make a file called a.txt" in user and "make a.txt" in user and "check passed" in user
-    assert "+++ b/a.txt" in user and "--- /dev/null" in user                # a new file, shown as a diff from nothing
+def test_nothing_to_review(proj):
+    assert "nothing to review" in pack(proj)
 
 
-def test_problems_found_become_fix_steps_the_worker_carries_out(tmp_path, monkeypatch):
-    s, providers, events, _ = build(tmp_path, monkeypatch, [plan_json("a.txt"), FIX])
-    s.run_turn("/delegate make a file")
-    assert (tmp_path / "a.txt").exists() and (tmp_path / "fixed.txt").exists()
-    text = s.messages[-1]["content"]
-    assert "Plan complete: 2/2" in text and "Review: 1 problem(s) found by cloud and fixed" in text
-    assert "Fix: the request also needed" in text
-    assert providers["cloud"].calls == 2                                   # review once; fixes are done by the worker
-    assert any("1 problem(s) — fixing" in n for n in notes(events))
+def test_an_interface_change_is_the_first_thing_to_look_at(proj):
+    (proj / "pkg" / "core.py").write_text(
+        "def price(x, rate):\n    return x * rate\n\n\ndef steady():\n    return 1\n\n\ndef fresh():\n    return 2\n")
+    text = pack(proj)
+    assert text.startswith("# Review pack  (1 file(s)")
+    assert "## Look at first: the interface changed" in text
+    line = next(l for l in text.splitlines() if l.startswith("- `price`"))
+    assert "(x)" in line and "→" in line and "(x, rate)" in line
+    assert "`old` removed" in text and "reference(s) elsewhere" in text
+    assert "## New public code" in text and "`fresh`" in text
+    assert "no test file changed in this diff" in text            # source changed, tests untouched
+    assert "Run the affected tests: `pytest tests/test_api.py`" in text
 
 
-def test_a_fix_step_reuses_the_check_of_the_step_that_owned_the_file():
-    plan = planner.parse_plan(plan_json("a.txt", "b.txt"), "req")
-    tasks = planner.fix_tasks_from(plan, [{"file": "b.txt", "problem": "b is wrong", "fix": "redo it"},
-                                          {"file": "", "problem": "something general", "fix": ""}])
-    assert [t.id for t in tasks] == [3, 4] and tasks[0].check == "test -f b.txt" and tasks[1].check == ""
-    assert "redo it" in tasks[0].goal and tasks[0].files == ["b.txt"]
+def test_changed_code_no_test_mentions_is_called_out(proj):
+    (proj / "pkg" / "core.py").write_text(
+        "def price(x):\n    return x * 2\n\n\ndef old():\n    return 0\n\n\ndef steady():\n    return 99\n")
+    text = pack(proj)
+    assert "## Unverified" in text and "no test file references `steady`" in text
+    assert "price" not in text.split("## Changed code")[1]          # untouched code is not listed
 
 
-def test_review_is_skipped_when_off(tmp_path, monkeypatch):
-    s, providers, *_ = build(tmp_path, monkeypatch, [plan_json("a.txt"), OK], review="off")
-    s.run_turn("/delegate make a file")
-    assert providers["cloud"].calls == 1 and "Review:" not in s.messages[-1]["content"]
+def test_test_only_and_doc_changes_are_grouped_and_not_flagged(proj):
+    (proj / "README.md").write_text("hello\n")
+    (proj / "tests" / "test_api.py").write_text(
+        "from pkg.api import quote\n\n\ndef test_quote():\n    assert quote(1) == 2\n\n\ndef test_more():\n    pass\n")
+    git(proj, "add", "-N", "README.md")
+    text = pack(proj)
+    assert "**tests**: tests/test_api.py" in text and "**docs**: README.md" in text
+    assert "Unverified" not in text and "Look at first" not in text
 
 
-def test_auto_means_only_when_the_planner_is_a_different_model(tmp_path, monkeypatch):
-    s, *_ = build(tmp_path, monkeypatch, [plan_json("a.txt")], review="auto", planner_profile="local")
-    assert not planner.review_enabled(s)
-    s.settings.delegate_review = "always"
-    assert planner.review_enabled(s)
-    s.settings.delegate_review = "auto"
-    s.settings.planner_profile = "cloud"
-    assert planner.review_enabled(s)
+def test_kinds():
+    assert review.kind_of("tests/test_x.py") == "tests" and review.kind_of("a/b.md") == "docs"
+    assert review.kind_of("pyproject.toml") == "config" and review.kind_of("src/x.go") == "source"
 
 
-def test_a_review_that_fails_never_undoes_a_finished_plan(tmp_path, monkeypatch):
-    import httpx
-    s, providers, events, _ = build(tmp_path, monkeypatch, [plan_json("a.txt"), httpx.ConnectError("down")])
-    s.run_turn("/delegate make a file")
-    assert (tmp_path / "a.txt").exists() and "Plan complete: 1/1" in s.messages[-1]["content"]
-    assert any("review by cloud could not be completed" in n for n in notes(events))
+def test_base_other_than_head(proj):
+    (proj / "pkg" / "core.py").write_text("def price(x):\n    return 7\n\n\ndef old():\n    return 0\n\n\ndef steady():\n    return 1\n")
+    git(proj, "commit", "-qam", "change")
+    sm._INDEXES.clear()
+    assert "nothing to review" in pack(proj)
+    assert "against HEAD~1" in review.build(str(proj), "HEAD~1", None, with_checks=False)
 
 
-def test_nothing_changed_means_nothing_to_review(tmp_path, monkeypatch):
-    s, *_ = build(tmp_path, monkeypatch, [plan_json("a.txt"), OK])
-    plan = planner.parse_plan(plan_json("a.txt"), "req")
-    assert planner.collect_changes(s, plan) == "" and planner.review_plan(s, plan) is None
-
-
-def test_diffs_show_edits_to_existing_files_and_are_truncated():
-    changed = planner._diff_text("x.py", b"a = 1\nb = 2\n", b"a = 1\nb = 3\n")
-    assert "--- a/x.py" in changed and "-b = 2" in changed and "+b = 3" in changed
-    big = planner._diff_text("big.txt", b"", ("line\n" * 5000).encode())
-    assert len(big) <= planner.REVIEW_FILE_CHARS + 100 and "truncated" in big
-    assert "binary file" in planner._diff_text("i.png", b"\x89PNG\xff", b"\x89PNG\xfe")
-
-
-def test_review_replies_are_parsed_defensively():
-    assert planner.parse_review("```json\n" + OK + "\n```")["verdict"] == "ok"
-    assert planner.parse_review(json.dumps({"verdict": "fix", "issues": []}))["verdict"] == "ok"      # nothing to fix
-    many = json.dumps({"verdict": "fix", "issues": [{"problem": f"p{i}"} for i in range(20)]})
-    assert len(planner.parse_review(many)["issues"]) == planner.MAX_REVIEW_ISSUES
-    with pytest.raises(ValueError):
-        planner.parse_review(json.dumps({"verdict": "maybe"}))
-    with pytest.raises(ValueError):
-        planner.parse_review("no json here")
-
-
-def test_review_setting_is_editable_and_validated(tmp_path, monkeypatch):
-    from hexiel import settings_edit
-    import hexiel.config as config
-    s, *_ = build(tmp_path, monkeypatch, [plan_json("a.txt")])
-    assert any(r["key"] == "settings.delegate_review" and r["label"] == "Review plans" for r in settings_edit.rows(s))
-    cfg = tmp_path / "config.toml"
-    cfg.write_text('[models.x]\nprovider = "openai"\nmodel = "m"\nbase_url = "http://h/v1"\n[settings]\ndelegate_review = "weird"\n')
-    monkeypatch.setattr(config, "CONFIG_FILE", cfg)
-    assert config.load_config().settings.delegate_review == "auto"           # unknown value -> the default
+def test_tool_and_cli_flag_exist(monkeypatch):
+    from hexiel.main import parse_args
+    from hexiel.tools import Toolchain, build_tools
+    assert "review_pack" in {t.name for t in build_tools(Toolchain())}
+    monkeypatch.setattr("sys.argv", ["hexiel", "--review", "main"])
+    assert parse_args().review == "main"

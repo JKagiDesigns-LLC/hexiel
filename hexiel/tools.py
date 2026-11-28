@@ -871,6 +871,17 @@ def _lsp(args: dict, ctx: ToolContext) -> ToolResult:
     return text_result(text, err)
 
 
+def _blast_radius(args: dict, ctx: ToolContext) -> ToolResult:
+    from . import impact
+    text, err = impact.run(args, ctx.cwd, ctx.chain)
+    return text_result(text, err)
+
+
+def _review_pack(args: dict, ctx: ToolContext) -> ToolResult:
+    from . import review
+    return text_result(review.build(ctx.cwd, str(args.get("base") or "HEAD"), ctx.chain))
+
+
 def _lsp_install(args: dict, ctx: ToolContext) -> ToolResult:
     from . import lsp as lsp_mod
     approve = (lambda desc: bool(ctx.on_step("lsp_install", desc))) if ctx.on_step else None
@@ -1916,20 +1927,25 @@ def build_tools(chain: Toolchain) -> list[ToolDef]:
                 "runs python compile checks; no network.",
                 obj(path={"type": "string"}, timeout={"type": "number"}),
                 readonly=True, run=_diagnostics),
-        ToolDef("lsp", "Ask the project's language server (pyright, typescript-language-server, gopls, "
-                "rust-analyzer, clangd, ... whichever is installed) for an exact answer instead of grepping: "
-                "action `definition` / `references` / `hover` (type + docs) for a `symbol` in `path` "
-                "(add `line` to pick between uses), `diagnostics` for a file, or `symbols` with `query` to "
-                "search the workspace. Resolves imports, inheritance and overloads that text search "
-                "cannot. If no server is installed it says how to install one; then use where_is / callers.",
+        ToolDef("lsp", "Exact code intelligence from the installed language server: action definition | references | hover "
+                "for `symbol` in `path` (add `line` if the name repeats), diagnostics for a file, or symbols "
+                "(`query`) across the workspace. Follows imports and types that grep cannot. If no server "
+                "is installed it says so; use where_is / callers",
                 obj(action={"type": "string", "enum": ["definition", "references", "hover", "diagnostics", "symbols"]},
                     path={"type": "string"}, symbol={"type": "string"}, line={"type": "integer"},
                     column={"type": "integer"}, query={"type": "string"}),
                 readonly=True, run=_lsp),
-        ToolDef("lsp_install", "Install a missing language server (pyright, typescript, gopls, rust-analyzer, ...) "
-                "with the machine's package manager so the lsp tool can use it. The user is shown the exact command "
-                "and must approve it first. Only call this when the lsp tool says a server is missing AND the user "
-                "wants to work in that language; never install speculatively.",
+        ToolDef("blast_radius", "What a change affects: for a symbol, a file, or target='changes' (uncommitted edits): its "
+                "definition, callers (two hops), the test files that touch it and the command to run only those. "
+                "Call before changing shared code and on 'changes' before committing. Any language; "
+                "matched by name (lsp for exact)",
+                obj(target={"type": "string"}, base={"type": "string"}), readonly=True, run=_blast_radius),
+        ToolDef("review_pack", "One-page summary of the uncommitted changes (or since `base`) for the human reviewer: files by kind, "
+                "interface changes that can break callers, changed code no test mentions, tests to run, checker "
+                "output. Facts only; paste it into the PR or final report",
+                obj(base={"type": "string"}), readonly=True, run=_review_pack),
+        ToolDef("lsp_install", "Install a missing language server for the lsp tool. The user sees the exact command and must "
+                "approve it. Only when lsp reported it missing AND the user wants that language",
                 obj(server={"type": "string"}), always_ok=True, run=_lsp_install),
         ToolDef("container", "Drive the detected container runtime (docker or podman) natively. "
                 "actions: list, run (image, name, ports[], volumes[], cmd), exec (container, cmd, stdin?), "

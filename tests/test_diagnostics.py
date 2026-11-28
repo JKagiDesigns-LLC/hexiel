@@ -132,3 +132,9 @@ def test_settings_editor_knows_the_toggle(tmp_path):
     from hexiel import settings_edit
     field = next(f for f in settings_edit.FIELDS if f["key"] == "settings.diagnostics")
     assert field["options"] == ["auto", "off"]
+
+
+def test_available_names_missing_checkers_instead_of_crashing(monkeypatch):
+    monkeypatch.setattr(D.shutil, "which", lambda name: None)      # a machine with no checker at all
+    text = D.available(".")
+    assert "installed checkers: none" in text and "pyright (" in text and "ruff (pipx install ruff)" in text

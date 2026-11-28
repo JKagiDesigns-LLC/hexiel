@@ -1063,6 +1063,10 @@ class Session:
                 if self.compaction_needed() and not self.compacting:
                     self.compact(self._provider_override or provider)
                 self._supersede_reads()
+                if getattr(self.settings, "mask_old_results", "off") == "on":
+                    from . import masking
+                    if n := masking.mask_in_place(self.messages, keep=getattr(self.settings, "mask_keep", masking.KEEP)):
+                        self.on_event("note", f"trimmed {n} old tool result(s) from the context (mask_old_results)")
                 tool_defs = self._tool_defs()        # load_tools may have added a group
                 self.on_event("request", self.tokens_now())
                 assistant = self._stream_assistant(provider, tool_defs)

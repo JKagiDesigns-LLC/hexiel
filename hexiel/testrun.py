@@ -435,8 +435,7 @@ def _watch(proc, cmd: str, cwd: str) -> None:
         time.sleep(0.25)
     if proc.poll() is not None:
         return
-    run = start(cmd, cwd, "running")
-    run.is_tests, run.started = False, began
+    run = start(cmd, cwd, "running", is_tests=False, started=began)      # never visible as a test run, not even briefly
     try:
         while proc.poll() is None:
             if not run.is_tests:
@@ -452,8 +451,11 @@ def _watch(proc, cmd: str, cwd: str) -> None:
         notify(run, force=True)
 
 
-def start(cmd: str, cwd: str, label: str) -> Run:
+def start(cmd: str, cwd: str, label: str, is_tests: bool = True, started: float | None = None) -> Run:
     run = Run(id=f"t{int(time.time() * 1000) % 10_000_000:x}", label=label, cmd=cmd, cwd=cwd)
+    run.is_tests = is_tests          # set before the run is registered: listeners and views read it at once
+    if started is not None:
+        run.started = started
     run.prev = _load_history().get(_hkey(cwd, cmd), {})
     with _lock:
         RUNS[run.id] = run

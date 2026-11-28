@@ -263,3 +263,25 @@ def test_a_learned_test_command_runs_with_output_tracking(tmp_path):
                                                          "label": "pytest", "at": int(time.time())}
     testrun.history_file().write_text(__import__("json").dumps(h))
     assert testrun.known_test(str(tmp_path), "./mystery-suite") == "pytest"
+
+
+def test_a_plain_command_is_never_announced_as_a_test_run(tmp_path, monkeypatch):
+    """The run used to be registered as a test run and corrected a moment later, so a view that read it in between
+    (or a loaded machine) saw 'tests' for `sleep`."""
+    monkeypatch.setattr(testrun, "PROMOTE_AFTER", 0.1)
+    kinds = []
+
+    class Listener:
+        def progress(self, snap=None, *a, **k):
+            pass
+
+    orig = testrun.notify
+
+    def spy(run, force=False):
+        kinds.append(run.snapshot()["kind"])
+        return orig(run, force)
+    monkeypatch.setattr(testrun, "notify", spy)
+    import subprocess
+    proc = subprocess.Popen(["sleep", "1"])
+    testrun._watch(proc, "sleep 1", str(tmp_path))
+    assert kinds and set(kinds) == {"command"}

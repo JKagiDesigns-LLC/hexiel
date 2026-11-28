@@ -206,6 +206,8 @@ class Settings:
     searxng_url: str = ""
     auto_resume: bool = True          # wait out rate limits and continue automatically
     mcp_defer: str = "auto"           # MCP tool schemas: "auto" = leave them out of the prompt and let the model find tools with mcp_search once they pass mcp_defer_tokens; "on" = always; "off" = send every schema every request
+    mask_old_results: str = "off"     # "on" = replace old, large tool results with a one-line stub (hexiel --audit shows the saving); "off" = keep everything
+    mask_keep: int = 10               # mask_old_results: requests a result stays in full before it can be masked
     mcp_defer_tokens: int = 3000      # mcp_defer = "auto": defer MCP tools once their schemas together are about this many tokens
     keep_going: bool = True           # do not end a turn while the todo list this session wrote still has open steps
     auto_resume_max_wait: int = 21600 # longest wait (s) before giving up / falling back
@@ -354,6 +356,8 @@ def _settings_from(settings_raw: dict) -> "Settings":
         auto_resume=bool(settings_raw.get("auto_resume", True)),
         mcp_defer=str(settings_raw.get("mcp_defer", "auto")),
         mcp_defer_tokens=int(settings_raw.get("mcp_defer_tokens", 3000)),
+        mask_old_results="on" if str(settings_raw.get("mask_old_results", "off")).lower() in ("on", "true", "yes", "1") else "off",
+        mask_keep=max(3, int(settings_raw.get("mask_keep", 10))),
         keep_going=bool(settings_raw.get("keep_going", True)),
         auto_resume_max_wait=int(settings_raw.get("auto_resume_max_wait", 21600)),
         fallback_profile=str(settings_raw.get("fallback_profile", "")),
